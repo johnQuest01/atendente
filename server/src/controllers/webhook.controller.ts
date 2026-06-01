@@ -106,6 +106,15 @@ async function processInbound(inbound: NormalizedInbound): Promise<void> {
   // humano vai responder — então NÃO chamamos Claude/Z-API para responder.
   const agentEnabled = await isAgentEnabled();
 
+  // Tique azul IMEDIATO: assim que a IA "vê" a mensagem, marcamos como lida —
+  // sem esperar transcrição nem geração de resposta. Best-effort, não bloqueia.
+  // (Só quando o agente está ligado; desligado, quem "lê" é o humano.)
+  if (agentEnabled && inbound.messageId) {
+    void markAsRead(inbound.phone, inbound.messageId).catch((err) =>
+      logger.warn('Falha ao marcar mensagem como lida (tique azul)', err),
+    );
+  }
+
   // Áudio recebido do cliente: tenta transcrever para que a IA "entenda".
   // Mantemos a transcrição mesmo com o agente desligado, pois ajuda o operador
   // humano a ler o conteúdo do áudio direto no painel.
@@ -134,14 +143,6 @@ async function processInbound(inbound: NormalizedInbound): Promise<void> {
     return;
   }
 
-  // Marca a mensagem como lida no WhatsApp (tique azul): o cliente vê que a
-  // Mayra "abriu" o áudio/mensagem. Best-effort, não bloqueia a resposta.
-  if (inbound.messageId) {
-    void markAsRead(inbound.phone, inbound.messageId).catch((err) =>
-      logger.warn('Falha ao marcar mensagem como lida (tique azul)', err),
-    );
-  }
-
   const ctx = { conversation, client };
 
   // Texto efetivo para responder: texto puro ou a transcrição do áudio.
@@ -164,16 +165,9 @@ async function processInbound(inbound: NormalizedInbound): Promise<void> {
     return;
   }
 
-  // Histórico enriquecido (transcrição de áudios + nome de produtos enviados).
-  const history = await getRecentMessagesForAI(conversation.id, 20);
-
-  // Coleta de dados do cliente em segundo plano (não bloqueia a resposta).
-  if (env.hasAnthropic) {
-    void enrichClientFromConversation(client, history).catch((err) =>
-      logger.warn('Falha ao enriquecer cliente', err),
-    );
-  }
-
+  // CAMINHO RÁPIDO: primeiro tentamos casar uma palavra-chave (áudio/script/
+  // produto). Se casar, disparamos NA HORA — sem buscar histórico nem catálogo,
+  // que só são necessários para o Claude. Isso deixa o envio de áudio bem rápido.
   const match = await matchIntent(replyText);
   logger.info(
     `Classificação da mensagem "${replyText.slice(0, 60)}": tipo=${match.content_type} ` +
@@ -191,7 +185,16 @@ async function processInbound(inbound: NormalizedInbound): Promise<void> {
     if (sent) return;
   }
 
-  // Fallback: Claude com histórico + catálogo de produtos disponíveis.
+  // Fallback: Claude precisa do histórico + catálogo de produtos disponíveis.
+  const history = await getRecentMessagesForAI(conversation.id, 20);
+
+  // Coleta de dados do cliente em segundo plano (não bloqueia a resposta).
+  if (env.hasAnthropic) {
+    void enrichClientFromConversation(client, history).catch((err) =>
+      logger.warn('Falha ao enriquecer cliente', err),
+    );
+  }
+
   const products = await listProducts(true);
   const reply = await generateReply({
     history,
