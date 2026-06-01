@@ -1,0 +1,66 @@
+# Render Blueprint — backend (API + IA + webhook do WhatsApp) da Mayra AI Sales.
+# Importe este repositório no Render como "Blueprint" e ele cria o serviço abaixo.
+# Docs: https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: mayra-api
+    runtime: node
+    # O plano Starter é necessário para disco persistente e para o serviço NÃO
+    # dormir (essencial para receber os webhooks do WhatsApp na hora).
+    plan: starter
+    region: oregon
+    branch: main
+    buildCommand: npm install && npm run build:server && npm run migrate && npm run seed --workspace server
+    startCommand: npm run start --workspace server
+    healthCheckPath: /health
+    # Disco persistente: os áudios/imagens enviados ficam aqui (não somem em deploy).
+    disk:
+      name: uploads
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      # Pasta de uploads apontando para o disco persistente.
+      - key: UPLOAD_DIR
+        value: /var/data/uploads
+      # PUBLIC_BASE_URL se auto-resolve via RENDER_EXTERNAL_URL (injetado pelo Render).
+      # Banco (Neon) — cole a connection string no painel.
+      - key: DATABASE_URL
+        sync: false
+      # Segredo do JWT gerado automaticamente pelo Render.
+      - key: JWT_SECRET
+        generateValue: true
+      # URL do frontend (Vercel) para liberar CORS — preencher após o deploy do Vercel.
+      - key: FRONTEND_URL
+        sync: false
+      # IA (Anthropic / Claude)
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: STORE_NAME
+        value: Maryland
+      # WhatsApp (Z-API)
+      - key: WHATSAPP_PROVIDER
+        value: zapi
+      - key: ZAPI_INSTANCE_ID
+        sync: false
+      - key: ZAPI_TOKEN
+        sync: false
+      - key: ZAPI_CLIENT_TOKEN
+        sync: false
+      # Token opcional para validar o webhook (defina o mesmo no painel do Z-API).
+      - key: WEBHOOK_VERIFY_TOKEN
+        sync: false
+      # Transcrição de áudio (Groq Whisper, compatível com OpenAI)
+      - key: STT_PROVIDER
+        value: openai
+      - key: STT_API_KEY
+        sync: false
+      - key: STT_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: STT_MODEL
+        value: whisper-large-v3
+      - key: STT_LANGUAGE
+        value: pt
