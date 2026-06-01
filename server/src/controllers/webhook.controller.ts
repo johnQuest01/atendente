@@ -175,6 +175,10 @@ async function processInbound(inbound: NormalizedInbound): Promise<void> {
   }
 
   const match = await matchIntent(replyText);
+  logger.info(
+    `Classificação da mensagem "${replyText.slice(0, 60)}": tipo=${match.content_type} ` +
+      `id=${match.content_id ?? 'n/d'} palavra-chave=${match.keyword ?? 'n/d'}`,
+  );
 
   if (match.content_type === 'audio' && match.content_id) {
     const sent = await dispatchAudio(ctx, match.content_id);

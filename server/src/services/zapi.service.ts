@@ -38,10 +38,17 @@ async function post(endpoint: string, body: Record<string, unknown>): Promise<st
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
+    // Loga com detalhe (endpoint + corpo da resposta) para depurar em produção
+    // sem expor tokens (que ficam apenas na URL, não logada).
+    logger.error(`Z-API ${endpoint} retornou ${res.status}: ${text}`);
     throw new AppError(`Z-API retornou ${res.status}: ${text}`, 502, 'ZAPI_ERROR');
   }
 
   const data = (await res.json().catch(() => ({}))) as ZapiResponse;
+  // A Z-API às vezes responde 200 com um erro no corpo (ex.: número inválido).
+  if (data.error || data.message === 'error') {
+    logger.warn(`Z-API ${endpoint} respondeu 200 com erro no corpo:`, data);
+  }
   return data.messageId ?? data.id ?? null;
 }
 
