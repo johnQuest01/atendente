@@ -25,6 +25,19 @@ export function useUploadAudio() {
   });
 }
 
+export function useReplaceAudioFile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, formData }: { id: string; formData: FormData }) => {
+      const { data } = await api.post<{ audio: Audio }>(`/audios/${id}/file`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      return data.audio;
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['audios'] }),
+  });
+}
+
 export function useUpdateAudio() {
   const qc = useQueryClient();
   return useMutation({

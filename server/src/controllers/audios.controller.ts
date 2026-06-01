@@ -6,7 +6,7 @@ import {
   listAudios,
   updateAudio,
 } from '../db/queries/audios';
-import { processAndStoreAudio } from '../services/audio.service';
+import { processAndStoreAudio, replaceAudioFile } from '../services/audio.service';
 import { cleanupTmp } from '../services/storage.service';
 import { AppError, NotFoundError } from '../utils/errors';
 
@@ -71,6 +71,19 @@ export async function uploadAudioHandler(req: Request, res: Response): Promise<v
       createdBy: req.user?.sub ?? null,
     });
     res.status(201).json({ audio });
+  } catch (err) {
+    await cleanupTmp(req.file.path);
+    throw err;
+  }
+}
+
+export async function replaceAudioFileHandler(req: Request, res: Response): Promise<void> {
+  if (!req.file) throw new AppError('Nenhum arquivo de áudio enviado.', 422, 'NO_FILE');
+  const { id } = req.params as z.infer<typeof idParamSchema>;
+  try {
+    const audio = await replaceAudioFile(id, req.file.path);
+    if (!audio) throw new NotFoundError('Áudio');
+    res.json({ audio });
   } catch (err) {
     await cleanupTmp(req.file.path);
     throw err;

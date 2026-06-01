@@ -9,6 +9,7 @@ import {
   idParamSchema,
   patchAudio,
   removeAudio,
+  replaceAudioFileHandler,
   updateAudioSchema,
   uploadAudioHandler,
 } from '../controllers/audios.controller';
@@ -20,6 +21,12 @@ router.use(authenticate);
 router.get('/', asyncHandler(getAudios));
 router.get('/:id', validate({ params: idParamSchema }), asyncHandler(getAudio));
 router.post('/', uploadAudio.single('file'), asyncHandler(uploadAudioHandler));
+router.post(
+  '/:id/file',
+  validate({ params: idParamSchema }),
+  uploadAudio.single('file'),
+  asyncHandler(replaceAudioFileHandler),
+);
 router.patch(
   '/:id',
   validate({ params: idParamSchema, body: updateAudioSchema }),

@@ -6,7 +6,12 @@ import { env } from '../config/env';
 import { logger } from '../config/logger';
 import { AppError } from '../utils/errors';
 import { persistFile, cleanupTmp } from './storage.service';
-import { createAudio, setAudioFileUrl, type CreateAudioInput } from '../db/queries/audios';
+import {
+  createAudio,
+  setAudioFileUrl,
+  updateAudioFile,
+  type CreateAudioInput,
+} from '../db/queries/audios';
 import type { Audio } from '../types';
 
 ffmpeg.setFfmpegPath(ffmpegPath.path);
@@ -61,10 +66,21 @@ interface ProcessAudioInput {
  * 2. Persiste no storage
  * 3. Salva o registro no banco
  */
-export async function processAndStoreAudio(input: ProcessAudioInput): Promise<Audio> {
+interface PreparedAudio {
+  fileData: Buffer;
+  durationSeconds: number;
+  sizeKb: number;
+  storedUrl: string;
+}
+
+/**
+ * Converte o arquivo temporário para .ogg/opus, lê os bytes (para guardar no
+ * banco) e persiste no disco. Sempre limpa os temporários ao final.
+ */
+async function prepareAudioFromTmp(tmpFilePath: string): Promise<PreparedAudio> {
   let convertedPath: string | null = null;
   try {
-    const { outputPath, durationSeconds } = await convertToOggOpus(input.tmpFilePath);
+    const { outputPath, durationSeconds } = await convertToOggOpus(tmpFilePath);
     convertedPath = outputPath;
 
     // Lê os bytes do .ogg ANTES de mover o arquivo: guardamos o conteúdo no
@@ -75,34 +91,56 @@ export async function processAndStoreAudio(input: ProcessAudioInput): Promise<Au
     const filename = path.basename(outputPath);
     const stored = await persistFile(outputPath, 'audios', filename);
 
-    const dbInput: CreateAudioInput = {
-      title: input.title,
-      category: input.category,
-      tone: input.tone ?? null,
-      situation: input.situation ?? null,
-      fileUrl: stored.url,
-      fileSizeKb: stored.sizeKb,
-      durationSeconds,
-      transcription: input.transcription ?? null,
-      keywords: input.keywords ?? [],
-      createdBy: input.createdBy ?? null,
-      fileData,
-      mimeType: 'audio/ogg',
-    };
-    const audio = await createAudio(dbInput);
-
-    // URL pública estável servida pelo próprio backend a partir do banco.
-    // Isso garante que tanto o painel quanto a Z-API consigam tocar o áudio.
-    const mediaUrl = `${env.PUBLIC_BASE_URL}/media/audios/${audio.id}.ogg`;
-    await setAudioFileUrl(audio.id, mediaUrl);
-    audio.file_url = mediaUrl;
-    return audio;
+    return { fileData, durationSeconds, sizeKb: stored.sizeKb, storedUrl: stored.url };
   } finally {
-    await cleanupTmp(input.tmpFilePath);
+    await cleanupTmp(tmpFilePath);
     if (convertedPath) {
       // se persistFile já moveu o arquivo, unlink falha silenciosamente
       await fs.unlink(convertedPath).catch(() => undefined);
     }
     logger.debug('Processamento de áudio finalizado');
   }
+}
+
+export async function processAndStoreAudio(input: ProcessAudioInput): Promise<Audio> {
+  const prepared = await prepareAudioFromTmp(input.tmpFilePath);
+
+  const dbInput: CreateAudioInput = {
+    title: input.title,
+    category: input.category,
+    tone: input.tone ?? null,
+    situation: input.situation ?? null,
+    fileUrl: prepared.storedUrl,
+    fileSizeKb: prepared.sizeKb,
+    durationSeconds: prepared.durationSeconds,
+    transcription: input.transcription ?? null,
+    keywords: input.keywords ?? [],
+    createdBy: input.createdBy ?? null,
+    fileData: prepared.fileData,
+    mimeType: 'audio/ogg',
+  };
+  const audio = await createAudio(dbInput);
+
+  // URL pública estável servida pelo próprio backend a partir do banco.
+  // Isso garante que tanto o painel quanto a Z-API consigam tocar o áudio.
+  const mediaUrl = `${env.PUBLIC_BASE_URL}/media/audios/${audio.id}.ogg`;
+  await setAudioFileUrl(audio.id, mediaUrl);
+  audio.file_url = mediaUrl;
+  return audio;
+}
+
+/**
+ * Substitui apenas o arquivo de áudio de um registro existente, mantendo
+ * título, categoria, palavras-chave, etc. Retorna null se o áudio não existir.
+ */
+export async function replaceAudioFile(id: string, tmpFilePath: string): Promise<Audio | null> {
+  const prepared = await prepareAudioFromTmp(tmpFilePath);
+  const mediaUrl = `${env.PUBLIC_BASE_URL}/media/audios/${id}.ogg`;
+  return updateAudioFile(id, {
+    fileData: prepared.fileData,
+    mimeType: 'audio/ogg',
+    fileUrl: mediaUrl,
+    fileSizeKb: prepared.sizeKb,
+    durationSeconds: prepared.durationSeconds,
+  });
 }

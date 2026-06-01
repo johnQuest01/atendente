@@ -53,6 +53,29 @@ export async function setAudioFileUrl(id: string, fileUrl: string): Promise<void
   await query('UPDATE audios SET file_url = $2 WHERE id = $1', [id, fileUrl]);
 }
 
+export interface UpdateAudioFileInput {
+  fileData: Buffer;
+  mimeType: string;
+  fileUrl: string;
+  fileSizeKb?: number | null;
+  durationSeconds?: number | null;
+}
+
+/** Substitui apenas o arquivo de um áudio existente (mantém título, palavras-chave, etc). */
+export async function updateAudioFile(
+  id: string,
+  input: UpdateAudioFileInput,
+): Promise<Audio | null> {
+  const { rows } = await query<Audio>(
+    `UPDATE audios
+       SET file_data = $2, mime_type = $3, file_url = $4, file_size_kb = $5, duration_seconds = $6
+     WHERE id = $1
+     RETURNING ${AUDIO_COLUMNS}`,
+    [id, input.fileData, input.mimeType, input.fileUrl, input.fileSizeKb ?? null, input.durationSeconds ?? null],
+  );
+  return rows[0] ?? null;
+}
+
 export async function createAudio(input: CreateAudioInput): Promise<Audio> {
   const { rows } = await query<Audio>(
     `INSERT INTO audios

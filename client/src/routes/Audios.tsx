@@ -8,7 +8,13 @@ import { AudioPlayer } from '@/components/ui/AudioPlayer';
 import { AudioCard } from '@/components/features/AudioCard';
 import { Spinner, ErrorState, EmptyState } from '@/components/ui/States';
 import { AudioIcon, PlusIcon } from '@/components/ui/Icons';
-import { useAudios, useDeleteAudio, useUploadAudio, useUpdateAudio } from '@/hooks/useAudios';
+import {
+  useAudios,
+  useDeleteAudio,
+  useUploadAudio,
+  useUpdateAudio,
+  useReplaceAudioFile,
+} from '@/hooks/useAudios';
 import { useAudioRecorder } from '@/hooks/useAudioRecorder';
 import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
@@ -189,12 +195,21 @@ function UploadAudioModal({ open, onClose }: { open: boolean; onClose: () => voi
 
 function EditAudioModal({ audio, onClose }: { audio: Audio | null; onClose: () => void }) {
   const update = useUpdateAudio();
+  const replaceFile = useReplaceAudioFile();
+  const recorder = useAudioRecorder();
   const [title, setTitle] = useState('');
   const [category, setCategory] = useState('');
   const [situation, setSituation] = useState('');
   const [transcription, setTranscription] = useState('');
   const [keywords, setKeywords] = useState('');
   const [isActive, setIsActive] = useState(true);
+  const [newFile, setNewFile] = useState<File | null>(null);
+
+  const effectiveNew = newFile ?? recorder.file;
+  const newPreview = useMemo(
+    () => (effectiveNew ? URL.createObjectURL(effectiveNew) : null),
+    [effectiveNew],
+  );
 
   useEffect(() => {
     if (audio) {
@@ -204,8 +219,17 @@ function EditAudioModal({ audio, onClose }: { audio: Audio | null; onClose: () =
       setTranscription(audio.transcription ?? '');
       setKeywords(audio.keywords.join(', '));
       setIsActive(audio.is_active);
+      setNewFile(null);
+      recorder.reset();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audio]);
+
+  function close() {
+    setNewFile(null);
+    recorder.reset();
+    onClose();
+  }
 
   async function handleSave() {
     if (!audio) return;
@@ -223,8 +247,15 @@ function EditAudioModal({ audio, onClose }: { audio: Audio | null; onClose: () =
     };
     try {
       await update.mutateAsync({ id: audio.id, patch });
-      toast('Áudio atualizado!', 'success');
-      onClose();
+      if (effectiveNew) {
+        const form = new FormData();
+        form.append('file', effectiveNew, effectiveNew.name || 'gravacao.webm');
+        await replaceFile.mutateAsync({ id: audio.id, formData: form });
+        toast('Áudio atualizado e arquivo substituído!', 'success');
+      } else {
+        toast('Áudio atualizado!', 'success');
+      }
+      close();
     } catch (err) {
       toast(getErrorMessage(err), 'error');
     }
@@ -233,10 +264,10 @@ function EditAudioModal({ audio, onClose }: { audio: Audio | null; onClose: () =
   return (
     <Modal
       open={Boolean(audio)}
-      onClose={onClose}
+      onClose={close}
       title="Editar áudio"
       footer={
-        <Button fullWidth loading={update.isPending} onClick={handleSave}>
+        <Button fullWidth loading={update.isPending || replaceFile.isPending} onClick={handleSave}>
           Salvar alterações
         </Button>
       }
@@ -246,6 +277,36 @@ function EditAudioModal({ audio, onClose }: { audio: Audio | null; onClose: () =
           <div className="rounded-xl bg-bg p-3">
             <AudioPlayer src={audio.file_url} durationSeconds={audio.duration_seconds} />
           </div>
+
+          <div className="flex flex-col gap-2 rounded-xl border border-dashed border-border p-3">
+            <p className="text-sm font-semibold text-text-primary">Substituir áudio (opcional)</p>
+            <p className="text-xs text-text-secondary">
+              Grave de novo ou envie outro arquivo. As palavras-chave e os demais dados são mantidos.
+            </p>
+            <button
+              type="button"
+              onClick={recorder.recording ? recorder.stop : recorder.start}
+              className={`tap-scale flex items-center justify-center gap-2 rounded-2xl py-3 font-semibold text-white ${
+                recorder.recording ? 'bg-danger' : 'bg-primary'
+              }`}
+            >
+              <span className={recorder.recording ? 'animate-pulse' : ''}>●</span>
+              {recorder.recording
+                ? `Gravando... ${recorder.seconds}s (toque para parar)`
+                : 'Gravar pelo microfone'}
+            </button>
+            <p className="text-center text-xs text-text-secondary">ou</p>
+            <FileUpload accept="audio/*" onFiles={(files) => setNewFile(files[0] ?? null)} />
+            {newPreview && (
+              <div className="rounded-xl bg-bg p-3">
+                <AudioPlayer src={newPreview} />
+                <p className="mt-1 truncate text-center text-xs text-text-secondary">
+                  Novo: {effectiveNew?.name || 'gravacao.webm'}
+                </p>
+              </div>
+            )}
+          </div>
+
           <Input label="Título" value={title} onChange={(e) => setTitle(e.target.value)} />
           <Input label="Categoria" value={category} onChange={(e) => setCategory(e.target.value)} />
           <Input label="Quando usar" value={situation} onChange={(e) => setSituation(e.target.value)} />
