@@ -9,6 +9,7 @@ import { checkDbConnection, closePool } from './db';
 import { initSocket } from './socket';
 import apiRoutes from './routes';
 import webhookRoutes from './routes/webhook.routes';
+import mediaRoutes from './routes/media.routes';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 
 const app = express();
@@ -24,6 +25,10 @@ app.use(express.urlencoded({ extended: true }));
 
 // Servir arquivos enviados (áudios/imagens) em dev local.
 app.use('/uploads', express.static(env.uploadDirAbsolute));
+
+// Mídia servida a partir do banco (estável, sobrevive a deploys). Sem auth:
+// a Z-API precisa baixar o áudio para enviar ao cliente no WhatsApp.
+app.use('/media', mediaRoutes);
 
 // Healthcheck.
 app.get('/health', async (_req, res) => {

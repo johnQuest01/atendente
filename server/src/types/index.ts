@@ -74,6 +74,10 @@ export interface Audio {
   is_active: boolean;
   created_by: string | null;
   created_at: string;
+  // Tipo do arquivo guardado no banco (ex.: 'audio/ogg').
+  mime_type?: string | null;
+  // Indica se há bytes do áudio salvos no banco (sem trazer o blob nas listas).
+  has_file_data?: boolean;
 }
 
 export interface TextScript {

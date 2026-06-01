@@ -35,7 +35,11 @@ export async function dispatchAudio(ctx: DispatchContext, audioId: string): Prom
   const audio = await getAudioById(audioId);
   if (!audio || !audio.is_active) return null;
 
-  const publicUrl = toCurrentPublicUrl(audio.file_url);
+  // Se o áudio está guardado no banco, usamos a rota estável /media (acessível
+  // pela Z-API mesmo em produção). Senão, caímos no file_url salvo (legado).
+  const publicUrl = audio.has_file_data
+    ? `${env.PUBLIC_BASE_URL}/media/audios/${audio.id}.ogg`
+    : toCurrentPublicUrl(audio.file_url);
   const zapiId = await whatsapp.sendAudio(ctx.client.phone, publicUrl);
   await incrementAudioUsage(audio.id);
 

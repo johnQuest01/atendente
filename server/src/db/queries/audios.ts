@@ -12,26 +12,53 @@ export interface CreateAudioInput {
   transcription?: string | null;
   keywords?: string[];
   createdBy?: string | null;
+  // Conteúdo do áudio (.ogg) guardado direto no banco.
+  fileData?: Buffer | null;
+  mimeType?: string | null;
 }
+
+// Colunas seguras para listar/retornar na API: NUNCA inclui o blob `file_data`
+// (pesado). `has_file_data` indica se há bytes salvos no banco.
+const AUDIO_COLUMNS = `
+  id, title, category, tone, situation, file_url, file_size_kb, duration_seconds,
+  transcription, keywords, usage_count, is_active, created_by, created_at, mime_type,
+  (file_data IS NOT NULL) AS has_file_data
+`;
 
 export async function listAudios(activeOnly = false): Promise<Audio[]> {
   const where = activeOnly ? 'WHERE is_active = true' : '';
   const { rows } = await query<Audio>(
-    `SELECT * FROM audios ${where} ORDER BY category ASC, created_at DESC`,
+    `SELECT ${AUDIO_COLUMNS} FROM audios ${where} ORDER BY category ASC, created_at DESC`,
   );
   return rows;
 }
 
 export async function getAudioById(id: string): Promise<Audio | null> {
-  return queryOne<Audio>('SELECT * FROM audios WHERE id = $1', [id]);
+  return queryOne<Audio>(`SELECT ${AUDIO_COLUMNS} FROM audios WHERE id = $1`, [id]);
+}
+
+/** Retorna os bytes do áudio (para servir em /media/audios/:id). */
+export async function getAudioBinary(
+  id: string,
+): Promise<{ data: Buffer; mime: string } | null> {
+  const row = await queryOne<{ file_data: Buffer | null; mime_type: string | null }>(
+    'SELECT file_data, mime_type FROM audios WHERE id = $1',
+    [id],
+  );
+  if (!row || !row.file_data) return null;
+  return { data: row.file_data, mime: row.mime_type ?? 'audio/ogg' };
+}
+
+export async function setAudioFileUrl(id: string, fileUrl: string): Promise<void> {
+  await query('UPDATE audios SET file_url = $2 WHERE id = $1', [id, fileUrl]);
 }
 
 export async function createAudio(input: CreateAudioInput): Promise<Audio> {
   const { rows } = await query<Audio>(
     `INSERT INTO audios
-       (title, category, tone, situation, file_url, file_size_kb, duration_seconds, transcription, keywords, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-     RETURNING *`,
+       (title, category, tone, situation, file_url, file_size_kb, duration_seconds, transcription, keywords, created_by, file_data, mime_type)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+     RETURNING ${AUDIO_COLUMNS}`,
     [
       input.title,
       input.category,
@@ -43,6 +70,8 @@ export async function createAudio(input: CreateAudioInput): Promise<Audio> {
       input.transcription ?? null,
       input.keywords ?? [],
       input.createdBy ?? null,
+      input.fileData ?? null,
+      input.mimeType ?? null,
     ],
   );
   return rows[0];

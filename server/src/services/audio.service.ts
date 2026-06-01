@@ -6,7 +6,7 @@ import { env } from '../config/env';
 import { logger } from '../config/logger';
 import { AppError } from '../utils/errors';
 import { persistFile, cleanupTmp } from './storage.service';
-import { createAudio, type CreateAudioInput } from '../db/queries/audios';
+import { createAudio, setAudioFileUrl, type CreateAudioInput } from '../db/queries/audios';
 import type { Audio } from '../types';
 
 ffmpeg.setFfmpegPath(ffmpegPath.path);
@@ -67,6 +67,11 @@ export async function processAndStoreAudio(input: ProcessAudioInput): Promise<Au
     const { outputPath, durationSeconds } = await convertToOggOpus(input.tmpFilePath);
     convertedPath = outputPath;
 
+    // Lê os bytes do .ogg ANTES de mover o arquivo: guardamos o conteúdo no
+    // banco (Neon) para que o áudio seja sempre acessível pela Z-API, mesmo
+    // que o disco do servidor seja efêmero ou o host público mude.
+    const fileData = await fs.readFile(outputPath);
+
     const filename = path.basename(outputPath);
     const stored = await persistFile(outputPath, 'audios', filename);
 
@@ -81,8 +86,17 @@ export async function processAndStoreAudio(input: ProcessAudioInput): Promise<Au
       transcription: input.transcription ?? null,
       keywords: input.keywords ?? [],
       createdBy: input.createdBy ?? null,
+      fileData,
+      mimeType: 'audio/ogg',
     };
-    return await createAudio(dbInput);
+    const audio = await createAudio(dbInput);
+
+    // URL pública estável servida pelo próprio backend a partir do banco.
+    // Isso garante que tanto o painel quanto a Z-API consigam tocar o áudio.
+    const mediaUrl = `${env.PUBLIC_BASE_URL}/media/audios/${audio.id}.ogg`;
+    await setAudioFileUrl(audio.id, mediaUrl);
+    audio.file_url = mediaUrl;
+    return audio;
   } finally {
     await cleanupTmp(input.tmpFilePath);
     if (convertedPath) {
