@@ -7,6 +7,7 @@ import {
   markInboundAsRead,
   updateConversationStatus,
 } from '../db/queries/conversations';
+import { deleteAllMessages, deleteMessages } from '../db/queries/messages';
 import { queryOne } from '../db/index';
 import { dispatchAudio, dispatchProduct, dispatchText } from '../services/dispatch.service';
 import { emitConversationUpdated } from '../socket';
@@ -33,6 +34,10 @@ export const sendAudioSchema = z.object({
 
 export const sendProductSchema = z.object({
   product_id: z.string().uuid(),
+});
+
+export const deleteMessagesSchema = z.object({
+  ids: z.array(z.string().uuid()).min(1).max(500),
 });
 
 export async function getConversations(req: Request, res: Response): Promise<void> {
@@ -95,6 +100,29 @@ export async function sendManualAudio(req: Request, res: Response): Promise<void
   const message = await dispatchAudio({ conversation, client }, audio_id);
   if (!message) throw new NotFoundError('Áudio');
   res.status(201).json({ message });
+}
+
+/** Apaga mensagens selecionadas de uma conversa. */
+export async function removeMessages(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as z.infer<typeof idParamSchema>;
+  const { ids } = req.body as z.infer<typeof deleteMessagesSchema>;
+
+  const conversation = await getConversationById(id);
+  if (!conversation) throw new NotFoundError('Conversa');
+
+  const deleted = await deleteMessages(id, ids);
+  res.json({ deleted });
+}
+
+/** Limpa todo o histórico de mensagens de uma conversa. */
+export async function clearConversation(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as z.infer<typeof idParamSchema>;
+
+  const conversation = await getConversationById(id);
+  if (!conversation) throw new NotFoundError('Conversa');
+
+  const deleted = await deleteAllMessages(id);
+  res.json({ deleted });
 }
 
 /** Envio manual de um produto pela atendente. */

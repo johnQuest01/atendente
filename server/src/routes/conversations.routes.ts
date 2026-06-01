@@ -3,11 +3,14 @@ import { asyncHandler } from '../utils/asyncHandler';
 import { validate } from '../middleware/validate';
 import { authenticate } from '../middleware/auth.middleware';
 import {
+  clearConversation,
+  deleteMessagesSchema,
   getConversations,
   getConversationDetail,
   idParamSchema,
   listQuerySchema,
   patchConversationStatus,
+  removeMessages,
   sendAudioSchema,
   sendManualAudio,
   sendManualMessage,
@@ -43,5 +46,11 @@ router.post(
   validate({ params: idParamSchema, body: sendProductSchema }),
   asyncHandler(sendManualProduct),
 );
+router.post(
+  '/:id/messages/delete',
+  validate({ params: idParamSchema, body: deleteMessagesSchema }),
+  asyncHandler(removeMessages),
+);
+router.delete('/:id/messages', validate({ params: idParamSchema }), asyncHandler(clearConversation));
 
 export default router;

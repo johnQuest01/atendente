@@ -5,10 +5,20 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Toggle } from '@/components/ui/Toggle';
+import { Input } from '@/components/ui/Input';
+import { TrashIcon } from '@/components/ui/Icons';
 import { useAuth } from '@/hooks/useAuth';
 import { useAgentStatus, useSetAgentStatus, AGENT_QUERY_KEY } from '@/hooks/useAgent';
+import {
+  useAddBlocked,
+  useBlockedNumbers,
+  useDeleteBlocked,
+  useSetBlockedActive,
+} from '@/hooks/useBlocked';
 import { useSocket } from '@/hooks/useSocket';
-import { initials } from '@/utils/formatters';
+import { toast } from '@/store/appStore';
+import { getErrorMessage } from '@/services/api';
+import { formatPhone, initials } from '@/utils/formatters';
 
 interface HealthData {
   status: string;
@@ -132,11 +142,91 @@ export default function Settings() {
           </p>
         </Card>
 
+        <BlockedNumbersCard />
+
         <Button variant="danger" fullWidth onClick={logout}>
           Sair da conta
         </Button>
       </div>
     </>
+  );
+}
+
+function BlockedNumbersCard() {
+  const { data: blocked } = useBlockedNumbers();
+  const add = useAddBlocked();
+  const setActive = useSetBlockedActive();
+  const remove = useDeleteBlocked();
+  const [phone, setPhone] = useState('');
+
+  async function handleAdd() {
+    const value = phone.trim();
+    if (!value) return;
+    try {
+      await add.mutateAsync({ phone: value });
+      setPhone('');
+      toast('Número adicionado à lista de bloqueio.', 'success');
+    } catch (err) {
+      toast(getErrorMessage(err, 'Falha ao adicionar número.'), 'error');
+    }
+  }
+
+  return (
+    <Card>
+      <h2 className="text-sm font-bold text-text-primary">Números bloqueados</h2>
+      <p className="mt-1 text-sm text-text-secondary">
+        Mensagens de números com o bloqueio ligado são ignoradas: não aparecem no painel e a IA
+        não responde. Use a alavanca para ligar/desligar sem apagar.
+      </p>
+
+      <div className="mt-3 flex items-end gap-2">
+        <div className="flex-1">
+          <Input
+            label="Adicionar número (com DDD)"
+            placeholder="Ex.: 11 99999-8888"
+            inputMode="tel"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void handleAdd();
+              }
+            }}
+          />
+        </div>
+        <Button onClick={handleAdd} loading={add.isPending} disabled={!phone.trim()}>
+          Adicionar
+        </Button>
+      </div>
+
+      <ul className="mt-3 flex flex-col divide-y divide-border">
+        {(blocked ?? []).map((b) => (
+          <li key={b.id} className="flex items-center justify-between gap-3 py-2.5">
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium text-text-primary">{formatPhone(b.phone)}</p>
+              <p className="text-xs text-text-secondary">{b.is_active ? 'Bloqueado' : 'Bloqueio desligado'}</p>
+            </div>
+            <Toggle
+              checked={b.is_active}
+              disabled={setActive.isPending}
+              onChange={(next) => setActive.mutate({ id: b.id, is_active: next })}
+              label="Ligar ou desligar o bloqueio deste número"
+            />
+            <button
+              onClick={() => remove.mutate(b.id)}
+              className="tap-scale rounded-full p-2 text-danger"
+              aria-label="Remover número"
+            >
+              <TrashIcon width={18} height={18} />
+            </button>
+          </li>
+        ))}
+        {(blocked ?? []).length === 0 && (
+          <li className="py-4 text-center text-sm text-text-secondary">Nenhum número bloqueado.</li>
+        )}
+      </ul>
+    </Card>
   );
 }
 

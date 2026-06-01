@@ -43,3 +43,21 @@ export async function markRead(zapiMessageId: string): Promise<void> {
     [zapiMessageId],
   );
 }
+
+/** Apaga mensagens específicas de uma conversa. Retorna a quantidade removida. */
+export async function deleteMessages(conversationId: string, ids: string[]): Promise<number> {
+  if (ids.length === 0) return 0;
+  const { rowCount } = await query(
+    `DELETE FROM messages_log WHERE conversation_id = $1 AND id = ANY($2::uuid[])`,
+    [conversationId, ids],
+  );
+  return rowCount ?? 0;
+}
+
+/** Apaga TODO o histórico de mensagens de uma conversa. Retorna a quantidade removida. */
+export async function deleteAllMessages(conversationId: string): Promise<number> {
+  const { rowCount } = await query(`DELETE FROM messages_log WHERE conversation_id = $1`, [
+    conversationId,
+  ]);
+  return rowCount ?? 0;
+}

@@ -10,6 +10,7 @@ import {
 import { listProducts } from '../db/queries/products';
 import { insertMessage, markDelivered, markRead } from '../db/queries/messages';
 import { isAgentEnabled } from '../db/queries/settings';
+import { isPhoneBlocked } from '../db/queries/blocked';
 import { emitNewMessage, emitNewConversation } from '../socket';
 import { matchIntent, getTriggerPhrases } from '../services/matcher.service';
 import { extractClientInfo, generateReply } from '../services/claude.service';
@@ -68,6 +69,13 @@ export async function handleWhatsappWebhook(req: Request, res: Response): Promis
   // Ignora mensagens enviadas pela própria conta.
   if (inbound.fromMe) {
     res.status(200).json({ ok: true, ignored: 'fromMe' });
+    return;
+  }
+
+  // Número bloqueado: ignora totalmente (não salva, não responde, não exibe).
+  if (await isPhoneBlocked(inbound.phone)) {
+    logger.info(`Mensagem de número bloqueado ignorada: ${inbound.phone}`);
+    res.status(200).json({ ok: true, ignored: 'blocked' });
     return;
   }
 

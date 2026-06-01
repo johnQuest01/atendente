@@ -5,10 +5,13 @@ import { PageHeader } from '@/components/layout/AppShell';
 import { MessageBubble } from '@/components/features/MessageBubble';
 import { Spinner, ErrorState } from '@/components/ui/States';
 import { Modal } from '@/components/ui/Modal';
+import { Button } from '@/components/ui/Button';
 import { AudioPlayer } from '@/components/ui/AudioPlayer';
-import { BackIcon, SendIcon, AudioIcon, ProductIcon } from '@/components/ui/Icons';
+import { BackIcon, SendIcon, AudioIcon, ProductIcon, TrashIcon } from '@/components/ui/Icons';
 import {
+  useClearConversation,
   useConversationDetail,
+  useDeleteMessages,
   useSendAudioToConversation,
   useSendMessage,
   useSendProductToConversation,
@@ -29,10 +32,60 @@ export default function ConversationDetail() {
   const sendMessage = useSendMessage(id ?? '');
   const sendAudio = useSendAudioToConversation(id ?? '');
   const sendProduct = useSendProductToConversation(id ?? '');
+  const deleteMessages = useDeleteMessages(id ?? '');
+  const clearConversation = useClearConversation(id ?? '');
 
   const [text, setText] = useState('');
   const [sheet, setSheet] = useState<'audio' | 'product' | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [confirm, setConfirm] = useState<'selected' | 'all' | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  function enterSelection(messageId: string) {
+    setSelectionMode(true);
+    setSelectedIds(new Set([messageId]));
+  }
+
+  function toggleSelect(messageId: string) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(messageId)) next.delete(messageId);
+      else next.add(messageId);
+      return next;
+    });
+  }
+
+  function exitSelection() {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+  }
+
+  async function handleDeleteSelected() {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    try {
+      await deleteMessages.mutateAsync(ids);
+      toast(`${ids.length} mensagem(ns) apagada(s).`, 'success');
+      exitSelection();
+    } catch (err) {
+      toast(getErrorMessage(err, 'Falha ao apagar.'), 'error');
+    } finally {
+      setConfirm(null);
+    }
+  }
+
+  async function handleClearAll() {
+    try {
+      await clearConversation.mutateAsync();
+      toast('Histórico da conversa apagado.', 'success');
+      exitSelection();
+    } catch (err) {
+      toast(getErrorMessage(err, 'Falha ao limpar histórico.'), 'error');
+    } finally {
+      setConfirm(null);
+    }
+  }
 
   useEffect(() => {
     if (!id) return;
@@ -78,24 +131,63 @@ export default function ConversationDetail() {
 
   return (
     <div className="flex h-full flex-col">
-      <PageHeader
-        title={clientName}
-        subtitle={data.client ? formatPhone(data.client.phone) : undefined}
-        leading={
-          <button onClick={() => navigate('/conversas')} className="tap-scale -ml-1 rounded-full p-1 text-primary md:hidden">
-            <BackIcon width={24} height={24} />
-          </button>
-        }
-        action={
-          <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary-light text-sm font-semibold text-primary">
-            {initials(data.client?.name ?? null, data.client?.phone)}
-          </div>
-        }
-      />
+      {selectionMode ? (
+        <PageHeader
+          title={`${selectedIds.size} selecionada(s)`}
+          subtitle="Toque nas mensagens para marcar"
+          leading={
+            <button onClick={exitSelection} className="tap-scale -ml-1 rounded-full p-1 text-primary" aria-label="Cancelar">
+              <BackIcon width={24} height={24} />
+            </button>
+          }
+          action={
+            <button
+              onClick={() => setConfirm('selected')}
+              disabled={selectedIds.size === 0 || deleteMessages.isPending}
+              className="tap-scale rounded-full p-2 text-danger disabled:opacity-40"
+              aria-label="Apagar selecionadas"
+            >
+              <TrashIcon width={22} height={22} />
+            </button>
+          }
+        />
+      ) : (
+        <PageHeader
+          title={clientName}
+          subtitle={data.client ? formatPhone(data.client.phone) : undefined}
+          leading={
+            <button onClick={() => navigate('/conversas')} className="tap-scale -ml-1 rounded-full p-1 text-primary md:hidden">
+              <BackIcon width={24} height={24} />
+            </button>
+          }
+          action={
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setConfirm('all')}
+                className="tap-scale rounded-full p-2 text-text-secondary"
+                aria-label="Limpar histórico"
+                title="Limpar histórico"
+              >
+                <TrashIcon width={20} height={20} />
+              </button>
+              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary-light text-sm font-semibold text-primary">
+                {initials(data.client?.name ?? null, data.client?.phone)}
+              </div>
+            </div>
+          }
+        />
+      )}
 
       <div className="no-scrollbar flex-1 space-y-2 overflow-y-auto bg-bg px-3 py-4">
         {data.messages.map((m) => (
-          <MessageBubble key={m.id} message={m} />
+          <MessageBubble
+            key={m.id}
+            message={m}
+            selectionMode={selectionMode}
+            selected={selectedIds.has(m.id)}
+            onLongPress={enterSelection}
+            onToggleSelect={toggleSelect}
+          />
         ))}
         <div ref={bottomRef} />
       </div>
@@ -156,6 +248,33 @@ export default function ConversationDetail() {
           }
         }}
       />
+
+      <Modal
+        open={confirm !== null}
+        onClose={() => setConfirm(null)}
+        title={confirm === 'all' ? 'Limpar histórico' : 'Apagar mensagens'}
+      >
+        <div className="flex flex-col gap-4">
+          <p className="text-sm text-text-secondary">
+            {confirm === 'all'
+              ? 'Isso vai apagar TODAS as mensagens desta conversa. Essa ação não pode ser desfeita.'
+              : `Apagar ${selectedIds.size} mensagem(ns) selecionada(s)? Essa ação não pode ser desfeita.`}
+          </p>
+          <div className="flex gap-2">
+            <Button variant="secondary" fullWidth onClick={() => setConfirm(null)}>
+              Cancelar
+            </Button>
+            <Button
+              variant="danger"
+              fullWidth
+              loading={deleteMessages.isPending || clearConversation.isPending}
+              onClick={confirm === 'all' ? handleClearAll : handleDeleteSelected}
+            >
+              Apagar
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

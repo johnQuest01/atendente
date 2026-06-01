@@ -87,6 +87,39 @@ export function useSendProductToConversation(conversationId: string) {
   });
 }
 
+export function useDeleteMessages(conversationId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (ids: string[]) => {
+      const { data } = await api.post<{ deleted: number }>(
+        `/conversations/${conversationId}/messages/delete`,
+        { ids },
+      );
+      return data.deleted;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['conversation', conversationId] });
+      void qc.invalidateQueries({ queryKey: ['conversations'] });
+    },
+  });
+}
+
+export function useClearConversation(conversationId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const { data } = await api.delete<{ deleted: number }>(
+        `/conversations/${conversationId}/messages`,
+      );
+      return data.deleted;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['conversation', conversationId] });
+      void qc.invalidateQueries({ queryKey: ['conversations'] });
+    },
+  });
+}
+
 export function useUpdateConversationStatus() {
   const qc = useQueryClient();
   return useMutation({
