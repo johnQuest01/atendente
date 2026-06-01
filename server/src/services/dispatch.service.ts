@@ -1,12 +1,13 @@
 import { env } from '../config/env';
-import { getAudioById, incrementAudioUsage } from '../db/queries/audios';
+import { logger } from '../config/logger';
+import { getAudioById, getAudioBinary, incrementAudioUsage } from '../db/queries/audios';
 import { getScriptById, incrementScriptUsage } from '../db/queries/messages_scripts';
 import { getProductById } from '../db/queries/products';
 import { insertMessage } from '../db/queries/messages';
 import { emitNewMessage } from '../socket';
 import { renderTemplate, formatBRL } from '../utils/text';
 import * as whatsapp from './whatsapp.service';
-import type { Client, Conversation, MessageLog } from '../types';
+import type { Audio, Client, Conversation, MessageLog } from '../types';
 
 interface DispatchContext {
   conversation: Conversation;
@@ -30,18 +31,65 @@ function toCurrentPublicUrl(fileUrl: string): string {
   }
 }
 
+/** URL pública (rota /media ou file_url legado) usada para tocar o áudio no painel. */
+function audioPublicUrl(audio: Audio): string {
+  // Se o áudio está guardado no banco, usamos a rota estável /media (acessível
+  // pela Z-API mesmo em produção). Senão, caímos no file_url salvo (legado).
+  return audio.has_file_data
+    ? `${env.PUBLIC_BASE_URL}/media/audios/${audio.id}.ogg`
+    : toCurrentPublicUrl(audio.file_url);
+}
+
+/**
+ * Envia o áudio ao provedor de WhatsApp. Estratégia (em ordem de robustez):
+ *   1. Base64 direto do banco — não depende de a Z-API conseguir BAIXAR uma URL
+ *      pública. Era exatamente isso que falhava em produção: o host público
+ *      (Render efêmero / túnel cloudflared expirado) devolvia 404 e a Z-API
+ *      simplesmente não enviava o áudio.
+ *   2. URL pública (/media ou file_url legado) — usada quando não há bytes no
+ *      banco (áudios antigos) ou se o envio por base64 falhar.
+ * Retorna o id da mensagem na Z-API (ou null se o provedor não devolver).
+ */
+async function sendAudioToProvider(phone: string, audio: Audio, publicUrl: string): Promise<string | null> {
+  if (audio.has_file_data) {
+    const bin = await getAudioBinary(audio.id);
+    if (bin) {
+      const dataUri = `data:${bin.mime || 'audio/ogg'};base64,${bin.data.toString('base64')}`;
+      try {
+        return await whatsapp.sendAudio(phone, dataUri);
+      } catch (err) {
+        logger.warn(
+          `Envio de áudio por base64 falhou (audio=${audio.id}); tentando por URL pública.`,
+          err,
+        );
+      }
+    } else {
+      logger.warn(`Áudio ${audio.id} marcado com has_file_data mas sem bytes no banco.`);
+    }
+  }
+  return whatsapp.sendAudio(phone, publicUrl);
+}
+
 /** Envia um áudio do banco para o cliente e registra no log. */
 export async function dispatchAudio(ctx: DispatchContext, audioId: string): Promise<MessageLog | null> {
   const audio = await getAudioById(audioId);
   if (!audio || !audio.is_active) return null;
 
-  // Se o áudio está guardado no banco, usamos a rota estável /media (acessível
-  // pela Z-API mesmo em produção). Senão, caímos no file_url salvo (legado).
-  const publicUrl = audio.has_file_data
-    ? `${env.PUBLIC_BASE_URL}/media/audios/${audio.id}.ogg`
-    : toCurrentPublicUrl(audio.file_url);
-  const zapiId = await whatsapp.sendAudio(ctx.client.phone, publicUrl);
+  const publicUrl = audioPublicUrl(audio);
+
+  let zapiId: string | null;
+  try {
+    zapiId = await sendAudioToProvider(ctx.client.phone, audio, publicUrl);
+  } catch (err) {
+    // Não derruba o fluxo nem registra uma mensagem "enviada" que nunca chegou:
+    // retornando null, o webhook cai no fallback (Claude/texto) e o cliente não
+    // fica no vácuo.
+    logger.error(`Falha ao enviar áudio "${audio.title}" (${audio.id}) pela Z-API`, err);
+    return null;
+  }
+
   await incrementAudioUsage(audio.id);
+  logger.info(`Áudio "${audio.title}" enviado para ${ctx.client.phone} (zapiId=${zapiId ?? 'n/d'}).`);
 
   const msg = await insertMessage({
     conversationId: ctx.conversation.id,
@@ -124,4 +172,3 @@ export async function dispatchText(ctx: DispatchContext, text: string): Promise<
   emitNewMessage(ctx.conversation.id, msg);
   return msg;
 }
-
