@@ -11,6 +11,7 @@ export const SOCKET_EVENTS = {
   CONVERSATION_UPDATED: 'conversation:updated',
   CONVERSATION_NEW: 'conversation:new',
   MESSAGE_NEW: 'message:new',
+  AGENT_STATUS: 'agent:status',
 } as const;
 
 export function initSocket(httpServer: HttpServer): SocketIOServer {
@@ -66,4 +67,10 @@ export function emitConversationUpdated(conversation: Conversation): void {
 export function emitNewConversation(conversation: Conversation): void {
   if (!io) return;
   io.emit(SOCKET_EVENTS.CONVERSATION_NEW, conversation);
+}
+
+/** Avisa todos os painéis que o atendente de IA foi ligado/desligado. */
+export function emitAgentStatus(enabled: boolean): void {
+  if (!io) return;
+  io.emit(SOCKET_EVENTS.AGENT_STATUS, { enabled });
 }

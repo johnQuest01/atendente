@@ -1,9 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { PageHeader } from '@/components/layout/AppShell';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
+import { Toggle } from '@/components/ui/Toggle';
 import { useAuth } from '@/hooks/useAuth';
+import { useAgentStatus, useSetAgentStatus, AGENT_QUERY_KEY } from '@/hooks/useAgent';
+import { useSocket } from '@/hooks/useSocket';
 import { initials } from '@/utils/formatters';
 
 interface HealthData {
@@ -25,6 +29,22 @@ export default function Settings() {
   const { user, logout } = useAuth();
   const [health, setHealth] = useState<HealthData | null>(null);
   const [loading, setLoading] = useState(false);
+
+  const qc = useQueryClient();
+  const { data: agentEnabled } = useAgentStatus();
+  const setAgent = useSetAgentStatus();
+
+  // Sincroniza o status em tempo real se ele for alterado em outro dispositivo.
+  const onAgentStatus = useCallback(
+    (payload: unknown) => {
+      const enabled = (payload as { enabled?: boolean } | undefined)?.enabled;
+      if (typeof enabled === 'boolean') qc.setQueryData(AGENT_QUERY_KEY, enabled);
+    },
+    [qc],
+  );
+  useSocket({ 'agent:status': onAgentStatus });
+
+  const isOn = agentEnabled ?? true;
 
   async function checkHealth() {
     setLoading(true);
@@ -48,6 +68,28 @@ export default function Settings() {
       <PageHeader title="Configurações" subtitle="Perfil e integrações" />
 
       <div className="flex flex-col gap-4 p-4">
+        <Card className={isOn ? 'border-2 border-success/30' : 'border-2 border-danger/40'}>
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-bold text-text-primary">Atendente de IA</h2>
+                <Badge tone={isOn ? 'success' : 'danger'}>{isOn ? 'Ligado' : 'Desligado'}</Badge>
+              </div>
+              <p className="mt-1 text-sm text-text-secondary">
+                {isOn
+                  ? 'A IA responde automaticamente os clientes no WhatsApp.'
+                  : 'A IA está pausada. As mensagens chegam no painel, mas quem responde é você.'}
+              </p>
+            </div>
+            <Toggle
+              checked={isOn}
+              disabled={setAgent.isPending}
+              onChange={(next) => setAgent.mutate(next)}
+              label="Ligar ou desligar o atendente de IA"
+            />
+          </div>
+        </Card>
+
         <Card className="flex items-center gap-4">
           <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary-light text-lg font-bold text-primary">
             {initials(user?.name ?? null)}

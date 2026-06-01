@@ -6,6 +6,7 @@ import messagesRoutes from './messages.routes';
 import productsRoutes from './products.routes';
 import keywordsRoutes from './keywords.routes';
 import dashboardRoutes from './dashboard.routes';
+import settingsRoutes from './settings.routes';
 
 const api = Router();
 
@@ -16,5 +17,6 @@ api.use('/messages', messagesRoutes);
 api.use('/products', productsRoutes);
 api.use('/keywords', keywordsRoutes);
 api.use('/dashboard', dashboardRoutes);
+api.use('/settings', settingsRoutes);
 
 export default api;

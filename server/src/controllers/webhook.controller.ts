@@ -9,6 +9,7 @@ import {
 } from '../db/queries/conversations';
 import { listProducts } from '../db/queries/products';
 import { insertMessage, markDelivered, markRead } from '../db/queries/messages';
+import { isAgentEnabled } from '../db/queries/settings';
 import { emitNewMessage, emitNewConversation } from '../socket';
 import { matchIntent, getTriggerPhrases } from '../services/matcher.service';
 import { extractClientInfo, generateReply } from '../services/claude.service';
@@ -85,15 +86,13 @@ async function processInbound(inbound: NormalizedInbound): Promise<void> {
   const conversation = existing ?? (await findOrCreateOpenConversation(client.id));
   if (!existing) emitNewConversation(conversation);
 
-  // Marca a mensagem como lida no WhatsApp (tique azul): o cliente vê que a
-  // Mayra "abriu" o áudio/mensagem. Best-effort, não bloqueia a resposta.
-  if (inbound.messageId) {
-    void markAsRead(inbound.phone, inbound.messageId).catch((err) =>
-      logger.warn('Falha ao marcar mensagem como lida (tique azul)', err),
-    );
-  }
+  // Lê o flag global (com cache): se o atendente de IA estiver desligado, um
+  // humano vai responder — então NÃO chamamos Claude/Z-API para responder.
+  const agentEnabled = await isAgentEnabled();
 
   // Áudio recebido do cliente: tenta transcrever para que a IA "entenda".
+  // Mantemos a transcrição mesmo com o agente desligado, pois ajuda o operador
+  // humano a ler o conteúdo do áudio direto no painel.
   let transcription: string | null = null;
   if (inbound.type === 'audio') {
     transcription = await transcribeInboundAudio(inbound);
@@ -111,6 +110,21 @@ async function processInbound(inbound: NormalizedInbound): Promise<void> {
     zapiMessageId: inbound.messageId,
   });
   emitNewMessage(conversation.id, inboundMsg);
+
+  // Agente desligado: mensagem registrada e exibida no painel, sem resposta
+  // automática e sem tique azul (o humano decide quando ler/responder).
+  if (!agentEnabled) {
+    logger.info('Atendente de IA desligado — mensagem registrada, sem resposta automática.');
+    return;
+  }
+
+  // Marca a mensagem como lida no WhatsApp (tique azul): o cliente vê que a
+  // Mayra "abriu" o áudio/mensagem. Best-effort, não bloqueia a resposta.
+  if (inbound.messageId) {
+    void markAsRead(inbound.phone, inbound.messageId).catch((err) =>
+      logger.warn('Falha ao marcar mensagem como lida (tique azul)', err),
+    );
+  }
 
   const ctx = { conversation, client };
 
