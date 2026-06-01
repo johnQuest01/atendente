@@ -10,7 +10,9 @@ services:
     plan: starter
     region: oregon
     branch: main
-    buildCommand: npm install && npm run build:server && npm run migrate && npm run seed --workspace server
+    # --include=dev garante que as devDependencies (typescript, @types/*) sejam
+    # instaladas no build mesmo com NODE_ENV=production (sem elas o tsc falha).
+    buildCommand: npm install --include=dev && npm run build:server && npm run migrate && npm run seed --workspace server
     startCommand: npm run start --workspace server
     healthCheckPath: /health
     # Disco persistente: os áudios/imagens enviados ficam aqui (não somem em deploy).
