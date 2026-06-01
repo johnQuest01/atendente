@@ -8,7 +8,7 @@ import {
   getRecentMessagesForAI,
 } from '../db/queries/conversations';
 import { listProducts } from '../db/queries/products';
-import { insertMessage, markDelivered, markRead } from '../db/queries/messages';
+import { insertMessage, markDelivered, markRead, inboundMessageExists } from '../db/queries/messages';
 import { isAgentEnabled } from '../db/queries/settings';
 import { isPhoneBlocked } from '../db/queries/blocked';
 import { emitNewMessage, emitNewConversation } from '../socket';
@@ -88,6 +88,14 @@ export async function handleWhatsappWebhook(req: Request, res: Response): Promis
 }
 
 async function processInbound(inbound: NormalizedInbound): Promise<void> {
+  // Idempotência: a Z-API pode reenviar o mesmo webhook (retries). Se já
+  // registramos esta mensagem, não processamos de novo (evita resposta
+  // automática duplicada e custo desnecessário de IA).
+  if (inbound.messageId && (await inboundMessageExists(inbound.messageId))) {
+    logger.info(`Mensagem duplicada ignorada (já processada): ${inbound.messageId}`);
+    return;
+  }
+
   const client = await findOrCreateClient(inbound.phone, inbound.senderName);
 
   const existing = await findOpenConversationByClient(client.id);

@@ -7,9 +7,11 @@ import {
   listProducts,
   updateProduct,
 } from '../db/queries/products';
-import { persistFile, cleanupTmp } from '../services/storage.service';
-import { NotFoundError } from '../utils/errors';
-import path from 'node:path';
+import fs from 'node:fs/promises';
+import { cleanupTmp } from '../services/storage.service';
+import { insertMediaFile } from '../db/queries/media_files';
+import { env } from '../config/env';
+import { AppError, NotFoundError } from '../utils/errors';
 
 export const idParamSchema = z.object({ id: z.string().uuid() });
 
@@ -77,17 +79,27 @@ export async function removeProduct(req: Request, res: Response): Promise<void> 
   res.status(204).send();
 }
 
-/** Upload de uma ou mais imagens; retorna as URLs públicas. */
+/** Upload de uma ou mais imagens; guarda no banco e retorna URLs estáveis /media. */
 export async function uploadProductImages(req: Request, res: Response): Promise<void> {
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+  if (files.length === 0) throw new AppError('Nenhuma imagem enviada.', 422, 'NO_FILE');
+
   const urls: string[] = [];
-  for (const file of files) {
-    const filename = `${Date.now()}-${path.basename(file.filename)}`;
-    const stored = await persistFile(file.path, 'products', filename).catch(async (err) => {
-      await cleanupTmp(file.path);
-      throw err;
-    });
-    urls.push(stored.url);
+  try {
+    for (const file of files) {
+      const data = await fs.readFile(file.path);
+      const id = await insertMediaFile({
+        kind: 'image',
+        mime: file.mimetype || 'image/jpeg',
+        data,
+        sizeKb: Math.round(data.length / 1024),
+      });
+      // URL pública estável servida pelo banco (acessível pela Z-API e sobrevive a deploys).
+      urls.push(`${env.PUBLIC_BASE_URL}/media/files/${id}`);
+    }
+  } finally {
+    for (const file of files) await cleanupTmp(file.path);
   }
+
   res.status(201).json({ urls });
 }

@@ -114,7 +114,7 @@ export async function updateAudio(
        keywords = COALESCE($7, keywords),
        is_active = COALESCE($8, is_active)
      WHERE id = $1
-     RETURNING *`,
+     RETURNING ${AUDIO_COLUMNS}`,
     [
       id,
       patch.title ?? null,

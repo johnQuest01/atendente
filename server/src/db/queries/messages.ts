@@ -30,6 +30,18 @@ export async function insertMessage(input: InsertMessageInput): Promise<MessageL
   return rows[0];
 }
 
+/** Indica se já existe uma mensagem RECEBIDA com este id da Z-API (evita processar 2x). */
+export async function inboundMessageExists(zapiMessageId: string): Promise<boolean> {
+  const { rows } = await query<{ exists: boolean }>(
+    `SELECT EXISTS(
+       SELECT 1 FROM messages_log
+       WHERE zapi_message_id = $1 AND direction = 'inbound'
+     ) AS exists`,
+    [zapiMessageId],
+  );
+  return rows[0]?.exists ?? false;
+}
+
 export async function markDelivered(zapiMessageId: string): Promise<void> {
   await query(
     `UPDATE messages_log SET delivered_at = NOW() WHERE zapi_message_id = $1 AND delivered_at IS NULL`,
