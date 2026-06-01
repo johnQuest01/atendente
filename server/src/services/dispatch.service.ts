@@ -73,7 +73,14 @@ async function sendAudioToProvider(phone: string, audio: Audio, publicUrl: strin
 /** Envia um áudio do banco para o cliente e registra no log. */
 export async function dispatchAudio(ctx: DispatchContext, audioId: string): Promise<MessageLog | null> {
   const audio = await getAudioById(audioId);
-  if (!audio || !audio.is_active) return null;
+  if (!audio) {
+    logger.warn(`Áudio ${audioId} não encontrado (a palavra-chave aponta para um áudio inexistente).`);
+    return null;
+  }
+  if (!audio.is_active) {
+    logger.warn(`Áudio "${audio.title}" (${audioId}) está INATIVO — não será enviado; caindo no fallback.`);
+    return null;
+  }
 
   const publicUrl = audioPublicUrl(audio);
 
