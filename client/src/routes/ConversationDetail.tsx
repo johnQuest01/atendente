@@ -7,7 +7,7 @@ import { Spinner, ErrorState } from '@/components/ui/States';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { AudioPlayer } from '@/components/ui/AudioPlayer';
-import { BackIcon, SendIcon, AudioIcon, ProductIcon, TrashIcon } from '@/components/ui/Icons';
+import { BackIcon, SendIcon, AudioIcon, ProductIcon, TrashIcon, BlockIcon } from '@/components/ui/Icons';
 import {
   useClearConversation,
   useConversationDetail,
@@ -18,6 +18,7 @@ import {
 } from '@/hooks/useConversations';
 import { useAudios } from '@/hooks/useAudios';
 import { useProducts } from '@/hooks/useProducts';
+import { useAddBlocked } from '@/hooks/useBlocked';
 import { joinConversation, leaveConversation, useSocket } from '@/hooks/useSocket';
 import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
@@ -34,12 +35,13 @@ export default function ConversationDetail() {
   const sendProduct = useSendProductToConversation(id ?? '');
   const deleteMessages = useDeleteMessages(id ?? '');
   const clearConversation = useClearConversation(id ?? '');
+  const addBlocked = useAddBlocked();
 
   const [text, setText] = useState('');
   const [sheet, setSheet] = useState<'audio' | 'product' | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectionMode, setSelectionMode] = useState(false);
-  const [confirm, setConfirm] = useState<'selected' | 'all' | null>(null);
+  const [confirm, setConfirm] = useState<'selected' | 'all' | 'block' | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   function enterSelection(messageId: string) {
@@ -83,6 +85,20 @@ export default function ConversationDetail() {
     } catch (err) {
       toast(getErrorMessage(err, 'Falha ao limpar histórico.'), 'error');
     } finally {
+      setConfirm(null);
+    }
+  }
+
+  async function handleBlock() {
+    const phone = data?.client?.phone;
+    if (!phone) return;
+    try {
+      await addBlocked.mutateAsync({ phone, label: data?.client?.name ?? null });
+      toast('Número bloqueado. Novas mensagens dele serão ignoradas.', 'success');
+      setConfirm(null);
+      navigate('/conversas');
+    } catch (err) {
+      toast(getErrorMessage(err, 'Falha ao bloquear número.'), 'error');
       setConfirm(null);
     }
   }
@@ -162,6 +178,14 @@ export default function ConversationDetail() {
           }
           action={
             <div className="flex items-center gap-1">
+              <button
+                onClick={() => setConfirm('block')}
+                className="tap-scale rounded-full p-2 text-text-secondary"
+                aria-label="Bloquear este número"
+                title="Bloquear este número"
+              >
+                <BlockIcon width={20} height={20} />
+              </button>
               <button
                 onClick={() => setConfirm('all')}
                 className="tap-scale rounded-full p-2 text-text-secondary"
@@ -252,13 +276,21 @@ export default function ConversationDetail() {
       <Modal
         open={confirm !== null}
         onClose={() => setConfirm(null)}
-        title={confirm === 'all' ? 'Limpar histórico' : 'Apagar mensagens'}
+        title={
+          confirm === 'all'
+            ? 'Limpar histórico'
+            : confirm === 'block'
+              ? 'Bloquear número'
+              : 'Apagar mensagens'
+        }
       >
         <div className="flex flex-col gap-4">
           <p className="text-sm text-text-secondary">
             {confirm === 'all'
               ? 'Isso vai apagar TODAS as mensagens desta conversa. Essa ação não pode ser desfeita.'
-              : `Apagar ${selectedIds.size} mensagem(ns) selecionada(s)? Essa ação não pode ser desfeita.`}
+              : confirm === 'block'
+                ? `Bloquear ${clientName}? As próximas mensagens dele serão ignoradas: não aparecem no painel e a IA não responde. Você pode desfazer em Configurações.`
+                : `Apagar ${selectedIds.size} mensagem(ns) selecionada(s)? Essa ação não pode ser desfeita.`}
           </p>
           <div className="flex gap-2">
             <Button variant="secondary" fullWidth onClick={() => setConfirm(null)}>
@@ -267,10 +299,16 @@ export default function ConversationDetail() {
             <Button
               variant="danger"
               fullWidth
-              loading={deleteMessages.isPending || clearConversation.isPending}
-              onClick={confirm === 'all' ? handleClearAll : handleDeleteSelected}
+              loading={deleteMessages.isPending || clearConversation.isPending || addBlocked.isPending}
+              onClick={
+                confirm === 'all'
+                  ? handleClearAll
+                  : confirm === 'block'
+                    ? handleBlock
+                    : handleDeleteSelected
+              }
             >
-              Apagar
+              {confirm === 'block' ? 'Bloquear' : 'Apagar'}
             </Button>
           </div>
         </div>

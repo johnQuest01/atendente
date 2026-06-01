@@ -99,3 +99,10 @@ export const ImageIcon = (p: IconProps) => (
     <path d="m21 15-5-5L5 21" />
   </svg>
 );
+
+export const BlockIcon = (p: IconProps) => (
+  <svg {...base} {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="m5.6 5.6 12.8 12.8" />
+  </svg>
+);
