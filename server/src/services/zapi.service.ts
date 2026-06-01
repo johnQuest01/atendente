@@ -59,7 +59,10 @@ export function sendText(phone: string, message: string): Promise<string | null>
 
 /** Envia áudio (URL .ogg). `audio` pode ser URL pública ou base64. */
 export function sendAudio(phone: string, audioUrl: string): Promise<string | null> {
-  return post('send-audio', { phone, audio: audioUrl });
+  // waveform: true → o WhatsApp exibe como MENSAGEM DE VOZ (PTT), com a ondinha
+  // e o balão grande, igual a um áudio gravado de verdade. Sem isso, a Z-API
+  // manda como arquivo de áudio comum (balão menor, sem onda sonora).
+  return post('send-audio', { phone, audio: audioUrl, waveform: true });
 }
 
 /**
