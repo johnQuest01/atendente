@@ -1,5 +1,8 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import { env } from '../config/env';
 import {
   addBlockedNumber,
   deleteBlockedNumber,
@@ -7,9 +10,29 @@ import {
   normalizePhone,
   setBlockedActive,
 } from '../db/queries/blocked';
-import { AppError, NotFoundError } from '../utils/errors';
+import { AppError, NotFoundError, UnauthorizedError } from '../utils/errors';
 
 export const idParamSchema = z.object({ id: z.string().uuid() });
+
+export const unlockSchema = z.object({
+  email: z.string().min(1),
+  password: z.string().min(1),
+});
+
+/**
+ * Valida o login/senha especial e emite um token (12h) com escopo 'blocklist'
+ * que libera o acesso à área de números bloqueados.
+ */
+export async function unlockBlocked(req: Request, res: Response): Promise<void> {
+  const { email, password } = req.body as z.infer<typeof unlockSchema>;
+  const emailOk = email.trim().toLowerCase() === env.BLOCK_ADMIN_EMAIL.toLowerCase();
+  const passOk = emailOk && (await bcrypt.compare(password, env.BLOCK_ADMIN_PASSWORD_HASH));
+  if (!emailOk || !passOk) {
+    throw new UnauthorizedError('Login ou senha do cadeado incorretos.');
+  }
+  const token = jwt.sign({ scope: 'blocklist' }, env.JWT_SECRET, { expiresIn: '12h' });
+  res.json({ token });
+}
 
 export const createBlockedSchema = z.object({
   phone: z.string().min(8).max(30),

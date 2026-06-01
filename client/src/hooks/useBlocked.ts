@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
+import { useBlockAccess } from '@/store/appStore';
 
 export interface BlockedNumber {
   id: string;
@@ -11,9 +12,22 @@ export interface BlockedNumber {
 
 const KEY = ['blocked'] as const;
 
-export function useBlockedNumbers() {
+/** Login do cadeado: troca email/senha por um token de acesso à área restrita. */
+export function useUnlockBlocked() {
+  const setToken = useBlockAccess((s) => s.setToken);
+  return useMutation({
+    mutationFn: async (input: { email: string; password: string }) => {
+      const { data } = await api.post<{ token: string }>('/blocked/unlock', input);
+      return data.token;
+    },
+    onSuccess: (token) => setToken(token),
+  });
+}
+
+export function useBlockedNumbers(enabled = true) {
   return useQuery({
     queryKey: KEY,
+    enabled,
     queryFn: async () => {
       const { data } = await api.get<{ blocked: BlockedNumber[] }>('/blocked');
       return data.blocked;

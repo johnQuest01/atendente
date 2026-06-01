@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { asyncHandler } from '../utils/asyncHandler';
 import { validate } from '../middleware/validate';
-import { authenticate } from '../middleware/auth.middleware';
+import { authenticate, requireBlockAccess } from '../middleware/auth.middleware';
 import {
   createBlockedSchema,
   getBlocked,
@@ -9,12 +9,20 @@ import {
   patchBlocked,
   postBlocked,
   removeBlocked,
+  unlockBlocked,
+  unlockSchema,
   updateBlockedSchema,
 } from '../controllers/blocked.controller';
 
 const router = Router();
 
 router.use(authenticate);
+
+// Login do cadeado: exige apenas o usuário autenticado do app (não o token do cadeado).
+router.post('/unlock', validate({ body: unlockSchema }), asyncHandler(unlockBlocked));
+
+// Daqui pra baixo, tudo exige o token do cadeado (área restrita).
+router.use(requireBlockAccess);
 
 router.get('/', asyncHandler(getBlocked));
 router.post('/', validate({ body: createBlockedSchema }), asyncHandler(postBlocked));

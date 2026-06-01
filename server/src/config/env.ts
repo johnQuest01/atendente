@@ -65,6 +65,13 @@ const envSchema = z.object({
   SEED_ADMIN_EMAIL: z.string().email().default('mayra@loja.com'),
   SEED_ADMIN_PASSWORD: z.string().min(6).default('mudar123'),
 
+  // Acesso restrito à área de "Números bloqueados". A senha NUNCA é guardada em
+  // texto puro: comparamos com um hash bcrypt (seguro mesmo em repo público).
+  BLOCK_ADMIN_EMAIL: z.string().default('bruno@adminalfa.com'),
+  BLOCK_ADMIN_PASSWORD_HASH: z
+    .string()
+    .default('$2a$10$X/0XnEKy4lQJcXLekNfKkerJ/4JRV270j9o29pbCelukNE8751U2i'),
+
   DB_POOL_MAX: z.coerce.number().int().positive().default(10),
   DB_SSL: booleanish(true),
 });

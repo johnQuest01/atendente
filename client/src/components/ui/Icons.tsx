@@ -106,3 +106,16 @@ export const BlockIcon = (p: IconProps) => (
     <path d="m5.6 5.6 12.8 12.8" />
   </svg>
 );
+
+export const LockIcon = (p: IconProps) => (
+  <svg {...base} {...p}>
+    <rect x="4" y="11" width="16" height="10" rx="2" />
+    <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+  </svg>
+);
+
+export const CloseIcon = (p: IconProps) => (
+  <svg {...base} {...p}>
+    <path d="M18 6 6 18M6 6l12 12" />
+  </svg>
+);

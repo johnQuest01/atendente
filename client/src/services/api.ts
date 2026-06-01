@@ -18,10 +18,18 @@ export function setToken(token: string | null): void {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
+const BLOCK_TOKEN_KEY = 'mayra.blockToken';
+
 api.interceptors.request.use((config) => {
   const token = getToken();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
+  }
+  // Área restrita de números bloqueados: envia o token do cadeado quando houver.
+  const url = config.url ?? '';
+  if (url.includes('/blocked') && !url.includes('/blocked/unlock')) {
+    const blockToken = localStorage.getItem(BLOCK_TOKEN_KEY);
+    if (blockToken) config.headers['x-block-token'] = blockToken;
   }
   return config;
 });

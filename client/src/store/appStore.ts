@@ -30,3 +30,35 @@ export const useAppStore = create<AppState>((set) => ({
 export function toast(message: string, variant: ToastVariant = 'info'): void {
   useAppStore.getState().addToast(message, variant);
 }
+
+/**
+ * Acesso à área restrita de "Números bloqueados". O token (escopo 'blocklist')
+ * é emitido pelo backend após o login do cadeado e fica salvo no navegador.
+ */
+const BLOCK_TOKEN_KEY = 'mayra.blockToken';
+
+interface BlockAccessState {
+  token: string | null;
+  setToken: (token: string) => void;
+  clear: () => void;
+}
+
+export const useBlockAccess = create<BlockAccessState>((set) => ({
+  token: localStorage.getItem(BLOCK_TOKEN_KEY),
+  setToken: (token) => {
+    localStorage.setItem(BLOCK_TOKEN_KEY, token);
+    set({ token });
+  },
+  clear: () => {
+    localStorage.removeItem(BLOCK_TOKEN_KEY);
+    set({ token: null });
+  },
+}));
+
+export function getBlockToken(): string | null {
+  return useBlockAccess.getState().token;
+}
+
+export function clearBlockToken(): void {
+  useBlockAccess.getState().clear();
+}

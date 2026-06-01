@@ -19,6 +19,8 @@ import {
 import { useAudios } from '@/hooks/useAudios';
 import { useProducts } from '@/hooks/useProducts';
 import { useAddBlocked } from '@/hooks/useBlocked';
+import { BlockUnlockModal } from '@/components/features/BlockAccess';
+import { useBlockAccess } from '@/store/appStore';
 import { joinConversation, leaveConversation, useSocket } from '@/hooks/useSocket';
 import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
@@ -36,12 +38,14 @@ export default function ConversationDetail() {
   const deleteMessages = useDeleteMessages(id ?? '');
   const clearConversation = useClearConversation(id ?? '');
   const addBlocked = useAddBlocked();
+  const blockToken = useBlockAccess((s) => s.token);
 
   const [text, setText] = useState('');
   const [sheet, setSheet] = useState<'audio' | 'product' | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectionMode, setSelectionMode] = useState(false);
   const [confirm, setConfirm] = useState<'selected' | 'all' | 'block' | null>(null);
+  const [blockUnlockOpen, setBlockUnlockOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   function enterSelection(messageId: string) {
@@ -89,17 +93,26 @@ export default function ConversationDetail() {
     }
   }
 
-  async function handleBlock() {
+  async function performBlock() {
     const phone = data?.client?.phone;
     if (!phone) return;
     try {
       await addBlocked.mutateAsync({ phone, label: data?.client?.name ?? null });
       toast('Número bloqueado. Novas mensagens dele serão ignoradas.', 'success');
-      setConfirm(null);
       navigate('/conversas');
     } catch (err) {
       toast(getErrorMessage(err, 'Falha ao bloquear número.'), 'error');
-      setConfirm(null);
+    }
+  }
+
+  // Bloquear exige o login do cadeado (área restrita). Se ainda não estiver
+  // desbloqueado, pedimos o login antes de efetivar o bloqueio.
+  function handleBlock() {
+    setConfirm(null);
+    if (blockToken) {
+      void performBlock();
+    } else {
+      setBlockUnlockOpen(true);
     }
   }
 
@@ -313,6 +326,15 @@ export default function ConversationDetail() {
           </div>
         </div>
       </Modal>
+
+      <BlockUnlockModal
+        open={blockUnlockOpen}
+        onClose={() => setBlockUnlockOpen(false)}
+        onUnlocked={() => {
+          setBlockUnlockOpen(false);
+          void performBlock();
+        }}
+      />
     </div>
   );
 }

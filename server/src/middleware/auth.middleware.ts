@@ -29,6 +29,26 @@ export function authenticate(req: Request, _res: Response, next: NextFunction): 
   }
 }
 
+/**
+ * Exige um token de acesso à área restrita de "Números bloqueados".
+ * O token é emitido pelo endpoint /blocked/unlock após validar o login/senha
+ * especial. Vem no header `x-block-token`.
+ */
+export function requireBlockAccess(req: Request, _res: Response, next: NextFunction): void {
+  const token = (req.headers['x-block-token'] as string | undefined) ?? null;
+  if (!token) {
+    next(new ForbiddenError('Área restrita. Desbloqueie com seu login do cadeado.'));
+    return;
+  }
+  try {
+    const decoded = jwt.verify(token, env.JWT_SECRET) as { scope?: string };
+    if (decoded.scope !== 'blocklist') throw new Error('scope inválido');
+    next();
+  } catch {
+    next(new ForbiddenError('Sessão do cadeado expirada. Desbloqueie novamente.'));
+  }
+}
+
 /** Exige que o usuário autenticado tenha um dos papéis informados. */
 export function authorize(...roles: UserRole[]) {
   return (req: Request, _res: Response, next: NextFunction): void => {

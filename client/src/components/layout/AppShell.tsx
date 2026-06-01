@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Sidebar } from './Sidebar';
 import { BottomNav } from './BottomNav';
+import { BlockFab } from '@/components/features/BlockAccess';
 
 interface AppShellProps {
   children: ReactNode;
@@ -14,6 +15,7 @@ export function AppShell({ children }: AppShellProps) {
         <main className="no-scrollbar flex-1 overflow-y-auto pb-20 md:pb-0">{children}</main>
         <BottomNav />
       </div>
+      <BlockFab />
     </div>
   );
 }
