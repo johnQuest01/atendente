@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { Link } from 'react-router-dom';
 import type { ConversationListItem } from '@/types';
 import { formatRelative, initials } from '@/utils/formatters';
@@ -9,7 +10,14 @@ const previewByType: Record<string, string> = {
   document: '📎 Documento',
 };
 
-export function ConversationCard({ conversation }: { conversation: ConversationListItem }) {
+const LONG_PRESS_MS = 450;
+
+interface ConversationCardProps {
+  conversation: ConversationListItem;
+  onLongPress?: (id: string) => void;
+}
+
+export function ConversationCard({ conversation, onLongPress }: ConversationCardProps) {
   const name = conversation.client_name ?? conversation.company_name ?? conversation.client_phone;
   const preview =
     conversation.last_message_type && conversation.last_message_type !== 'text'
@@ -17,10 +25,44 @@ export function ConversationCard({ conversation }: { conversation: ConversationL
       : conversation.last_message ?? 'Sem mensagens ainda';
   const hasUnread = conversation.unread_count > 0;
 
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressedRef = useRef(false);
+
+  function startPress() {
+    longPressedRef.current = false;
+    timerRef.current = setTimeout(() => {
+      longPressedRef.current = true;
+      onLongPress?.(conversation.id);
+    }, LONG_PRESS_MS);
+  }
+
+  function cancelPress() {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }
+
   return (
     <Link
       to={`/conversas/${conversation.id}`}
-      className="tap-scale flex items-center gap-3 px-4 py-3 transition-colors hover:bg-black/[0.02]"
+      className="tap-scale flex select-none items-center gap-3 px-4 py-3 transition-colors hover:bg-black/[0.02]"
+      onPointerDown={startPress}
+      onPointerUp={cancelPress}
+      onPointerLeave={cancelPress}
+      onClick={(e) => {
+        // Após um "segurar", o clique não deve navegar para a conversa.
+        if (longPressedRef.current) {
+          e.preventDefault();
+          longPressedRef.current = false;
+        }
+      }}
+      onContextMenu={(e) => {
+        if (onLongPress) {
+          e.preventDefault();
+          onLongPress(conversation.id);
+        }
+      }}
     >
       <div className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-primary-light text-sm font-semibold text-primary">
         {initials(conversation.client_name, conversation.client_phone)}

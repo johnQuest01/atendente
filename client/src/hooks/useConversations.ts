@@ -120,6 +120,16 @@ export function useClearConversation(conversationId: string) {
   });
 }
 
+export function useDeleteConversation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      await api.delete(`/conversations/${id}`);
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['conversations'] }),
+  });
+}
+
 export function useUpdateConversationStatus() {
   const qc = useQueryClient();
   return useMutation({

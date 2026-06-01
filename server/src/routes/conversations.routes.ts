@@ -10,6 +10,7 @@ import {
   idParamSchema,
   listQuerySchema,
   patchConversationStatus,
+  removeConversation,
   removeMessages,
   sendAudioSchema,
   sendManualAudio,
@@ -52,5 +53,6 @@ router.post(
   asyncHandler(removeMessages),
 );
 router.delete('/:id/messages', validate({ params: idParamSchema }), asyncHandler(clearConversation));
+router.delete('/:id', validate({ params: idParamSchema }), asyncHandler(removeConversation));
 
 export default router;

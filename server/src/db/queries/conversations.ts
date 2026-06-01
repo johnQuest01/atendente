@@ -144,6 +144,12 @@ export async function updateConversationStatus(
   return rows[0] ?? null;
 }
 
+/** Apaga a conversa inteira (mensagens caem junto por ON DELETE CASCADE). */
+export async function deleteConversation(id: string): Promise<boolean> {
+  const { rowCount } = await query('DELETE FROM conversations WHERE id = $1', [id]);
+  return (rowCount ?? 0) > 0;
+}
+
 export async function markInboundAsRead(conversationId: string): Promise<void> {
   await query(
     `UPDATE messages_log

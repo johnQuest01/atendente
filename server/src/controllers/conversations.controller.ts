@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import {
+  deleteConversation,
   getConversationById,
   getConversationMessages,
   listConversations,
@@ -112,6 +113,14 @@ export async function removeMessages(req: Request, res: Response): Promise<void>
 
   const deleted = await deleteMessages(id, ids);
   res.json({ deleted });
+}
+
+/** Apaga a conversa inteira (some da lista) junto com suas mensagens. */
+export async function removeConversation(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as z.infer<typeof idParamSchema>;
+  const ok = await deleteConversation(id);
+  if (!ok) throw new NotFoundError('Conversa');
+  res.status(204).send();
 }
 
 /** Limpa todo o histórico de mensagens de uma conversa. */
