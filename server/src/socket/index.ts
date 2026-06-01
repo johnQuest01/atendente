@@ -1,8 +1,9 @@
 import type { Server as HttpServer } from 'node:http';
 import { Server as SocketIOServer } from 'socket.io';
 import jwt from 'jsonwebtoken';
-import { env } from '../config/env';
+import { corsOrigin } from '../config/cors';
 import { logger } from '../config/logger';
+import { env } from '../config/env';
 import type { Conversation, JwtPayload, MessageLog } from '../types';
 
 let io: SocketIOServer | null = null;
@@ -16,7 +17,7 @@ export const SOCKET_EVENTS = {
 
 export function initSocket(httpServer: HttpServer): SocketIOServer {
   io = new SocketIOServer(httpServer, {
-    cors: { origin: env.FRONTEND_URL, credentials: true },
+    cors: { origin: corsOrigin, credentials: true },
   });
 
   // Autenticação opcional via token no handshake.

@@ -3,6 +3,7 @@ import path from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import { env } from './config/env';
+import { corsOrigin } from './config/cors';
 import { logger } from './config/logger';
 import { checkDbConnection, closePool } from './db';
 import { initSocket } from './socket';
@@ -14,7 +15,7 @@ const app = express();
 
 app.use(
   cors({
-    origin: env.FRONTEND_URL,
+    origin: corsOrigin,
     credentials: true,
   }),
 );
