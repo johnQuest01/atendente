@@ -22,6 +22,32 @@
   -webkit-tap-highlight-color: transparent;
 }
 
+/*
+ * Desativa os comportamentos nativos do navegador ao "segurar" (long-press):
+ * menu de contexto, seleção de texto, callout do iOS e arrastar imagem.
+ * Inputs e áreas de digitação continuam selecionáveis.
+ */
+body {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  user-select: none;
+}
+
+input,
+textarea,
+select,
+[contenteditable='true'] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+img {
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
 html,
 body,
 #root {

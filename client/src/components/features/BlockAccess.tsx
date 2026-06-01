@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -14,6 +14,7 @@ import {
 import { useBlockAccess, clearBlockToken, toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
 import { formatPhone } from '@/utils/formatters';
+import { cn } from '@/utils/cn';
 
 /** Formulário de login do cadeado (área restrita de números bloqueados). */
 export function BlockUnlockModal({
@@ -159,7 +160,133 @@ function BlockedNumbersManager() {
   );
 }
 
-/** Botão flutuante (cadeado) presente em todas as telas. */
+const FAB_SIZE = 52;
+const FAB_POS_KEY = 'mayra.fabPos';
+const DRAG_THRESHOLD = 6;
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function loadFabPos(): { x: number; y: number } {
+  const margin = 16;
+  const fallback = {
+    x: window.innerWidth - FAB_SIZE - margin,
+    y: window.innerHeight - FAB_SIZE - 96,
+  };
+  try {
+    const raw = localStorage.getItem(FAB_POS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as { x: number; y: number };
+      return {
+        x: clamp(parsed.x, margin, window.innerWidth - FAB_SIZE - margin),
+        y: clamp(parsed.y, margin, window.innerHeight - FAB_SIZE - margin),
+      };
+    }
+  } catch {
+    /* usa o fallback */
+  }
+  return fallback;
+}
+
+/**
+ * Botão flutuante de cadeado, arrastável (segurar e soltar em qualquer lugar)
+ * e presente em todas as telas. Um toque simples abre a área restrita.
+ */
+function DraggableLockButton({ onTap }: { onTap: () => void }) {
+  const [pos, setPos] = useState<{ x: number; y: number }>(() => loadFabPos());
+  const [dragging, setDragging] = useState(false);
+  const offsetRef = useRef({ x: 0, y: 0 });
+  const startRef = useRef({ x: 0, y: 0 });
+  const draggingRef = useRef(false);
+  const movedRef = useRef(false);
+
+  // Mantém o botão dentro da tela quando a janela é redimensionada/rotacionada.
+  useEffect(() => {
+    function onResize() {
+      setPos((p) => ({
+        x: clamp(p.x, 16, window.innerWidth - FAB_SIZE - 16),
+        y: clamp(p.y, 16, window.innerHeight - FAB_SIZE - 16),
+      }));
+    }
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const handlePointerDown = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    movedRef.current = false;
+    draggingRef.current = true;
+    startRef.current = { x: e.clientX, y: e.clientY };
+    setPos((p) => {
+      offsetRef.current = { x: e.clientX - p.x, y: e.clientY - p.y };
+      return p;
+    });
+    setDragging(true);
+  }, []);
+
+  const handlePointerMove = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
+    if (!draggingRef.current) return;
+    if (
+      Math.abs(e.clientX - startRef.current.x) > DRAG_THRESHOLD ||
+      Math.abs(e.clientY - startRef.current.y) > DRAG_THRESHOLD
+    ) {
+      movedRef.current = true;
+    }
+    const nextX = clamp(e.clientX - offsetRef.current.x, 8, window.innerWidth - FAB_SIZE - 8);
+    const nextY = clamp(e.clientY - offsetRef.current.y, 8, window.innerHeight - FAB_SIZE - 8);
+    setPos({ x: nextX, y: nextY });
+  }, []);
+
+  const handlePointerUp = useCallback(
+    (e: React.PointerEvent<HTMLButtonElement>) => {
+      if (!draggingRef.current) return;
+      draggingRef.current = false;
+      setDragging(false);
+      try {
+        (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+      if (movedRef.current) {
+        setPos((p) => {
+          localStorage.setItem(FAB_POS_KEY, JSON.stringify(p));
+          return p;
+        });
+      } else {
+        onTap();
+      }
+    },
+    [onTap],
+  );
+
+  return (
+    <button
+      aria-label="Números bloqueados (área restrita). Segure para mover."
+      title="Números bloqueados"
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onContextMenu={(e) => e.preventDefault()}
+      style={{
+        left: pos.x,
+        top: pos.y,
+        width: FAB_SIZE,
+        height: FAB_SIZE,
+        touchAction: 'none',
+      }}
+      className={cn(
+        'fixed z-40 flex items-center justify-center rounded-full bg-text-primary text-white shadow-lg',
+        dragging ? 'scale-110 cursor-grabbing opacity-90' : 'cursor-grab transition-transform active:scale-95',
+      )}
+    >
+      <LockIcon width={22} height={22} />
+    </button>
+  );
+}
+
+/** Botão flutuante (cadeado) + área restrita. */
 export function BlockFab() {
   const token = useBlockAccess((s) => s.token);
   const [open, setOpen] = useState(false);
@@ -168,14 +295,7 @@ export function BlockFab() {
 
   return (
     <>
-      <button
-        onClick={() => setOpen(true)}
-        aria-label="Números bloqueados (área restrita)"
-        title="Números bloqueados"
-        className="fixed bottom-24 right-4 z-30 flex h-12 w-12 items-center justify-center rounded-full bg-text-primary text-white shadow-lg transition-transform active:scale-95 md:bottom-6"
-      >
-        <LockIcon width={22} height={22} />
-      </button>
+      <DraggableLockButton onTap={() => setOpen(true)} />
 
       {open && !isUnlocked && (
         <BlockUnlockModal open onClose={() => setOpen(false)} />

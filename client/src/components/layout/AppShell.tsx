@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { Sidebar } from './Sidebar';
 import { BottomNav } from './BottomNav';
 import { BlockFab } from '@/components/features/BlockAccess';
@@ -8,6 +8,14 @@ interface AppShellProps {
 }
 
 export function AppShell({ children }: AppShellProps) {
+  // Desativa o menu de contexto do navegador (que aparece ao "segurar" a tela
+  // em alguns dispositivos/Chrome), deixando os gestos de long-press do app.
+  useEffect(() => {
+    const block = (e: Event) => e.preventDefault();
+    document.addEventListener('contextmenu', block);
+    return () => document.removeEventListener('contextmenu', block);
+  }, []);
+
   return (
     <div className="flex h-full min-h-screen bg-bg">
       <Sidebar />

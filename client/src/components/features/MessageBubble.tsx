@@ -90,6 +90,7 @@ export function MessageBubble({
             alt="Imagem enviada"
             className="max-h-64 w-full rounded-xl object-cover"
             loading="lazy"
+            draggable={false}
           />
         )}
 
