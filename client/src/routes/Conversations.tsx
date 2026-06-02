@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { PageHeader } from '@/components/layout/AppShell';
 import { ConversationCard } from '@/components/features/ConversationCard';
-import { Spinner, ErrorState, EmptyState } from '@/components/ui/States';
+import { ListSkeleton, ErrorState, EmptyState } from '@/components/ui/States';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { ChatIcon } from '@/components/ui/Icons';
@@ -54,14 +54,16 @@ export default function Conversations() {
     <>
       <PageHeader title="Conversas" subtitle={isRefetching ? 'Atualizando...' : 'Atendimentos ao vivo'} />
 
-      <div className="no-scrollbar sticky top-[57px] z-10 flex gap-2 overflow-x-auto border-b border-border bg-surface/90 px-4 py-2.5 backdrop-blur-lg">
+      <div className="no-scrollbar glass sticky top-[68px] z-10 flex gap-2 overflow-x-auto border-x-0 border-t-0 border-b border-border/70 px-4 py-2.5">
         {FILTERS.map((f) => (
           <button
             key={f.label}
             onClick={() => setFilter(f.value)}
             className={cn(
-              'tap-scale shrink-0 rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors',
-              filter === f.value ? 'bg-primary text-white' : 'bg-black/5 text-text-secondary',
+              'tap-scale shrink-0 rounded-full px-3.5 py-1.5 text-sm font-semibold transition-all duration-200',
+              filter === f.value
+                ? 'bg-primary-gradient text-white shadow-glow'
+                : 'bg-black/[0.04] text-text-secondary hover:bg-black/[0.07]',
             )}
           >
             {f.label}
@@ -69,7 +71,7 @@ export default function Conversations() {
         ))}
       </div>
 
-      {isLoading && <Spinner label="Carregando conversas..." />}
+      {isLoading && <ListSkeleton />}
       {isError && <ErrorState message="Erro ao carregar conversas." onRetry={() => void refetch()} />}
 
       {data && data.length === 0 && (
@@ -81,13 +83,17 @@ export default function Conversations() {
       )}
 
       {data && data.length > 0 && (
-        <>
-          <p className="px-4 py-2 text-center text-xs text-text-secondary">
+        <div className="p-3 sm:p-4">
+          <p className="px-1 pb-2 text-center text-xs text-text-secondary">
             Dica: segure em uma conversa para apagá-la.
           </p>
-          <ul className="divide-y divide-border bg-surface">
-            {data.map((c) => (
-              <li key={c.id}>
+          <ul className="divide-y divide-border/70 overflow-hidden rounded-2xl border border-border/70 bg-surface shadow-card">
+            {data.map((c, i) => (
+              <li
+                key={c.id}
+                className="animate-rise"
+                style={{ animationDelay: `${Math.min(i, 12) * 35}ms` }}
+              >
                 <ConversationCard
                   conversation={c}
                   onLongPress={() =>
@@ -100,7 +106,7 @@ export default function Conversations() {
               </li>
             ))}
           </ul>
-        </>
+        </div>
       )}
 
       <Modal open={toDelete !== null} onClose={() => setToDelete(null)} title="Apagar conversa">

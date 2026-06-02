@@ -10,6 +10,22 @@ const previewByType: Record<string, string> = {
   document: '📎 Documento',
 };
 
+// Gradientes para os avatares — cor consistente por contato (hash do texto).
+const AVATAR_GRADIENTS = [
+  'from-[#7C5CFF] to-[#5631E6]',
+  'from-[#06B6D4] to-[#3B82F6]',
+  'from-[#F472B6] to-[#DB2777]',
+  'from-[#FB923C] to-[#EF4444]',
+  'from-[#34D399] to-[#059669]',
+  'from-[#A78BFA] to-[#EC4899]',
+];
+
+function avatarGradient(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) hash = (hash * 31 + seed.charCodeAt(i)) | 0;
+  return AVATAR_GRADIENTS[Math.abs(hash) % AVATAR_GRADIENTS.length];
+}
+
 const LONG_PRESS_MS = 450;
 
 interface ConversationCardProps {
@@ -64,7 +80,12 @@ export function ConversationCard({ conversation, onLongPress }: ConversationCard
         }
       }}
     >
-      <div className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-primary-light text-sm font-semibold text-primary">
+      <div
+        className={cn(
+          'relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-gradient-to-br text-sm font-bold text-white shadow-soft',
+          avatarGradient(name),
+        )}
+      >
         {initials(conversation.client_name, conversation.client_phone)}
         {conversation.status === 'open' && (
           <span className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full border-2 border-surface bg-success" />

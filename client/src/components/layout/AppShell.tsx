@@ -23,7 +23,7 @@ export function AppShell({ children }: AppShellProps) {
       <Sidebar />
       <div className="flex min-w-0 flex-1 flex-col">
         <main className="no-scrollbar flex-1 overflow-y-auto pb-24 md:pb-6">
-          <div key={location.pathname} className="mx-auto w-full max-w-3xl animate-fade-in">
+          <div key={location.pathname} className="mx-auto w-full max-w-3xl animate-rise">
             {children}
           </div>
         </main>

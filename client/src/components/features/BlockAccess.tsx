@@ -277,8 +277,10 @@ function DraggableLockButton({ onTap }: { onTap: () => void }) {
         touchAction: 'none',
       }}
       className={cn(
-        'fixed z-40 flex items-center justify-center rounded-full bg-text-primary text-white shadow-lg',
-        dragging ? 'scale-110 cursor-grabbing opacity-90' : 'cursor-grab transition-transform active:scale-95',
+        'fixed z-40 flex items-center justify-center rounded-full bg-primary-gradient text-white ring-1 ring-white/20',
+        dragging
+          ? 'scale-110 cursor-grabbing shadow-card-hover'
+          : 'cursor-grab shadow-glow transition-transform active:scale-95',
       )}
     >
       <LockIcon width={22} height={22} />

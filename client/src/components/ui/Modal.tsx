@@ -28,15 +28,17 @@ export function Modal({ open, onClose, title, children, footer }: ModalProps) {
 
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center">
-      <div className="absolute inset-0 animate-fade-in bg-black/40" onClick={onClose} />
+      <div className="absolute inset-0 animate-fade-in bg-black/50 backdrop-blur-sm" onClick={onClose} />
       <div
         className={cn(
-          'relative z-10 flex max-h-[90vh] w-full flex-col rounded-t-3xl bg-surface shadow-xl',
-          'animate-slide-in sm:max-w-md sm:rounded-3xl',
+          'relative z-10 flex max-h-[90vh] w-full flex-col rounded-t-3xl bg-surface shadow-card-hover',
+          'animate-sheet-up sm:max-w-md sm:rounded-3xl sm:animate-pop',
         )}
         role="dialog"
         aria-modal="true"
       >
+        {/* Alça de arraste (cara de bottom-sheet nativo no mobile). */}
+        <div className="mx-auto mt-2.5 h-1.5 w-10 shrink-0 rounded-full bg-black/10 sm:hidden" />
         {title && (
           <header className="flex items-center justify-between border-b border-border px-5 py-4">
             <h2 className="text-lg font-bold text-text-primary">{title}</h2>

@@ -68,6 +68,22 @@ const config: Config = {
           '0%': { transform: 'scale(0.96) translateY(4px)', opacity: '0' },
           '100%': { transform: 'scale(1) translateY(0)', opacity: '1' },
         },
+        rise: {
+          '0%': { transform: 'translateY(10px)', opacity: '0' },
+          '100%': { transform: 'translateY(0)', opacity: '1' },
+        },
+        pop: {
+          '0%': { transform: 'scale(0.95) translateY(8px)', opacity: '0' },
+          '100%': { transform: 'scale(1) translateY(0)', opacity: '1' },
+        },
+        'sheet-up': {
+          '0%': { transform: 'translateY(100%)' },
+          '100%': { transform: 'translateY(0)' },
+        },
+        shimmer: {
+          '0%': { backgroundPosition: '-200% 0' },
+          '100%': { backgroundPosition: '200% 0' },
+        },
         'toast-in': {
           '0%': { transform: 'translateY(-120%)', opacity: '0' },
           '100%': { transform: 'translateY(0)', opacity: '1' },
@@ -77,6 +93,10 @@ const config: Config = {
         'slide-in': 'slide-in 0.25s ease-out',
         'fade-in': 'fade-in 0.2s ease-out',
         'scale-in': 'scale-in 0.22s cubic-bezier(0.16, 1, 0.3, 1)',
+        rise: 'rise 0.4s cubic-bezier(0.16, 1, 0.3, 1) both',
+        pop: 'pop 0.28s cubic-bezier(0.16, 1, 0.3, 1)',
+        'sheet-up': 'sheet-up 0.32s cubic-bezier(0.16, 1, 0.3, 1)',
+        shimmer: 'shimmer 1.6s linear infinite',
         'toast-in': 'toast-in 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
       },
     },

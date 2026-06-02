@@ -9,16 +9,53 @@ import {
 } from 'recharts';
 import { PageHeader } from '@/components/layout/AppShell';
 import { Card } from '@/components/ui/Card';
-import { Spinner, ErrorState, EmptyState } from '@/components/ui/States';
+import { Skeleton, ErrorState, EmptyState } from '@/components/ui/States';
 import { useDashboard } from '@/hooks/useDashboard';
 import { useAuth } from '@/hooks/useAuth';
 
-function MetricCard({ label, value, tone }: { label: string; value: number; tone: string }) {
+function MetricCard({
+  label,
+  value,
+  tone,
+  dot,
+  index,
+}: {
+  label: string;
+  value: number;
+  tone: string;
+  dot: string;
+  index: number;
+}) {
   return (
-    <Card className="card-hover flex flex-col gap-1">
-      <span className="text-xs font-medium text-text-secondary">{label}</span>
+    <Card
+      className="card-hover flex animate-rise flex-col gap-1"
+      style={{ animationDelay: `${index * 60}ms` }}
+    >
+      <span className="flex items-center gap-1.5 text-xs font-medium text-text-secondary">
+        <span className={`h-2 w-2 rounded-full ${dot}`} />
+        {label}
+      </span>
       <span className={`text-3xl font-extrabold tracking-tight ${tone}`}>{value}</span>
     </Card>
+  );
+}
+
+function DashboardSkeleton() {
+  return (
+    <div className="flex flex-col gap-4 p-4">
+      <div className="grid grid-cols-2 gap-3">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="rounded-2xl border border-border/70 bg-surface p-4 shadow-card">
+            <Skeleton className="h-3 w-2/3" />
+            <Skeleton className="mt-3 h-7 w-12" />
+          </div>
+        ))}
+      </div>
+      <div className="rounded-2xl border border-border/70 bg-surface p-4 shadow-card">
+        <Skeleton className="h-3.5 w-28" />
+        <Skeleton className="mt-4 h-44 w-full" />
+      </div>
+    </div>
   );
 }
 
@@ -33,16 +70,16 @@ export default function Dashboard() {
         subtitle="Resumo de hoje"
       />
 
-      {isLoading && <Spinner label="Carregando métricas..." />}
+      {isLoading && <DashboardSkeleton />}
       {isError && <ErrorState message="Não foi possível carregar o dashboard." onRetry={() => void refetch()} />}
 
       {data && (
         <div className="flex flex-col gap-4 p-4">
           <div className="grid grid-cols-2 gap-3">
-            <MetricCard label="Conversas abertas" value={data.metrics.open_conversations} tone="text-primary" />
-            <MetricCard label="Aguardando" value={data.metrics.waiting_conversations} tone="text-warning" />
-            <MetricCard label="Enviadas hoje" value={data.metrics.messages_sent_today} tone="text-success" />
-            <MetricCard label="Recebidas hoje" value={data.metrics.messages_received_today} tone="text-text-primary" />
+            <MetricCard index={0} label="Conversas abertas" value={data.metrics.open_conversations} tone="text-primary" dot="bg-primary" />
+            <MetricCard index={1} label="Aguardando" value={data.metrics.waiting_conversations} tone="text-warning" dot="bg-warning" />
+            <MetricCard index={2} label="Enviadas hoje" value={data.metrics.messages_sent_today} tone="text-success" dot="bg-success" />
+            <MetricCard index={3} label="Recebidas hoje" value={data.metrics.messages_received_today} tone="text-text-primary" dot="bg-text-secondary" />
           </div>
 
           <Card>
@@ -83,7 +120,7 @@ export default function Dashboard() {
               <ul className="flex flex-col divide-y divide-border">
                 {data.topAudios.map((a, idx) => (
                   <li key={a.id} className="flex items-center gap-3 py-2.5">
-                    <span className="flex h-7 w-7 items-center justify-center rounded-full bg-primary-light text-xs font-bold text-primary">
+                    <span className="flex h-7 w-7 items-center justify-center rounded-full bg-primary-gradient text-xs font-bold text-white shadow-soft">
                       {idx + 1}
                     </span>
                     <div className="min-w-0 flex-1">

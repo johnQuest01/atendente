@@ -114,6 +114,29 @@ h3 {
   .text-gradient {
     @apply bg-primary-gradient bg-clip-text text-transparent;
   }
+
+  /* Placeholder de carregamento com brilho deslizante (shimmer). */
+  .skeleton {
+    background-image: linear-gradient(
+      90deg,
+      rgba(16, 24, 40, 0.06) 25%,
+      rgba(16, 24, 40, 0.11) 37%,
+      rgba(16, 24, 40, 0.06) 63%
+    );
+    background-size: 200% 100%;
+    @apply animate-shimmer rounded-lg;
+  }
+}
+
+/* Respeita usuários que pedem menos movimento (acessibilidade). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
 }
 
 /* Esconde scrollbar mantendo o scroll (estilo iOS). */
