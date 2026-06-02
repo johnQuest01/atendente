@@ -50,7 +50,7 @@ export default function Audios() {
     <>
       <PageHeader
         title="Áudios"
-        subtitle="Gravados pela Mayra"
+        subtitle="Áudios enviados pelo agente"
         action={
           <Button size="sm" onClick={() => setModalOpen(true)}>
             <PlusIcon width={18} height={18} /> Novo
@@ -185,7 +185,7 @@ function UploadAudioModal({ open, onClose }: { open: boolean; onClose: () => voi
             placeholder="boa noite, com que voce trabalha, oi"
           />
           <p className="mt-1 text-xs text-text-secondary">
-            Quando o cliente escrever (ou falar) qualquer uma dessas palavras, a Mayra envia este áudio automaticamente.
+            Quando o cliente escrever (ou falar) qualquer uma dessas palavras, o agente envia este áudio automaticamente.
           </p>
         </div>
       </div>
@@ -319,7 +319,7 @@ function EditAudioModal({ audio, onClose }: { audio: Audio | null; onClose: () =
               placeholder="boa noite, com que voce trabalha, oi"
             />
             <p className="mt-1 text-xs text-text-secondary">
-              Quando o cliente escrever (ou falar) qualquer uma dessas palavras, a Mayra envia este áudio automaticamente.
+              Quando o cliente escrever (ou falar) qualquer uma dessas palavras, o agente envia este áudio automaticamente.
             </p>
           </div>
           <label className="flex items-center gap-2 text-sm text-text-primary">

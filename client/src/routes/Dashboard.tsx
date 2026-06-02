@@ -29,7 +29,7 @@ export default function Dashboard() {
   return (
     <>
       <PageHeader
-        title={`Olá, ${user?.name?.split(' ')[0] ?? 'Mayra'} 👋`}
+        title={`Olá, ${user?.name?.split(' ')[0] ?? 'bem-vindo(a)'} 👋`}
         subtitle="Resumo de hoje"
       />
 

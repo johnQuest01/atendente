@@ -25,12 +25,12 @@ export default function Login() {
     <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-b from-primary-light to-bg px-6">
       <div className="w-full max-w-sm">
         <div className="mb-8 flex flex-col items-center gap-3">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary text-3xl font-black text-white shadow-lg">
-            M
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary text-2xl font-black text-white shadow-lg">
+            IA
           </div>
           <div className="text-center">
-            <h1 className="text-2xl font-bold text-text-primary">Mayra AI Sales</h1>
-            <p className="text-sm text-text-secondary">Painel de atendimento</p>
+            <h1 className="text-2xl font-bold text-text-primary">Agente de IA</h1>
+            <p className="text-sm text-text-secondary">Atendimento inteligente no WhatsApp</p>
           </div>
         </div>
 
@@ -39,7 +39,7 @@ export default function Login() {
             label="E-mail"
             type="email"
             autoComplete="email"
-            placeholder="mayra@loja.com"
+            placeholder="seu@email.com"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required

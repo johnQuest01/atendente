@@ -10,12 +10,12 @@ export function Sidebar() {
   return (
     <aside className="hidden w-64 shrink-0 flex-col border-r border-border bg-surface md:flex">
       <div className="flex items-center gap-3 px-5 py-5">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-lg font-black text-white">
-          M
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-sm font-black text-white">
+          IA
         </div>
         <div>
-          <p className="text-sm font-bold leading-tight text-text-primary">Mayra AI</p>
-          <p className="text-xs text-text-secondary">Sales</p>
+          <p className="text-sm font-bold leading-tight text-text-primary">Agente de IA</p>
+          <p className="text-xs text-text-secondary">Atendimento</p>
         </div>
       </div>
 

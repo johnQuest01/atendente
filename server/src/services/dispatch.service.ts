@@ -166,7 +166,7 @@ export async function dispatchProduct(ctx: DispatchContext, productId: string): 
   return msg;
 }
 
-/** Envia um texto livre (resposta do Claude ou mensagem manual da Mayra). */
+/** Envia um texto livre (resposta do Claude ou mensagem manual do operador). */
 export async function dispatchText(ctx: DispatchContext, text: string): Promise<MessageLog> {
   const zapiId = await whatsapp.sendText(ctx.client.phone, text);
   const msg = await insertMessage({

@@ -10,8 +10,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['icons/icon-192.png', 'icons/icon-512.png'],
       manifest: {
-        name: 'Mayra AI Sales',
-        short_name: 'Mayra',
+        name: 'Agente de IA — Atendimento',
+        short_name: 'Agente IA',
         description: 'Painel de atendimento e vendas via WhatsApp com IA.',
         theme_color: '#6C47FF',
         background_color: '#F8F8FA',
