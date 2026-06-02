@@ -15,9 +15,9 @@ import { useAuth } from '@/hooks/useAuth';
 
 function MetricCard({ label, value, tone }: { label: string; value: number; tone: string }) {
   return (
-    <Card className="flex flex-col gap-1">
+    <Card className="card-hover flex flex-col gap-1">
       <span className="text-xs font-medium text-text-secondary">{label}</span>
-      <span className={`text-2xl font-bold ${tone}`}>{value}</span>
+      <span className={`text-3xl font-extrabold tracking-tight ${tone}`}>{value}</span>
     </Card>
   );
 }
@@ -55,20 +55,20 @@ export default function Dashboard() {
                   <AreaChart data={data.activity} margin={{ top: 4, right: 4, left: -20, bottom: 0 }}>
                     <defs>
                       <linearGradient id="in" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#6C47FF" stopOpacity={0.4} />
-                        <stop offset="95%" stopColor="#6C47FF" stopOpacity={0} />
+                        <stop offset="5%" stopColor="#6D4AFF" stopOpacity={0.4} />
+                        <stop offset="95%" stopColor="#6D4AFF" stopOpacity={0} />
                       </linearGradient>
                       <linearGradient id="out" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#22C55E" stopOpacity={0.4} />
-                        <stop offset="95%" stopColor="#22C55E" stopOpacity={0} />
+                        <stop offset="5%" stopColor="#16B364" stopOpacity={0.4} />
+                        <stop offset="95%" stopColor="#16B364" stopOpacity={0} />
                       </linearGradient>
                     </defs>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" vertical={false} />
-                    <XAxis dataKey="hour" tick={{ fontSize: 10, fill: '#6B7280' }} tickLine={false} axisLine={false} />
-                    <YAxis tick={{ fontSize: 10, fill: '#6B7280' }} tickLine={false} axisLine={false} allowDecimals={false} />
+                    <CartesianGrid strokeDasharray="3 3" stroke="#ECEDF3" vertical={false} />
+                    <XAxis dataKey="hour" tick={{ fontSize: 10, fill: '#6A7385' }} tickLine={false} axisLine={false} />
+                    <YAxis tick={{ fontSize: 10, fill: '#6A7385' }} tickLine={false} axisLine={false} allowDecimals={false} />
                     <Tooltip />
-                    <Area type="monotone" dataKey="inbound" stroke="#6C47FF" fill="url(#in)" strokeWidth={2} name="Recebidas" />
-                    <Area type="monotone" dataKey="outbound" stroke="#22C55E" fill="url(#out)" strokeWidth={2} name="Enviadas" />
+                    <Area type="monotone" dataKey="inbound" stroke="#6D4AFF" fill="url(#in)" strokeWidth={2.5} name="Recebidas" />
+                    <Area type="monotone" dataKey="outbound" stroke="#16B364" fill="url(#out)" strokeWidth={2.5} name="Enviadas" />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>

@@ -12,16 +12,17 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const variants: Record<Variant, string> = {
-  primary: 'bg-primary text-white hover:bg-primary/90 disabled:bg-primary/50',
-  secondary: 'bg-primary-light text-primary hover:bg-primary-light/70',
-  ghost: 'bg-transparent text-text-secondary hover:bg-black/5',
-  danger: 'bg-danger text-white hover:bg-danger/90',
+  primary:
+    'bg-primary-gradient text-white shadow-glow hover:brightness-[1.06] disabled:opacity-60 disabled:shadow-none',
+  secondary: 'bg-primary-light text-primary ring-1 ring-primary/10 hover:bg-primary-light/70',
+  ghost: 'bg-transparent text-text-secondary hover:bg-black/[0.04]',
+  danger: 'bg-danger text-white shadow-soft hover:brightness-[1.06]',
 };
 
 const sizes: Record<Size, string> = {
-  sm: 'h-9 px-3 text-sm rounded-lg',
+  sm: 'h-9 px-3.5 text-sm rounded-xl',
   md: 'h-11 px-4 text-[15px] rounded-xl',
-  lg: 'h-13 px-6 text-base rounded-2xl',
+  lg: 'h-12 px-6 text-base rounded-2xl',
 };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
@@ -33,7 +34,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       ref={ref}
       disabled={disabled || loading}
       className={cn(
-        'tap-scale inline-flex items-center justify-center gap-2 font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-70',
+        'tap-scale inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2 focus-visible:ring-offset-bg disabled:cursor-not-allowed disabled:opacity-70',
         variants[variant],
         sizes[size],
         fullWidth && 'w-full',

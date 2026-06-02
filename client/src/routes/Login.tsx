@@ -22,19 +22,23 @@ export default function Login() {
   }
 
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-b from-primary-light to-bg px-6">
-      <div className="w-full max-w-sm">
+    <div className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden bg-bg bg-app-radial px-6">
+      <div className="pointer-events-none absolute -top-24 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-primary/20 blur-3xl" />
+      <div className="relative w-full max-w-sm animate-scale-in">
         <div className="mb-8 flex flex-col items-center gap-3">
-          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary text-2xl font-black text-white shadow-lg">
+          <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary-gradient text-2xl font-black text-white shadow-glow">
             IA
           </div>
           <div className="text-center">
-            <h1 className="text-2xl font-bold text-text-primary">Agente de IA</h1>
+            <h1 className="text-2xl font-extrabold tracking-tight text-text-primary">Agente de IA</h1>
             <p className="text-sm text-text-secondary">Atendimento inteligente no WhatsApp</p>
           </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4 rounded-3xl bg-surface p-6 shadow-card">
+        <form
+          onSubmit={handleSubmit}
+          className="glass flex flex-col gap-4 rounded-3xl p-6 shadow-card-hover"
+        >
           <Input
             label="E-mail"
             type="email"

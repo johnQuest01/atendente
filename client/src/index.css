@@ -3,16 +3,18 @@
 @tailwind utilities;
 
 :root {
-  --color-primary: #6c47ff;
-  --color-primary-light: #eef0ff;
-  --color-success: #22c55e;
-  --color-warning: #f59e0b;
-  --color-danger: #ef4444;
-  --color-bg: #f8f8fa;
+  --color-primary: #6d4aff;
+  --color-primary-dark: #5631e6;
+  --color-primary-light: #eeebff;
+  --color-accent: #b794ff;
+  --color-success: #16b364;
+  --color-warning: #f79009;
+  --color-danger: #f04438;
+  --color-bg: #f4f5fa;
   --color-surface: #ffffff;
-  --color-text-primary: #1a1a2e;
-  --color-text-secondary: #6b7280;
-  --color-border: #e5e7eb;
+  --color-text-primary: #0e1422;
+  --color-text-secondary: #6a7385;
+  --color-border: #ecedf3;
 
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-top: env(safe-area-inset-top, 0px);
@@ -57,13 +59,25 @@ body,
 body {
   margin: 0;
   background-color: var(--color-bg);
+  background-image:
+    radial-gradient(1200px 600px at 85% -10%, rgba(124, 92, 255, 0.1), transparent 60%),
+    radial-gradient(900px 500px at -10% 8%, rgba(183, 148, 255, 0.1), transparent 55%);
+  background-attachment: fixed;
   color: var(--color-text-primary);
   font-family:
-    -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica, Arial,
-    sans-serif;
+    'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, Helvetica,
+    Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
   overflow-x: hidden;
   overscroll-behavior-y: none;
+}
+
+h1,
+h2,
+h3 {
+  font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  letter-spacing: -0.01em;
 }
 
 /* Sem scroll horizontal em nenhuma tela. */
@@ -84,6 +98,21 @@ body {
 
   .safe-top {
     padding-top: var(--safe-top);
+  }
+
+  /* Vidro fosco translúcido (cara de app nativo). */
+  .glass {
+    @apply border border-white/40 bg-white/70 backdrop-blur-xl;
+  }
+
+  /* Card que "levita" suavemente ao passar o mouse (desktop). */
+  .card-hover {
+    @apply transition-all duration-200 hover:-translate-y-0.5 hover:shadow-card-hover;
+  }
+
+  /* Texto com preenchimento em gradiente da marca. */
+  .text-gradient {
+    @apply bg-primary-gradient bg-clip-text text-transparent;
   }
 }
 

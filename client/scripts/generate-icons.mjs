@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const OUT_DIR = path.resolve(__dirname, '../public/icons');
 
-const BG = [0x6c, 0x47, 0xff]; // #6C47FF
+const BG = [0x6d, 0x4a, 0xff]; // #6D4AFF
 const FG = [0xff, 0xff, 0xff];
 
 function crc32(buf) {

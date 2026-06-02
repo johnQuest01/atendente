@@ -8,9 +8,9 @@ export function Sidebar() {
   const { user, logout } = useAuth();
 
   return (
-    <aside className="hidden w-64 shrink-0 flex-col border-r border-border bg-surface md:flex">
+    <aside className="hidden w-64 shrink-0 flex-col border-r border-border/70 bg-surface/70 backdrop-blur-xl md:flex">
       <div className="flex items-center gap-3 px-5 py-5">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-sm font-black text-white">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary-gradient text-sm font-black text-white shadow-glow">
           IA
         </div>
         <div>
@@ -28,10 +28,10 @@ export function Sidebar() {
                 end={to === '/'}
                 className={({ isActive }) =>
                   cn(
-                    'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors',
+                    'flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition-all duration-150',
                     isActive
-                      ? 'bg-primary-light text-primary'
-                      : 'text-text-secondary hover:bg-black/5',
+                      ? 'bg-primary-light text-primary ring-1 ring-primary/10 shadow-soft'
+                      : 'text-text-secondary hover:bg-black/[0.04] hover:text-text-primary',
                   )
                 }
               >
