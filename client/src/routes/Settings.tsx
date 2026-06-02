@@ -7,7 +7,10 @@ import { Badge } from '@/components/ui/Badge';
 import { Toggle } from '@/components/ui/Toggle';
 import { useAuth } from '@/hooks/useAuth';
 import { useAgentStatus, useSetAgentStatus, AGENT_QUERY_KEY } from '@/hooks/useAgent';
+import { usePersona, useSetPersona } from '@/hooks/usePersona';
 import { useSocket } from '@/hooks/useSocket';
+import { toast } from '@/store/appStore';
+import { getErrorMessage } from '@/services/api';
 import { initials } from '@/utils/formatters';
 
 interface HealthData {
@@ -90,6 +93,8 @@ export default function Settings() {
           </div>
         </Card>
 
+        <PersonaCard />
+
         <Card className="flex items-center gap-4">
           <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary-light text-lg font-bold text-primary">
             {initials(user?.name ?? null)}
@@ -137,6 +142,77 @@ export default function Settings() {
         </Button>
       </div>
     </>
+  );
+}
+
+function PersonaCard() {
+  const { data, isLoading } = usePersona();
+  const setPersona = useSetPersona();
+  const [text, setText] = useState('');
+  const [touched, setTouched] = useState(false);
+
+  // Sincroniza o textarea quando os dados chegam (sem sobrescrever a edição em andamento).
+  useEffect(() => {
+    if (data && !touched) setText(data.prompt);
+  }, [data, touched]);
+
+  const isDefault = data?.isDefault ?? true;
+  const dirty = touched && data ? text !== data.prompt : false;
+
+  function save() {
+    setPersona.mutate(text, {
+      onSuccess: () => {
+        setTouched(false);
+        toast('Personalidade da IA salva! O agente já segue as novas instruções.', 'success');
+      },
+      onError: (err) => toast(getErrorMessage(err), 'error'),
+    });
+  }
+
+  function restoreDefault() {
+    if (!data) return;
+    setText(data.default);
+    setTouched(true);
+  }
+
+  return (
+    <Card>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <h2 className="text-base font-bold text-text-primary">Personalidade da IA</h2>
+          <p className="text-sm text-text-secondary">
+            Escreva o contexto, o jeito de falar e as regras que o Claude deve seguir. É como
+            escrever as instruções direto pra IA — ela lê e responde os clientes seguindo isto.
+          </p>
+        </div>
+        <Badge tone={isDefault ? 'primary' : 'success'}>{isDefault ? 'Padrão' : 'Personalizado'}</Badge>
+      </div>
+
+      <textarea
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value);
+          setTouched(true);
+        }}
+        disabled={isLoading}
+        rows={16}
+        spellCheck
+        placeholder="Ex.: Você é a Ana, atendente da Loja X. Fale de forma simpática e curta..."
+        className="mt-1 w-full resize-y rounded-xl border border-border bg-bg p-3 font-mono text-xs leading-relaxed text-text-primary outline-none focus:border-primary"
+      />
+
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <span className="text-xs text-text-secondary">{text.length} caracteres</span>
+        <div className="flex gap-2">
+          <Button size="sm" variant="secondary" onClick={restoreDefault} disabled={setPersona.isPending}>
+            Restaurar padrão
+          </Button>
+          <Button size="sm" onClick={save} loading={setPersona.isPending} disabled={!dirty}>
+            Salvar
+          </Button>
+        </div>
+      </div>
+    </Card>
   );
 }
 

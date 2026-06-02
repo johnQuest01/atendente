@@ -1,6 +1,8 @@
 import { query, queryOne } from '../index';
+import { DEFAULT_AI_PERSONA } from '../../config/persona';
 
 const AGENT_KEY = 'agent_enabled';
+const PERSONA_KEY = 'ai_persona';
 
 /**
  * Cache em memória para evitar uma consulta ao banco a cada mensagem recebida
@@ -40,4 +42,37 @@ export async function setAgentEnabled(enabled: boolean): Promise<boolean> {
   await writeSetting(AGENT_KEY, enabled ? 'true' : 'false');
   agentCache = { enabled, at: Date.now() };
   return enabled;
+}
+
+// ---------------------------------------------------------------------------
+// Persona / instruções da IA (system prompt editável pelo app)
+// ---------------------------------------------------------------------------
+
+let personaCache: { prompt: string; at: number } | null = null;
+
+/**
+ * Retorna a persona (system prompt) que a IA deve seguir. Se o usuário não
+ * personalizou, devolve o padrão. Usa cache curto para não consultar o banco a
+ * cada mensagem recebida (caminho quente do webhook).
+ */
+export async function getAiPersona(): Promise<string> {
+  if (personaCache && Date.now() - personaCache.at < CACHE_TTL_MS) {
+    return personaCache.prompt;
+  }
+  const value = await readSetting(PERSONA_KEY);
+  const prompt = value && value.trim() ? value : DEFAULT_AI_PERSONA;
+  personaCache = { prompt, at: Date.now() };
+  return prompt;
+}
+
+/**
+ * Salva a persona personalizada. Texto vazio limpa a personalização (volta ao
+ * padrão). Atualiza o cache imediatamente (write-through).
+ */
+export async function setAiPersona(prompt: string): Promise<string> {
+  const clean = prompt.trim();
+  await writeSetting(PERSONA_KEY, clean);
+  const effective = clean ? clean : DEFAULT_AI_PERSONA;
+  personaCache = { prompt: effective, at: Date.now() };
+  return effective;
 }

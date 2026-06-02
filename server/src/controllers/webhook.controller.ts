@@ -9,7 +9,7 @@ import {
 } from '../db/queries/conversations';
 import { listProducts } from '../db/queries/products';
 import { insertMessage, markDelivered, markRead, inboundMessageExists } from '../db/queries/messages';
-import { isAgentEnabled } from '../db/queries/settings';
+import { isAgentEnabled, getAiPersona } from '../db/queries/settings';
 import { isPhoneBlocked } from '../db/queries/blocked';
 import { emitNewMessage, emitNewConversation } from '../socket';
 import { matchIntent, getTriggerPhrases } from '../services/matcher.service';
@@ -196,11 +196,13 @@ async function processInbound(inbound: NormalizedInbound): Promise<void> {
   }
 
   const products = await listProducts(true);
+  const systemPrompt = await getAiPersona();
   const reply = await generateReply({
     history,
     client,
     products,
     storeName: env.STORE_NAME,
+    systemPrompt,
   });
   if (reply) {
     await dispatchText(ctx, reply);

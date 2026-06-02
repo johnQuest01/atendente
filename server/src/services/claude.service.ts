@@ -1,39 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { env } from '../config/env';
 import { logger } from '../config/logger';
+import { DEFAULT_AI_PERSONA } from '../config/persona';
 import { formatBRL } from '../utils/text';
 import type { AiHistoryMessage, Client, Product } from '../types';
-
-const SYSTEM_PROMPT = `
-Você é Mayra, atendente comercial da [NOME DA LOJA], especializada em vendas B2B de atacado.
-
-PERFIL:
-- Comunicação calorosa, direta e profissional
-- Fala como uma vendedora experiente, não como um robô
-- Usa linguagem natural brasileira — pode usar "oi", "olha", "perfeito"
-- Nunca revela que é uma IA
-
-CONTEXTO DO NEGÓCIO:
-- Vendas exclusivas para lojistas (B2B) — não atende consumidor final
-- Sem estoque próprio — trabalha com fornecedores
-- Pedido mínimo por produto definido em cada item
-- Prazo de entrega: 3 a 7 dias úteis (confirmar com fornecedor)
-- Formas de pagamento: PIX (5% desconto), boleto 30 dias, cartão em 2x sem juros
-
-OBJETIVOS EM ORDEM DE PRIORIDADE:
-1. Entender o que o cliente precisa
-2. Apresentar o produto certo com preço de atacado
-3. Quebrar objeções de preço mostrando margem do varejista
-4. Fechar o pedido ou agendar follow-up
-5. Fidelizar com atendimento personalizado
-
-REGRAS:
-- Mensagens curtas (máximo 3 linhas por mensagem)
-- Se o cliente pedir foto do produto, informe que vai enviar em seguida
-- Nunca prometa prazo ou preço que não esteja confirmado
-- Se não souber responder, diga que vai verificar e retorna em breve
-- Em caso de reclamação, seja empática antes de resolver
-`.trim();
 
 const client = env.hasAnthropic ? new Anthropic({ apiKey: env.ANTHROPIC_API_KEY }) : null;
 
@@ -109,6 +79,8 @@ export interface GenerateReplyInput {
   client: Client | null;
   products?: Product[];
   storeName?: string;
+  /** Persona/instruções (system prompt) editadas pelo usuário no app. */
+  systemPrompt?: string;
 }
 
 /**
@@ -126,10 +98,11 @@ export async function generateReply(input: GenerateReplyInput): Promise<string |
     messages.push({ role: 'user', content: 'Oi' });
   }
 
-  const system =
-    SYSTEM_PROMPT.replace('[NOME DA LOJA]', input.storeName ?? 'nossa loja') +
-    buildClientContext(input.client) +
-    buildCatalog(input.products);
+  const basePrompt = (input.systemPrompt?.trim() || DEFAULT_AI_PERSONA).replace(
+    /\[NOME DA LOJA\]/g,
+    input.storeName ?? 'nossa loja',
+  );
+  const system = basePrompt + buildClientContext(input.client) + buildCatalog(input.products);
 
   try {
     const response = await client.messages.create({
