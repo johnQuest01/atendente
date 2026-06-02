@@ -8,6 +8,7 @@ import {
   getRecentMessagesForAI,
 } from '../db/queries/conversations';
 import { listProducts } from '../db/queries/products';
+import { listScripts } from '../db/queries/messages_scripts';
 import { insertMessage, markDelivered, markRead, inboundMessageExists } from '../db/queries/messages';
 import { isAgentEnabled, getAiPersona } from '../db/queries/settings';
 import { isPhoneBlocked } from '../db/queries/blocked';
@@ -195,12 +196,16 @@ async function processInbound(inbound: NormalizedInbound): Promise<void> {
     );
   }
 
-  const products = await listProducts(true);
-  const systemPrompt = await getAiPersona();
+  const [products, scripts, systemPrompt] = await Promise.all([
+    listProducts(true),
+    listScripts(true),
+    getAiPersona(),
+  ]);
   const reply = await generateReply({
     history,
     client,
     products,
+    scripts,
     storeName: env.STORE_NAME,
     systemPrompt,
   });

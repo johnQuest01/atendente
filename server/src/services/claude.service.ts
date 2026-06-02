@@ -3,7 +3,7 @@ import { env } from '../config/env';
 import { logger } from '../config/logger';
 import { DEFAULT_AI_PERSONA } from '../config/persona';
 import { formatBRL } from '../utils/text';
-import type { AiHistoryMessage, Client, Product } from '../types';
+import type { AiHistoryMessage, Client, Product, TextScript } from '../types';
 
 const client = env.hasAnthropic ? new Anthropic({ apiKey: env.ANTHROPIC_API_KEY }) : null;
 
@@ -27,6 +27,25 @@ function buildCatalog(products: Product[] | undefined): string {
     return `- ${p.name}: ${price} (${min})`;
   });
   return `\n\nCATÁLOGO DISPONÍVEL (use SEMPRE estes preços e condições; nunca invente valores):\n${lines.join('\n')}`;
+}
+
+/**
+ * Inclui os scripts de mensagem salvos como MODELOS para a IA seguir. Assim a
+ * persona e os scripts trabalham juntos: o Claude reaproveita o tom e o
+ * conteúdo dos textos prontos, adaptando ao contexto da conversa.
+ */
+function buildScriptsReference(scripts: TextScript[] | undefined): string {
+  if (!scripts || scripts.length === 0) return '';
+  const lines = scripts.slice(0, 20).map((s) => {
+    const content = s.content.replace(/\s+/g, ' ').trim().slice(0, 300);
+    return `- [${s.category}] ${s.title}: "${content}"`;
+  });
+  return (
+    '\n\nSCRIPTS/MODELOS DE MENSAGEM (use como base e adapte ao cliente; ' +
+    '{{client_name}} = nome do cliente, {{company_name}} = empresa dele. ' +
+    'Nunca escreva as chaves {{...}} na resposta — substitua pelo valor real ou ' +
+    `omita se não souber):\n${lines.join('\n')}`
+  );
 }
 
 /** Converte um turno (texto/áudio/imagem) em texto legível para a IA. */
@@ -78,6 +97,8 @@ export interface GenerateReplyInput {
   history: AiHistoryMessage[];
   client: Client | null;
   products?: Product[];
+  /** Scripts de mensagem prontos, usados como modelos pela IA. */
+  scripts?: TextScript[];
   storeName?: string;
   /** Persona/instruções (system prompt) editadas pelo usuário no app. */
   systemPrompt?: string;
@@ -102,7 +123,11 @@ export async function generateReply(input: GenerateReplyInput): Promise<string |
     /\[NOME DA LOJA\]/g,
     input.storeName ?? 'nossa loja',
   );
-  const system = basePrompt + buildClientContext(input.client) + buildCatalog(input.products);
+  const system =
+    basePrompt +
+    buildClientContext(input.client) +
+    buildCatalog(input.products) +
+    buildScriptsReference(input.scripts);
 
   try {
     const response = await client.messages.create({

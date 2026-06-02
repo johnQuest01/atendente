@@ -31,13 +31,20 @@ export default function Messages() {
     <>
       <PageHeader
         title="Scripts"
-        subtitle="Mensagens de texto prontas"
+        subtitle="Mensagens prontas — também usadas como modelo pela IA"
         action={
           <Button size="sm" onClick={() => setOpen(true)}>
             <PlusIcon width={18} height={18} /> Novo
           </Button>
         }
       />
+
+      <div className="px-4 pt-3">
+        <p className="rounded-xl bg-primary-light/60 p-3 text-xs text-text-secondary">
+          Estes scripts servem para resposta rápida por palavra-chave <b>e</b> como exemplos
+          que o atendente de IA segue (tom e conteúdo) ao conversar com os clientes.
+        </p>
+      </div>
 
       {isLoading && <Spinner label="Carregando scripts..." />}
       {isError && <ErrorState message="Erro ao carregar scripts." onRetry={() => void refetch()} />}
