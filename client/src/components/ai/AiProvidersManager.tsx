@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
@@ -14,6 +14,7 @@ import {
   useDeleteAiProvider,
   useTestAiCreds,
   useTestSavedAiProvider,
+  useListAiModels,
   type AiKind,
   type AiProviderDto,
   type AiScope,
@@ -45,14 +46,131 @@ interface AiPreset {
 }
 
 // Atalhos para preencher os campos. O failover funciona com qualquer combinação.
+// O `model` de cada preset é o 1º item da lista de MODELS_BY_PRESET (default).
 const AI_PRESETS: AiPreset[] = [
-  { id: 'claude', kind: 'anthropic', label: 'Claude', baseUrl: '', model: 'claude-sonnet-4-6' },
-  { id: 'gemini', kind: 'gemini', label: 'Gemini', baseUrl: '', model: 'gemini-1.5-flash', free: true },
-  { id: 'groq', kind: 'openai', label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', free: true },
-  { id: 'openai', kind: 'openai', label: 'ChatGPT', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  { id: 'claude', kind: 'anthropic', label: 'Claude (Anthropic)', baseUrl: '', model: 'claude-sonnet-4-6' },
+  { id: 'gemini', kind: 'gemini', label: 'Gemini (Google)', baseUrl: '', model: 'gemini-3.5-flash', free: true },
+  { id: 'groq', kind: 'openai', label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', model: 'openai/gpt-oss-120b', free: true },
+  { id: 'openai', kind: 'openai', label: 'ChatGPT (OpenAI)', baseUrl: 'https://api.openai.com/v1', model: 'gpt-5.4-mini' },
   { id: 'openrouter', kind: 'openai', label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', model: 'meta-llama/llama-3.3-70b-instruct:free', free: true },
   { id: 'custom', kind: 'openai', label: 'Personalizado', baseUrl: '', model: '' },
 ];
+
+interface AiModelOption {
+  id: string;
+  label: string;
+  free?: boolean;
+}
+
+/**
+ * Modelos disponíveis por provedor (jun/2026) para o seletor de "Modelo".
+ * Mantemos sempre a opção "Outro (digitar)…" no formulário para não travar
+ * quando um modelo novo for lançado ou um antigo for descontinuado.
+ */
+const MODELS_BY_PRESET: Record<string, AiModelOption[]> = {
+  claude: [
+    { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 — equilíbrio (recomendado)' },
+    { id: 'claude-opus-4-8', label: 'Claude Opus 4.8 — mais capaz' },
+    { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 — rápido e barato' },
+    { id: 'claude-fable-5', label: 'Claude Fable 5 — topo de linha' },
+  ],
+  gemini: [
+    { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash — recomendado', free: true },
+    { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite — econômico', free: true },
+    { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro (preview)' },
+  ],
+  groq: [
+    { id: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B — recomendado', free: true },
+    { id: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B — mais rápido', free: true },
+    { id: 'qwen/qwen3.6-27b', label: 'Qwen 3.6 27B', free: true },
+    { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B (até ago/2026)', free: true },
+    { id: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B Instant (até ago/2026)', free: true },
+  ],
+  openai: [
+    { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini — econômico (recomendado)' },
+    { id: 'gpt-5.4-nano', label: 'GPT-5.4 nano — mais barato' },
+    { id: 'gpt-5.5', label: 'GPT-5.5 — flagship' },
+    { id: 'gpt-5.5-pro', label: 'GPT-5.5 Pro — máximo' },
+  ],
+  openrouter: [
+    { id: 'meta-llama/llama-3.3-70b-instruct:free', label: 'Llama 3.3 70B — grátis', free: true },
+    { id: 'deepseek/deepseek-chat', label: 'DeepSeek Chat' },
+    { id: 'google/gemini-flash-1.5:free', label: 'Gemini Flash — grátis', free: true },
+  ],
+  custom: [],
+};
+
+/** Deriva qual provedor (preset) corresponde ao kind + base URL — para listar os modelos certos. */
+function presetIdFor(kind: AiKind, baseUrl: string): string {
+  if (kind === 'anthropic') return 'claude';
+  if (kind === 'gemini') return 'gemini';
+  const u = (baseUrl || '').toLowerCase();
+  if (u.includes('groq')) return 'groq';
+  if (u.includes('openrouter')) return 'openrouter';
+  if (u.includes('openai')) return 'openai';
+  return 'custom';
+}
+
+/** Distância de edição (Levenshtein) — base para sugerir o modelo certo num typo. */
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  let curr = new Array<number>(b.length + 1);
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[b.length];
+}
+
+/** Os `limit` modelos do catálogo mais parecidos com o que foi digitado. */
+function closestModels(target: string, list: string[], limit = 4): string[] {
+  const t = target.trim().toLowerCase();
+  if (!t || list.length === 0) return [];
+  const max = Math.max(4, Math.ceil(t.length * 0.6));
+  return list
+    .map((id) => {
+      const c = id.toLowerCase();
+      const score = c === t ? 0 : c.includes(t) || t.includes(c) ? 1 : levenshtein(t, c);
+      return { id, score };
+    })
+    .filter((x) => x.score <= max)
+    .sort((a, b) => a.score - b.score || a.id.length - b.id.length || a.id.localeCompare(b.id))
+    .slice(0, limit)
+    .map((x) => x.id);
+}
+
+/**
+ * Checagem OFFLINE e instantânea (sem chave): o ID digitado parece fora do
+ * padrão do provedor? Retorna uma dica curta ou null se parecer ok.
+ */
+function modelHeuristicWarning(presetId: string, kind: AiKind, model: string): string | null {
+  const m = model.trim().toLowerCase();
+  if (!m) return null;
+  if (kind === 'anthropic') {
+    return /^claude-/.test(m) ? null : 'Dica: modelos da Anthropic começam com “claude-”.';
+  }
+  if (kind === 'gemini') {
+    return /^(gemini|gemma|learnlm)/.test(m) ? null : 'Dica: modelos do Google começam com “gemini-”.';
+  }
+  if (presetId === 'openai') {
+    return /^(gpt-|o\d|chatgpt|text-|davinci)/.test(m)
+      ? null
+      : 'Dica: a OpenAI usa “gpt-…” ou “o…” (ex.: gpt-5.4-mini).';
+  }
+  if (presetId === 'groq') {
+    return /(llama|mixtral|gemma|qwen|gpt-oss|deepseek|whisper|kimi|moonshot)/.test(m)
+      ? null
+      : 'Dica: no Groq use algo como “openai/gpt-oss-120b” ou “llama-3.3-70b-versatile”.';
+  }
+  return null; // OpenRouter/personalizado: formato livre (provedor/modelo).
+}
 
 function statusBadge(p: AiProviderDto) {
   if (!p.is_active) return <Badge tone="neutral">Inativa</Badge>;
@@ -285,6 +403,11 @@ function AiProviderModal({
     setBaseUrl(p.baseUrl);
   }
 
+  // Modelos disponíveis para o provedor atual (deriva do kind + base URL).
+  const effectivePreset = presetIdFor(kind, baseUrl);
+  const modelOptions = MODELS_BY_PRESET[effectivePreset] ?? [];
+  const modelInList = modelOptions.some((m) => m.id === model);
+
   const canSubmit =
     label.trim().length >= 2 && model.trim().length >= 1 && (isEdit || apiKey.trim().length >= 1);
   const saving = create.isPending || update.isPending;
@@ -378,12 +501,46 @@ function AiProviderModal({
           onChange={(e) => setLabel(e.target.value)}
           placeholder="Ex.: Claude, Gemini..."
         />
-        <Input
-          label="Modelo"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          placeholder="Ex.: gemini-1.5-flash"
-        />
+        {modelOptions.length > 0 ? (
+          <>
+            <Select
+              label="Modelo"
+              value={modelInList ? model : '__custom__'}
+              onChange={(e) => setModel(e.target.value === '__custom__' ? '' : e.target.value)}
+            >
+              {modelOptions.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                  {m.free ? ' (cota grátis)' : ''}
+                </option>
+              ))}
+              <option value="__custom__">Outro (digitar)…</option>
+            </Select>
+            {!modelInList && (
+              <CustomModelField
+                label="Modelo (personalizado)"
+                scope={scope}
+                kind={kind}
+                baseUrl={baseUrl}
+                presetId={effectivePreset}
+                apiKey={apiKey}
+                model={model}
+                onModel={setModel}
+              />
+            )}
+          </>
+        ) : (
+          <CustomModelField
+            label="Modelo"
+            scope={scope}
+            kind={kind}
+            baseUrl={baseUrl}
+            presetId={effectivePreset}
+            apiKey={apiKey}
+            model={model}
+            onModel={setModel}
+          />
+        )}
         {kind !== 'anthropic' && (
           <Input
             label="Base URL (opcional)"
@@ -420,5 +577,144 @@ function AiProviderModal({
         </div>
       </div>
     </Modal>
+  );
+}
+
+/**
+ * Campo de modelo "Outro" com inteligência:
+ *   - autocompleta a partir do catálogo REAL do provedor (datalist);
+ *   - detecta ao vivo quando o modelo digitado NÃO existe e sugere o nome certo
+ *     (corrige typos por similaridade);
+ *   - sem chave, cai numa checagem offline de formato (heurística por provedor).
+ * O catálogo é buscado uma vez por credencial (cache) e revalidado localmente
+ * a cada tecla — sem martelar a API do provedor.
+ */
+function CustomModelField({
+  label,
+  scope,
+  kind,
+  baseUrl,
+  presetId,
+  apiKey,
+  model,
+  onModel,
+}: {
+  label: string;
+  scope: AiScope;
+  kind: AiKind;
+  baseUrl: string;
+  presetId: string;
+  apiKey: string;
+  model: string;
+  onModel: (value: string) => void;
+}) {
+  const list = useListAiModels(scope);
+  const [models, setModels] = useState<string[] | null>(null);
+  const [authError, setAuthError] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
+  const loadedKeyRef = useRef('');
+
+  const key = apiKey.trim();
+  const canList = key.length >= 8;
+  const credKey = `${kind}|${baseUrl.trim()}|${key}`;
+
+  useEffect(() => {
+    if (!canList) {
+      setModels(null);
+      setAuthError(false);
+      setListError(null);
+      loadedKeyRef.current = '';
+      return;
+    }
+    if (credKey === loadedKeyRef.current) return; // já temos esse catálogo
+    const timer = setTimeout(() => {
+      list.mutate(
+        { kind, apiKey: key, baseUrl: baseUrl.trim() || undefined },
+        {
+          onSuccess: (r) => {
+            loadedKeyRef.current = credKey;
+            setAuthError(r.authError);
+            setListError(r.ok ? null : r.error ?? 'não foi possível listar');
+            setModels(r.ok ? r.models : null);
+          },
+          onError: () => {
+            setModels(null);
+            setAuthError(false);
+            setListError('falha de rede');
+          },
+        },
+      );
+    }, 600);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [credKey, canList]);
+
+  const trimmed = model.trim();
+  const inCatalog = models?.includes(trimmed) ?? false;
+  const suggestions = models && trimmed && !inCatalog ? closestModels(trimmed, models, 4) : [];
+  const heuristic = modelHeuristicWarning(presetId, kind, trimmed);
+  const datalistId = `ai-models-${scope}`;
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Input
+        label={label}
+        value={model}
+        onChange={(e) => onModel(e.target.value)}
+        placeholder="Cole o identificador exato do modelo"
+        list={models && models.length ? datalistId : undefined}
+        autoComplete="off"
+        spellCheck={false}
+      />
+      {models && models.length > 0 && (
+        <datalist id={datalistId}>
+          {models.map((m) => (
+            <option key={m} value={m} />
+          ))}
+        </datalist>
+      )}
+
+      {list.isPending ? (
+        <span className="text-xs text-text-secondary">Buscando modelos disponíveis no provedor…</span>
+      ) : !canList ? (
+        <span className={heuristic ? 'text-xs text-warning' : 'text-xs text-text-secondary'}>
+          {heuristic ?? 'Informe a chave de API para validar o modelo automaticamente.'}
+        </span>
+      ) : authError ? (
+        <span className="text-xs text-danger">Chave inválida — não foi possível listar os modelos.</span>
+      ) : !models ? (
+        <span className={heuristic ? 'text-xs text-warning' : 'text-xs text-text-secondary'}>
+          {heuristic ??
+            `Não consegui listar os modelos${listError ? ` (${listError})` : ''}; confira o ID no painel do provedor.`}
+        </span>
+      ) : !trimmed ? (
+        <span className="text-xs text-text-secondary">
+          {models.length} modelos disponíveis — comece a digitar para autocompletar.
+        </span>
+      ) : inCatalog ? (
+        <span className="text-xs text-success">✓ Modelo válido neste provedor.</span>
+      ) : (
+        <div className="flex flex-col gap-1">
+          <span className="text-xs text-danger">
+            Modelo “{trimmed}” não existe neste provedor.
+          </span>
+          {suggestions.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1">
+              <span className="text-xs text-text-secondary">Você quis dizer:</span>
+              {suggestions.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  onClick={() => onModel(s)}
+                  className="rounded-full border border-primary/40 bg-primary-light px-2 py-0.5 text-xs font-medium text-primary transition hover:bg-primary/10"
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }

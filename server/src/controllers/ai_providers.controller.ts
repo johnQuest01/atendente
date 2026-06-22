@@ -12,6 +12,7 @@ import {
 import { getTenantById } from '../db/queries/tenants';
 import { currentYm, getAiUsage } from '../db/queries/ai_usage';
 import { adapters, invalidateAiCache, getChainStatus } from '../services/ai/orchestrator';
+import { fetchModels } from '../services/ai/model-catalog';
 import type { AiKind } from '../services/ai/types';
 import { AppError, NotFoundError } from '../utils/errors';
 
@@ -93,6 +94,13 @@ export const testAiCredsSchema = z.object({
   model: z.string().trim().min(1, 'Informe o modelo.').max(120),
 });
 
+/** Lista os modelos disponíveis de um provedor (para o seletor inteligente). */
+export const listAiModelsSchema = z.object({
+  kind: kindEnum,
+  apiKey: z.string().trim().min(1, 'Informe a chave de API.'),
+  baseUrl: optionalUrl,
+});
+
 /** Resolve o escopo (empresa ou global) a partir da requisição. */
 type ScopeResolver = (req: Request) => string | null;
 
@@ -103,6 +111,7 @@ export interface AiProviderControllers {
   removeAiProvider: (req: Request, res: Response) => Promise<void>;
   testAiProvider: (req: Request, res: Response) => Promise<void>;
   testAiCreds: (req: Request, res: Response) => Promise<void>;
+  listModels: (req: Request, res: Response) => Promise<void>;
   getAiUsageInfo: (req: Request, res: Response) => Promise<void>;
 }
 
@@ -196,6 +205,21 @@ export function makeAiProviderControllers(scopeOf: ScopeResolver): AiProviderCon
         model: input.model,
       });
       res.json(result);
+    },
+
+    /**
+     * Lista os modelos disponíveis de um provedor (usa a chave informada, sem
+     * salvar nada). Alimenta o seletor inteligente do campo "Outro": permite
+     * autocompletar e detectar quando o usuário digita um modelo inexistente.
+     */
+    async listModels(req, res) {
+      const input = req.body as z.infer<typeof listAiModelsSchema>;
+      const r = await fetchModels(input.kind as AiKind, {
+        apiKey: input.apiKey,
+        baseUrl: input.baseUrl ? input.baseUrl : null,
+        model: '',
+      });
+      res.json({ ok: r.ok, authError: r.authError, models: r.models, error: r.error ?? null });
     },
 
     /** Uso de IA do mês + teto + de onde vem a corrente (própria ou plataforma). */

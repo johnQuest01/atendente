@@ -79,6 +79,22 @@ export interface TestResult {
   detail: string;
 }
 
+export interface ListAiModelsInput {
+  kind: AiKind;
+  apiKey: string;
+  baseUrl?: string;
+}
+
+export interface AiModelsResult {
+  /** Conseguiu listar os modelos (endpoint respondeu). */
+  ok: boolean;
+  /** Chave inválida/sem permissão. */
+  authError: boolean;
+  /** IDs dos modelos disponíveis no provedor. */
+  models: string[];
+  error: string | null;
+}
+
 export const aiProvidersQueryKey = (scope: AiScope) => ['ai-providers', scope] as const;
 export const aiUsageQueryKey = (scope: AiScope) => ['ai-usage', scope] as const;
 
@@ -150,6 +166,16 @@ export function useTestAiCreds(scope: AiScope) {
   return useMutation({
     mutationFn: async (input: TestAiCredsInput) => {
       const { data } = await api.post<TestResult>(`${BASE[scope]}/test`, input);
+      return data;
+    },
+  });
+}
+
+/** Lista os modelos disponíveis de um provedor (seletor inteligente / campo "Outro"). */
+export function useListAiModels(scope: AiScope) {
+  return useMutation({
+    mutationFn: async (input: ListAiModelsInput) => {
+      const { data } = await api.post<AiModelsResult>(`${BASE[scope]}/models`, input);
       return data;
     },
   });

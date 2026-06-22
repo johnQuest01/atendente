@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { validateKeyAndModel } from '../model-catalog';
 import {
   AiProviderError,
   classifyHttpError,
@@ -52,19 +53,8 @@ export const anthropicAdapter: AiAdapter = {
     }
   },
 
-  async validateKey(creds) {
-    const base = (creds.baseUrl || DEFAULT_BASE).replace(/\/+$/, '');
-    try {
-      // GET /v1/models valida a chave sem consumir tokens.
-      const res = await fetch(`${base}/v1/models`, {
-        headers: { 'x-api-key': creds.apiKey, 'anthropic-version': '2023-06-01' },
-        signal: AbortSignal.timeout(6000),
-      });
-      if (res.ok) return { ok: true, detail: `Chave válida (modelo ${creds.model}).` };
-      if (res.status === 401) return { ok: false, detail: 'Chave inválida ou revogada (401).' };
-      return { ok: false, detail: `Anthropic respondeu HTTP ${res.status}.` };
-    } catch (err) {
-      return { ok: false, detail: err instanceof Error ? err.message : 'Falha ao validar.' };
-    }
+  // Valida a chave E confere se o modelo existe (via catalogo /v1/models).
+  validateKey(creds) {
+    return validateKeyAndModel('anthropic', creds);
   },
 };

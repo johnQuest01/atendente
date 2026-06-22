@@ -1,3 +1,4 @@
+import { validateKeyAndModel } from '../model-catalog';
 import { classifyHttpError, classifyNetworkError, type AiAdapter, type ChatMessage } from '../types';
 
 /**
@@ -51,19 +52,8 @@ export const geminiAdapter: AiAdapter = {
     return text;
   },
 
-  async validateKey(creds) {
-    const base = (creds.baseUrl || DEFAULT_BASE).replace(/\/+$/, '');
-    try {
-      const res = await fetch(`${base}/models?key=${encodeURIComponent(creds.apiKey)}`, {
-        signal: AbortSignal.timeout(6000),
-      });
-      if (res.ok) return { ok: true, detail: `Chave válida (modelo ${creds.model}).` };
-      if (res.status === 400 || res.status === 403) {
-        return { ok: false, detail: 'Chave inválida ou sem permissão.' };
-      }
-      return { ok: false, detail: `Gemini respondeu HTTP ${res.status}.` };
-    } catch (err) {
-      return { ok: false, detail: err instanceof Error ? err.message : 'Falha ao validar.' };
-    }
+  // Valida a chave E confere se o modelo existe (via catalogo /models).
+  validateKey(creds) {
+    return validateKeyAndModel('gemini', creds);
   },
 };

@@ -21,6 +21,7 @@ import {
   updateAiProviderSchema,
   aiProviderIdParamSchema,
   testAiCredsSchema,
+  listAiModelsSchema,
 } from '../controllers/ai_providers.controller';
 
 const router = Router();
@@ -63,6 +64,13 @@ router.post(
   adminOnly,
   validate({ body: testAiCredsSchema }),
   asyncHandler(tenantAiProviders.testAiCreds),
+);
+// Lista os modelos disponíveis do provedor (seletor inteligente do modal).
+router.post(
+  '/ai/providers/models',
+  adminOnly,
+  validate({ body: listAiModelsSchema }),
+  asyncHandler(tenantAiProviders.listModels),
 );
 router.patch(
   '/ai/providers/:id',
