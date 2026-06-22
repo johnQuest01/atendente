@@ -11,6 +11,7 @@ import apiRoutes from './routes';
 import webhookRoutes from './routes/webhook.routes';
 import mediaRoutes from './routes/media.routes';
 import { logStorageMode } from './services/storage.service';
+import { isAiConfigured } from './services/ai.service';
 import { apiLimiter, webhookLimiter } from './middleware/rateLimit.middleware';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 
@@ -78,7 +79,12 @@ async function start(): Promise<void> {
   server.listen(env.PORT, () => {
     logger.info(`Servidor rodando em http://localhost:${env.PORT} (${env.NODE_ENV})`);
     logStorageMode();
-    if (!env.hasAnthropic) logger.warn('ANTHROPIC_API_KEY ausente — respostas via Claude desativadas.');
+    void isAiConfigured().then((ok) => {
+      if (!ok)
+        logger.warn(
+          'Nenhum provedor de IA configurado — respostas automáticas desativadas. Cadastre uma IA em /admin (ou defina ANTHROPIC_API_KEY).',
+        );
+    });
     if (!env.hasWhatsapp)
       logger.warn(`Provedor de WhatsApp (${env.WHATSAPP_PROVIDER}) não configurado — envios serão simulados.`);
     warnInsecureProductionConfig();

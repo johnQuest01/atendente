@@ -1,11 +1,11 @@
-import Anthropic from '@anthropic-ai/sdk';
-import { env } from '../config/env';
-import { logger } from '../config/logger';
 import { DEFAULT_AI_PERSONA } from '../config/persona';
+import { logger } from '../config/logger';
 import { formatBRL } from '../utils/text';
 import type { AiHistoryMessage, Client, Product, TextScript } from '../types';
+import { complete, isAiConfigured } from './ai/orchestrator';
+import type { ChatMessage } from './ai/types';
 
-const client = env.hasAnthropic ? new Anthropic({ apiKey: env.ANTHROPIC_API_KEY }) : null;
+export { isAiConfigured };
 
 function buildClientContext(c: Client | null): string {
   if (!c) return '';
@@ -31,8 +31,8 @@ function buildCatalog(products: Product[] | undefined): string {
 
 /**
  * Inclui os scripts de mensagem salvos como MODELOS para a IA seguir. Assim a
- * persona e os scripts trabalham juntos: o Claude reaproveita o tom e o
- * conteúdo dos textos prontos, adaptando ao contexto da conversa.
+ * persona e os scripts trabalham juntos: a IA reaproveita o tom e o conteúdo
+ * dos textos prontos, adaptando ao contexto da conversa.
  */
 function buildScriptsReference(scripts: TextScript[] | undefined): string {
   if (!scripts || scripts.length === 0) return '';
@@ -53,12 +53,8 @@ function describeMessage(msg: AiHistoryMessage): string {
   if (msg.type === 'text') return msg.content ?? '';
   if (msg.type === 'audio') {
     if (msg.direction === 'outbound') {
-      // Representa o áudio enviado como o que foi falado (texto natural),
-      // para o histórico ficar como um diálogo normal e o modelo NÃO copiar
-      // anotações meta na resposta.
       return msg.audio_transcription ?? (msg.audio_title ? `[áudio: ${msg.audio_title}]` : '[áudio]');
     }
-    // Áudio do cliente: o conteúdo guarda a transcrição (quando disponível).
     return msg.content && msg.content !== '[áudio]' ? msg.content : '[áudio sem transcrição]';
   }
   if (msg.type === 'image') {
@@ -69,23 +65,26 @@ function describeMessage(msg: AiHistoryMessage): string {
   return msg.content ?? '[documento]';
 }
 
-function toAnthropicMessages(history: AiHistoryMessage[]): Anthropic.MessageParam[] {
-  const raw: Anthropic.MessageParam[] = [];
+/**
+ * Normaliza o histórico num formato agnóstico de provedor: alterna user/assistant,
+ * começa com 'user' e funde turnos consecutivos do mesmo papel. Cada adaptador
+ * traduz isso para o formato nativo da sua API.
+ */
+function toChatMessages(history: AiHistoryMessage[]): ChatMessage[] {
+  const raw: ChatMessage[] = [];
   for (const msg of history) {
     const content = describeMessage(msg).trim();
     if (!content) continue;
     raw.push({ role: msg.direction === 'inbound' ? 'user' : 'assistant', content });
   }
 
-  // A API exige começar com 'user'.
   while (raw.length > 0 && raw[0].role !== 'user') raw.shift();
 
-  // Funde turnos consecutivos do mesmo papel (a API exige alternância).
-  const merged: Anthropic.MessageParam[] = [];
+  const merged: ChatMessage[] = [];
   for (const m of raw) {
     const last = merged[merged.length - 1];
-    if (last && last.role === m.role && typeof last.content === 'string') {
-      last.content = `${last.content}\n${m.content as string}`;
+    if (last && last.role === m.role) {
+      last.content = `${last.content}\n${m.content}`;
     } else {
       merged.push({ role: m.role, content: m.content });
     }
@@ -105,16 +104,12 @@ export interface GenerateReplyInput {
 }
 
 /**
- * Gera uma resposta humanizada de vendas com base no histórico da conversa.
- * Retorna null se a Anthropic não estiver configurada.
+ * Gera uma resposta humanizada de vendas com base no histórico da conversa,
+ * usando o provedor de IA ativo (com failover automático). Retorna null se
+ * nenhum provedor estiver configurado ou todos falharem.
  */
 export async function generateReply(input: GenerateReplyInput): Promise<string | null> {
-  if (!client) {
-    logger.warn('ANTHROPIC_API_KEY ausente — pulando geração via Claude.');
-    return null;
-  }
-
-  const messages = toAnthropicMessages(input.history);
+  const messages = toChatMessages(input.history);
   if (messages.length === 0) {
     messages.push({ role: 'user', content: 'Oi' });
   }
@@ -129,26 +124,12 @@ export async function generateReply(input: GenerateReplyInput): Promise<string |
     buildCatalog(input.products) +
     buildScriptsReference(input.scripts);
 
-  try {
-    const response = await client.messages.create({
-      model: env.CLAUDE_MODEL,
-      max_tokens: 500,
-      temperature: 0.7,
-      system,
-      messages,
-    });
-
-    const text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map((b) => b.text)
-      .join('\n')
-      .trim();
-
-    return text || null;
-  } catch (err) {
-    logger.error('Erro ao chamar a Anthropic API', err);
+  const result = await complete({ system, messages, maxTokens: 500, temperature: 0.7 });
+  if (!result) {
+    logger.warn('Sem resposta da IA (nenhum provedor disponível ou todos em falha).');
     return null;
   }
+  return result.text || null;
 }
 
 export interface ExtractedClientInfo {
@@ -160,14 +141,12 @@ export interface ExtractedClientInfo {
 
 /**
  * Extrai dados estruturados do cliente a partir do histórico da conversa
- * (nome, empresa, segmento, necessidade). Retorna null se a IA não estiver
- * configurada ou se não houver nada confiável a extrair.
+ * (nome, empresa, segmento, necessidade). Usa o provedor de IA ativo. Retorna
+ * null se a IA não estiver configurada ou se não houver nada confiável.
  */
 export async function extractClientInfo(
   history: AiHistoryMessage[],
 ): Promise<ExtractedClientInfo | null> {
-  if (!client) return null;
-
   const transcript = history
     .filter((m) => (m.type === 'text' || m.type === 'audio') && m.content && m.content !== '[áudio]')
     .map((m) => `${m.direction === 'inbound' ? 'Cliente' : 'Atendente'}: ${m.content}`)
@@ -187,23 +166,17 @@ export async function extractClientInfo(
     'Use null quando a informação não estiver clara. NUNCA invente.',
   ].join('\n');
 
+  const result = await complete({
+    system,
+    messages: [{ role: 'user', content: transcript }],
+    maxTokens: 300,
+    temperature: 0,
+  });
+  if (!result) return null;
+
   try {
-    const response = await client.messages.create({
-      model: env.CLAUDE_MODEL,
-      max_tokens: 300,
-      temperature: 0,
-      system,
-      messages: [{ role: 'user', content: transcript }],
-    });
-
-    const text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map((b) => b.text)
-      .join('');
-
-    const match = text.match(/\{[\s\S]*\}/);
+    const match = result.text.match(/\{[\s\S]*\}/);
     if (!match) return null;
-
     const parsed = JSON.parse(match[0]) as Partial<ExtractedClientInfo>;
     return {
       name: parsed.name ?? null,
@@ -212,7 +185,7 @@ export async function extractClientInfo(
       notes: parsed.notes ?? null,
     };
   } catch (err) {
-    logger.warn('Falha ao extrair dados do cliente via IA', err);
+    logger.warn('Falha ao interpretar JSON de extração de dados do cliente', err);
     return null;
   }
 }

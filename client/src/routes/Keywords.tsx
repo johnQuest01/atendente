@@ -19,7 +19,7 @@ const TYPE_LABELS: Record<ContentType, string> = {
   audio: 'Áudio',
   text: 'Script',
   product: 'Produto',
-  claude: 'IA (Claude)',
+  claude: 'IA (automática)',
 };
 
 const TYPE_TONE: Record<ContentType, 'primary' | 'success' | 'warning' | 'neutral'> = {
@@ -161,7 +161,7 @@ function CreateKeywordModal({ open, onClose }: { open: boolean; onClose: () => v
           <option value="audio">Áudio</option>
           <option value="text">Script de texto</option>
           <option value="product">Produto</option>
-          <option value="claude">IA (Claude)</option>
+          <option value="claude">IA (resposta automática)</option>
         </Select>
         {contentType !== 'claude' && (
           <Select label="Conteúdo de destino" value={contentId} onChange={(e) => setContentId(e.target.value)}>

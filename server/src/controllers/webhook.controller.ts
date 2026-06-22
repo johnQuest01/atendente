@@ -15,7 +15,7 @@ import { isAgentEnabled, getAiPersona } from '../db/queries/settings';
 import { isPhoneBlocked } from '../db/queries/blocked';
 import { emitNewMessage, emitNewConversation } from '../socket';
 import { matchIntent, getTriggerPhrases } from '../services/matcher.service';
-import { extractClientInfo, generateReply } from '../services/claude.service';
+import { extractClientInfo, generateReply, isAiConfigured } from '../services/ai.service';
 import {
   transcribeAudioFromBase64,
   transcribeAudioFromUrl,
@@ -211,11 +211,11 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
     if (sent) return;
   }
 
-  // Fallback: Claude precisa do histórico + catálogo de produtos disponíveis.
+  // Fallback: a IA precisa do histórico + catálogo de produtos disponíveis.
   const history = await getRecentMessagesForAI(tenantId, conversation.id, 20);
 
   // Coleta de dados do cliente em segundo plano (não bloqueia a resposta).
-  if (env.hasAnthropic) {
+  if (await isAiConfigured()) {
     void enrichClientFromConversation(tenantId, client, history).catch((err) =>
       logger.warn('Falha ao enriquecer cliente', err),
     );
@@ -237,7 +237,7 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
   if (reply) {
     await dispatchText(ctx, reply);
   } else {
-    logger.warn('Sem resposta automática disponível (Claude indisponível e nenhum match).');
+    logger.warn('Sem resposta automática disponível (nenhuma IA disponível e nenhum match).');
   }
 }
 

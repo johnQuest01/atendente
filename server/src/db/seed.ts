@@ -9,6 +9,7 @@ import {
   upsertConnection,
   type WhatsappSecrets,
 } from './queries/whatsapp_connections';
+import { countAiProviders, createAiProvider } from './queries/ai_providers';
 import type { User } from '../types';
 
 /** Garante a empresa (tenant) padrão da Fase 1, com UUID fixo. Idempotente. */
@@ -134,10 +135,47 @@ async function ensureDefaultWhatsappConnection(): Promise<void> {
   logWebhookUrl(conn.webhook_token);
 }
 
+/**
+ * Continuidade da IA: se ainda não houver provedores cadastrados e existir
+ * ANTHROPIC_API_KEY no .env, cria o Claude como provedor padrão (prioridade 0).
+ * Assim a automação segue igual e o dono pode adicionar Gemini/Groq/OpenAI no
+ * painel para o failover. Idempotente. Requer ENCRYPTION_KEY (para cifrar a chave).
+ */
+async function ensureDefaultAiProvider(): Promise<void> {
+  if (!hasEncryptionKey()) {
+    logger.warn(
+      'ENCRYPTION_KEY ausente — não cadastrei o provedor de IA padrão. A IA segue no fallback do .env (Claude).',
+    );
+    return;
+  }
+
+  const count = await countAiProviders();
+  if (count > 0) {
+    logger.info(`Provedores de IA já cadastrados (${count}). Nada a fazer.`);
+    return;
+  }
+
+  if (!env.hasAnthropic) {
+    logger.info('Sem ANTHROPIC_API_KEY no .env — nenhum provedor de IA padrão criado. Cadastre em /admin.');
+    return;
+  }
+
+  await createAiProvider({
+    kind: 'anthropic',
+    label: 'Claude',
+    apiKey: env.ANTHROPIC_API_KEY,
+    model: env.CLAUDE_MODEL,
+    priority: 0,
+    isActive: true,
+  });
+  logger.info('Provedor de IA padrão criado a partir do .env: Claude (Anthropic).');
+}
+
 ensureDefaultTenant()
   .then(() => seedAdmin())
   .then(() => ensureSuperAdmin())
   .then(() => ensureDefaultWhatsappConnection())
+  .then(() => ensureDefaultAiProvider())
   .then(() => closePool())
   .then(() => process.exit(0))
   .catch(async (err) => {

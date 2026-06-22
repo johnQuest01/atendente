@@ -103,7 +103,10 @@ export default function Settings() {
           </div>
           <ul className="flex flex-col divide-y divide-border">
             <StatusRow label="Servidor / Banco" check={health?.services.database} />
-            <StatusRow label="Claude (Anthropic)" check={health?.services.claude} />
+            <StatusRow
+              label={`IA${health?.aiProvider && health.aiProvider !== 'nenhum' ? ` (${health.aiProvider})` : ''}`}
+              check={health?.services.ai}
+            />
             <StatusRow label="Transcrição de áudio (STT)" check={health?.services.transcription} />
             <StatusRow
               label={`WhatsApp (${PROVIDER_LABEL[health?.whatsappProvider ?? 'zapi'] ?? 'Z-API'})`}

@@ -10,10 +10,12 @@ export interface SystemStatus {
   status: 'ok' | 'degraded';
   timestamp: string;
   whatsappProvider: 'zapi' | 'evolution';
+  /** Provedor de IA ativo no momento (ex.: "Claude"), ou "nenhum". */
+  aiProvider: string;
   storage: 'remote' | 'local';
   services: {
     database: ServiceCheck;
-    claude: ServiceCheck;
+    ai: ServiceCheck;
     whatsapp: ServiceCheck;
     transcription: ServiceCheck;
   };

@@ -133,3 +133,10 @@ export const CopyIcon = (p: IconProps) => (
     <path d="M5 15V5a2 2 0 0 1 2-2h10" />
   </svg>
 );
+
+export const SparklesIcon = (p: IconProps) => (
+  <svg {...base} {...p}>
+    <path d="M12 3l1.9 4.6L18.5 9.5 13.9 11.4 12 16l-1.9-4.6L5.5 9.5l4.6-1.9L12 3z" />
+    <path d="M19 14l.7 1.8L21.5 16.5 19.7 17.2 19 19l-.7-1.8L16.5 16.5l1.8-.7L19 14z" />
+  </svg>
+);

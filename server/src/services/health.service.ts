@@ -1,6 +1,7 @@
 import { env } from '../config/env';
 import { pool } from '../db';
 import { getTenantWhatsapp } from './whatsapp.service';
+import { adapters, getChainStatus, resolveChain } from './ai/orchestrator';
 import type { WhatsappProviderName } from '../db/queries/whatsapp_connections';
 
 /**
@@ -9,7 +10,7 @@ import type { WhatsappProviderName } from '../db/queries/whatsapp_connections';
  * retorna { ok, detail } com o motivo legível da falha.
  *
  * O check de WhatsApp é POR EMPRESA (tenant): usa a conexão cadastrada do
- * tenant. Banco, Claude e STT são globais (chave única da plataforma).
+ * tenant. Banco, IA e STT são globais (config única da plataforma).
  *
  * Há um cache curto, por tenant, para evitar martelar as APIs externas se a
  * tela de status for atualizada várias vezes seguidas.
@@ -24,10 +25,12 @@ export interface HealthReport {
   status: 'ok' | 'degraded';
   timestamp: string;
   whatsappProvider: WhatsappProviderName;
+  /** Provedor de IA ativo no momento (ex.: "Claude"), ou "nenhum". */
+  aiProvider: string;
   storage: 'remote' | 'local';
   services: {
     database: ServiceCheck;
-    claude: ServiceCheck;
+    ai: ServiceCheck;
     whatsapp: ServiceCheck;
     transcription: ServiceCheck;
   };
@@ -51,24 +54,35 @@ async function checkDatabase(): Promise<ServiceCheck> {
   }
 }
 
-async function checkClaude(): Promise<ServiceCheck> {
-  if (!env.hasAnthropic) {
-    return { ok: false, detail: 'ANTHROPIC_API_KEY ausente — IA desativada.' };
+/**
+ * Valida a IA: testa a chave do provedor ATIVO (o primeiro fora de cooldown) e
+ * descreve a cadeia de fallback. Com mais de um provedor, a IA é considerada
+ * "ok" mesmo se o ativo falhar (o failover cobre).
+ */
+async function checkAi(): Promise<{ check: ServiceCheck; provider: string }> {
+  const chain = await resolveChain();
+  if (chain.length === 0) {
+    return { check: { ok: false, detail: 'Nenhum provedor de IA configurado.' }, provider: 'nenhum' };
   }
+
+  const status = await getChainStatus();
+  const isCold = (id: string) => status.find((s) => s.id === id)?.inCooldown ?? false;
+  const active = chain.find((p) => !isCold(p.id)) ?? chain[0];
+  const others = chain.filter((p) => p.id !== active.id).map((p) => p.label);
+  const fallbackTxt = others.length ? ` Fallback: ${others.join(' → ')}.` : ' Sem fallback configurado.';
+  const hasFallback = chain.length > 1;
+
   try {
-    // GET /v1/models valida a chave sem consumir tokens.
-    const res = await fetch('https://api.anthropic.com/v1/models', {
-      headers: {
-        'x-api-key': env.ANTHROPIC_API_KEY as string,
-        'anthropic-version': '2023-06-01',
-      },
-      signal: AbortSignal.timeout(6000),
-    });
-    if (res.ok) return { ok: true, detail: `Chave válida (modelo ${env.CLAUDE_MODEL}).` };
-    if (res.status === 401) return { ok: false, detail: 'Chave inválida ou revogada (401).' };
-    return { ok: false, detail: `Anthropic respondeu HTTP ${res.status}.` };
+    const result = await adapters[active.kind].validateKey(active.creds);
+    return {
+      check: { ok: result.ok || hasFallback, detail: `Ativa: ${active.label}. ${result.detail}${fallbackTxt}` },
+      provider: active.label,
+    };
   } catch (err) {
-    return { ok: false, detail: errMessage(err, 'Falha ao validar o Claude.') };
+    return {
+      check: { ok: hasFallback, detail: `${active.label}: ${errMessage(err, 'Falha ao validar.')}${fallbackTxt}` },
+      provider: active.label,
+    };
   }
 }
 
@@ -103,9 +117,9 @@ export async function getHealthReport(tenantId: string, force = false): Promise<
   }
 
   const wa = await getTenantWhatsapp(tenantId);
-  const [database, claude, wpp, transcription] = await Promise.all([
+  const [database, ai, wpp, transcription] = await Promise.all([
     checkDatabase(),
-    checkClaude(),
+    checkAi(),
     wa.getConnectionStatus(),
     checkTranscription(),
   ]);
@@ -115,8 +129,9 @@ export async function getHealthReport(tenantId: string, force = false): Promise<
     status: database.ok && wpp.ok ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),
     whatsappProvider: wa.provider,
+    aiProvider: ai.provider,
     storage: env.hasRemoteStorage ? 'remote' : 'local',
-    services: { database, claude, whatsapp: wpp, transcription },
+    services: { database, ai: ai.check, whatsapp: wpp, transcription },
   };
 
   cache.set(tenantId, { at: Date.now(), report });
