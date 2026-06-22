@@ -11,12 +11,18 @@ import * as evolution from './evolution.service';
  * controller) depende apenas deste módulo, nunca dos provedores diretos.
  */
 
+export interface ProviderStatus {
+  ok: boolean;
+  detail: string;
+}
+
 interface WhatsappProvider {
   sendText: (phone: string, message: string) => Promise<string | null>;
   sendAudio: (phone: string, audioUrl: string) => Promise<string | null>;
   sendImage: (phone: string, imageUrl: string, caption?: string) => Promise<string | null>;
   sendImages: (phone: string, imageUrls: string[], caption?: string) => Promise<Array<string | null>>;
   markAsRead: (phone: string, messageId: string) => Promise<string | null>;
+  getConnectionStatus: () => Promise<ProviderStatus>;
 }
 
 const provider: WhatsappProvider = env.WHATSAPP_PROVIDER === 'evolution' ? evolution : zapi;
@@ -28,6 +34,8 @@ export const sendAudio = provider.sendAudio;
 export const sendImage = provider.sendImage;
 export const sendImages = provider.sendImages;
 export const markAsRead = provider.markAsRead;
+/** Estado real da conexão do provedor ativo (celular pareado / instância aberta). */
+export const getConnectionStatus = provider.getConnectionStatus;
 
 // ---------------------------------------------------------------------------
 // Parsing normalizado dos webhooks de entrada

@@ -1,7 +1,7 @@
 import http from 'node:http';
-import path from 'node:path';
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import { env } from './config/env';
 import { corsOrigin } from './config/cors';
 import { logger } from './config/logger';
@@ -10,9 +10,24 @@ import { initSocket } from './socket';
 import apiRoutes from './routes';
 import webhookRoutes from './routes/webhook.routes';
 import mediaRoutes from './routes/media.routes';
+import { logStorageMode } from './services/storage.service';
+import { apiLimiter, webhookLimiter } from './middleware/rateLimit.middleware';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 
 const app = express();
+
+// Atrás do proxy do Render: confia no 1º proxy para enxergar o IP real
+// (necessário para o rate limit funcionar por IP, e não por proxy).
+app.set('trust proxy', 1);
+
+// Cabeçalhos de segurança (clickjacking, MIME sniffing, HSTS, CSP...).
+// crossOriginResourcePolicy = cross-origin para o painel/Z-API conseguirem
+// carregar a mídia servida em /media e /uploads de outra origem.
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  }),
+);
 
 app.use(
   cors({
@@ -30,25 +45,23 @@ app.use('/uploads', express.static(env.uploadDirAbsolute));
 // a Z-API precisa baixar o áudio para enviar ao cliente no WhatsApp.
 app.use('/media', mediaRoutes);
 
-// Healthcheck.
+// Healthcheck LEVE (probe do Render): só o banco, resposta rápida. O status
+// REAL e detalhado das integrações fica em GET /api/settings/status (autenticado),
+// para não martelar/atrasar as APIs externas no probe automático da plataforma.
 app.get('/health', async (_req, res) => {
   const db = await checkDbConnection();
   res.status(db ? 200 : 503).json({
     status: db ? 'ok' : 'degraded',
     db,
-    anthropic: env.hasAnthropic,
-    transcription: env.hasStt,
-    zapi: env.hasWhatsapp,
-    whatsappProvider: env.WHATSAPP_PROVIDER,
     timestamp: new Date().toISOString(),
   });
 });
 
-// Webhook do WhatsApp (sem auth — protegido por token opcional).
-app.use('/webhook', webhookRoutes);
+// Webhook do WhatsApp (sem auth — protegido por token + rate limit).
+app.use('/webhook', webhookLimiter, webhookRoutes);
 
-// API autenticada.
-app.use('/api', apiRoutes);
+// API autenticada (com rate limit geral).
+app.use('/api', apiLimiter, apiRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);
@@ -64,11 +77,29 @@ async function start(): Promise<void> {
 
   server.listen(env.PORT, () => {
     logger.info(`Servidor rodando em http://localhost:${env.PORT} (${env.NODE_ENV})`);
-    logger.info(`Uploads servidos de: ${path.relative(process.cwd(), env.uploadDirAbsolute)}`);
+    logStorageMode();
     if (!env.hasAnthropic) logger.warn('ANTHROPIC_API_KEY ausente — respostas via Claude desativadas.');
     if (!env.hasWhatsapp)
       logger.warn(`Provedor de WhatsApp (${env.WHATSAPP_PROVIDER}) não configurado — envios serão simulados.`);
+    warnInsecureProductionConfig();
   });
+}
+
+// Hash bcrypt da senha PADRÃO do cadeado que vem no repo (default do env).
+const DEFAULT_BLOCK_HASH = '$2a$10$X/0XnEKy4lQJcXLekNfKkerJ/4JRV270j9o29pbCelukNE8751U2i';
+
+/** Avisa (sem derrubar) sobre configurações inseguras em produção. */
+function warnInsecureProductionConfig(): void {
+  if (!env.isProd) return;
+  if (env.SEED_ADMIN_PASSWORD === 'mudar123') {
+    logger.warn('SEGURANÇA: SEED_ADMIN_PASSWORD está no padrão "mudar123". Defina uma senha forte no Render.');
+  }
+  if (env.BLOCK_ADMIN_PASSWORD_HASH === DEFAULT_BLOCK_HASH) {
+    logger.warn('SEGURANÇA: senha do cadeado no padrão do repositório. Gere um novo hash (BLOCK_ADMIN_PASSWORD_HASH).');
+  }
+  if (!env.WEBHOOK_VERIFY_TOKEN) {
+    logger.warn('SEGURANÇA: WEBHOOK_VERIFY_TOKEN ausente. Defina um token e configure a mesma URL com ?token= na Z-API.');
+  }
 }
 
 function shutdown(signal: string): void {

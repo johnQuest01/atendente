@@ -52,6 +52,43 @@ async function post(endpoint: string, body: Record<string, unknown>): Promise<st
   return data.messageId ?? data.id ?? null;
 }
 
+export interface ProviderStatus {
+  ok: boolean;
+  detail: string;
+}
+
+/**
+ * Consulta o estado REAL da conexão na Z-API (GET /status): indica se o
+ * celular está pareado. Usado pela tela de status para refletir a realidade.
+ */
+export async function getConnectionStatus(): Promise<ProviderStatus> {
+  if (!env.hasZapi) {
+    return { ok: false, detail: 'Z-API não configurada (instance/token ausentes).' };
+  }
+  try {
+    const res = await fetch(`${baseUrl()}/status`, {
+      headers: headers(),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      return { ok: false, detail: `Z-API respondeu HTTP ${res.status}: ${text.slice(0, 120)}` };
+    }
+    const data = (await res.json().catch(() => ({}))) as {
+      connected?: boolean;
+      smartphoneConnected?: boolean;
+      error?: string;
+    };
+    const connected = Boolean(data.connected) && data.smartphoneConnected !== false;
+    return connected
+      ? { ok: true, detail: 'Conectado e celular pareado.' }
+      : { ok: false, detail: data.error || 'Celular desconectado — reconecte a Z-API (leia o QR Code).' };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, detail: msg.includes('timeout') ? 'Tempo esgotado ao consultar a Z-API.' : msg };
+  }
+}
+
 /** Envia mensagem de texto. */
 export function sendText(phone: string, message: string): Promise<string | null> {
   return post('send-text', { phone, message });

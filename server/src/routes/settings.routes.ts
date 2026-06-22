@@ -9,6 +9,7 @@ import {
   getPersona,
   putPersona,
   updatePersonaSchema,
+  getSystemStatus,
 } from '../controllers/settings.controller';
 
 const router = Router();
@@ -20,5 +21,8 @@ router.put('/agent', validate({ body: updateAgentSchema }), asyncHandler(putAgen
 
 router.get('/persona', asyncHandler(getPersona));
 router.put('/persona', validate({ body: updatePersonaSchema }), asyncHandler(putPersona));
+
+// Status REAL das integrações (banco, Claude, WhatsApp, STT).
+router.get('/status', asyncHandler(getSystemStatus));
 
 export default router;

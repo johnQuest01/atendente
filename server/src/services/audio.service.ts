@@ -1,17 +1,18 @@
+import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import ffmpegPath from '@ffmpeg-installer/ffmpeg';
 import ffmpeg from 'fluent-ffmpeg';
-import { env } from '../config/env';
 import { logger } from '../config/logger';
 import { AppError } from '../utils/errors';
-import { persistFile, cleanupTmp } from './storage.service';
+import { persistFile, cleanupTmp, storageMode } from './storage.service';
 import {
   createAudio,
   setAudioFileUrl,
   updateAudioFile,
   type CreateAudioInput,
 } from '../db/queries/audios';
+import { env } from '../config/env';
 import type { Audio } from '../types';
 
 ffmpeg.setFfmpegPath(ffmpegPath.path);
@@ -23,7 +24,9 @@ interface ConvertResult {
 
 /** Converte qualquer áudio de entrada para .ogg/opus (formato aceito pelo WhatsApp). */
 function convertToOggOpus(inputPath: string): Promise<ConvertResult> {
-  const tmpDir = path.join(env.uploadDirAbsolute, 'tmp');
+  // Saída no diretório TEMPORÁRIO DO SO (sempre gravável) — nunca no disco
+  // persistente do Render, que pode encher/ficar indisponível.
+  const tmpDir = path.join(os.tmpdir(), 'mayra-uploads');
   const outputPath = path.join(tmpDir, `${path.basename(inputPath, path.extname(inputPath))}.ogg`);
 
   return new Promise<ConvertResult>((resolve, reject) => {
@@ -67,15 +70,23 @@ interface ProcessAudioInput {
  * 3. Salva o registro no banco
  */
 interface PreparedAudio {
-  fileData: Buffer;
+  /** Bytes do .ogg — só preenchido no modo LOCAL (dev). Em produção (R2) é null. */
+  fileData: Buffer | null;
   durationSeconds: number;
   sizeKb: number;
+  /** URL pública do arquivo: R2/CDN (produção) ou /uploads (dev). */
   storedUrl: string;
 }
 
 /**
- * Converte o arquivo temporário para .ogg/opus, lê os bytes (para guardar no
- * banco) e persiste no disco. Sempre limpa os temporários ao final.
+ * Converte o arquivo temporário para .ogg/opus e persiste no storage.
+ *
+ * - PRODUÇÃO (R2): o arquivo vai para o bucket e ganha URL pública permanente.
+ *   NÃO guardamos o blob pesado no banco — só a URL.
+ * - DEV (local): além de mover para /uploads, lemos os bytes para guardar no
+ *   banco, mantendo a rota /media/audios/:id funcionando localmente.
+ *
+ * Sempre limpa os temporários ao final.
  */
 async function prepareAudioFromTmp(tmpFilePath: string): Promise<PreparedAudio> {
   let convertedPath: string | null = null;
@@ -83,23 +94,32 @@ async function prepareAudioFromTmp(tmpFilePath: string): Promise<PreparedAudio> 
     const { outputPath, durationSeconds } = await convertToOggOpus(tmpFilePath);
     convertedPath = outputPath;
 
-    // Lê os bytes do .ogg ANTES de mover o arquivo: guardamos o conteúdo no
-    // banco (Neon) para que o áudio seja sempre acessível pela Z-API, mesmo
-    // que o disco do servidor seja efêmero ou o host público mude.
-    const fileData = await fs.readFile(outputPath);
+    // No modo local guardamos os bytes no banco (para /media). No remoto, não.
+    const fileData = storageMode === 'local' ? await fs.readFile(outputPath) : null;
 
     const filename = path.basename(outputPath);
-    const stored = await persistFile(outputPath, 'audios', filename);
+    const stored = await persistFile(outputPath, 'audios', filename, 'audio/ogg');
 
     return { fileData, durationSeconds, sizeKb: stored.sizeKb, storedUrl: stored.url };
   } finally {
     await cleanupTmp(tmpFilePath);
     if (convertedPath) {
-      // se persistFile já moveu o arquivo, unlink falha silenciosamente
+      // se persistFile já consumiu o arquivo, unlink falha silenciosamente
       await fs.unlink(convertedPath).catch(() => undefined);
     }
     logger.debug('Processamento de áudio finalizado');
   }
+}
+
+/**
+ * URL pública final do áudio:
+ * - Remoto (R2): a própria URL do CDN (independente do backend).
+ * - Local (dev): rota /media servida do banco (precisa do backend no ar).
+ */
+function publicUrlForAudio(audioId: string, storedUrl: string): string {
+  return storageMode === 'remote'
+    ? storedUrl
+    : `${env.PUBLIC_BASE_URL}/media/audios/${audioId}.ogg`;
 }
 
 export async function processAndStoreAudio(input: ProcessAudioInput): Promise<Audio> {
@@ -117,15 +137,13 @@ export async function processAndStoreAudio(input: ProcessAudioInput): Promise<Au
     keywords: input.keywords ?? [],
     createdBy: input.createdBy ?? null,
     fileData: prepared.fileData,
-    mimeType: 'audio/ogg',
+    mimeType: prepared.fileData ? 'audio/ogg' : null,
   };
   const audio = await createAudio(dbInput);
 
-  // URL pública estável servida pelo próprio backend a partir do banco.
-  // Isso garante que tanto o painel quanto a Z-API consigam tocar o áudio.
-  const mediaUrl = `${env.PUBLIC_BASE_URL}/media/audios/${audio.id}.ogg`;
-  await setAudioFileUrl(audio.id, mediaUrl);
-  audio.file_url = mediaUrl;
+  const finalUrl = publicUrlForAudio(audio.id, prepared.storedUrl);
+  await setAudioFileUrl(audio.id, finalUrl);
+  audio.file_url = finalUrl;
   return audio;
 }
 
@@ -135,11 +153,11 @@ export async function processAndStoreAudio(input: ProcessAudioInput): Promise<Au
  */
 export async function replaceAudioFile(id: string, tmpFilePath: string): Promise<Audio | null> {
   const prepared = await prepareAudioFromTmp(tmpFilePath);
-  const mediaUrl = `${env.PUBLIC_BASE_URL}/media/audios/${id}.ogg`;
+  const finalUrl = publicUrlForAudio(id, prepared.storedUrl);
   return updateAudioFile(id, {
     fileData: prepared.fileData,
-    mimeType: 'audio/ogg',
-    fileUrl: mediaUrl,
+    mimeType: prepared.fileData ? 'audio/ogg' : null,
+    fileUrl: finalUrl,
     fileSizeKb: prepared.sizeKb,
     durationSeconds: prepared.durationSeconds,
   });

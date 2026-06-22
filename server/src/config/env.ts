@@ -55,11 +55,23 @@ const envSchema = z.object({
 
   UPLOAD_DIR: z.string().default('./uploads'),
   PUBLIC_BASE_URL: z.string().url().default('http://localhost:3001'),
+
+  // ---------- Storage de mídia compatível com S3 (Cloudflare R2 recomendado) ----------
+  // Com estes campos preenchidos, áudios/imagens vão para o bucket e ganham uma
+  // URL pública PERMANENTE (CDN), que a Z-API sempre consegue baixar — mesmo que
+  // o backend esteja reiniciando. Sem eles, cai no modo local (disco/dev).
   S3_BUCKET: z.string().optional(),
   S3_ACCESS_KEY: z.string().optional(),
   S3_SECRET_KEY: z.string().optional(),
+  // Endpoint S3. No R2 é https://<accountid>.r2.cloudflarestorage.com — se você
+  // informar R2_ACCOUNT_ID, montamos este endpoint automaticamente.
   S3_ENDPOINT: z.string().optional(),
   S3_REGION: z.string().default('auto'),
+  // URL pública/CDN do bucket (ex.: https://pub-xxxx.r2.dev ou domínio próprio).
+  // É o que vai no file_url e é enviado à Z-API.
+  S3_PUBLIC_URL: z.string().url().optional(),
+  // Atalho para R2: só o Account ID; o endpoint S3 é derivado dele.
+  R2_ACCOUNT_ID: z.string().optional(),
 
   SEED_ADMIN_NAME: z.string().default('Mayra'),
   SEED_ADMIN_EMAIL: z.string().email().default('mayra@loja.com'),
@@ -74,6 +86,15 @@ const envSchema = z.object({
 
   DB_POOL_MAX: z.coerce.number().int().positive().default(10),
   DB_SSL: booleanish(true),
+}).superRefine((data, ctx) => {
+  // Em produção, exigimos um segredo de JWT forte (>= 32 chars).
+  if (data.NODE_ENV === 'production' && data.JWT_SECRET.length < 32) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['JWT_SECRET'],
+      message: 'Em produção, JWT_SECRET deve ter ao menos 32 caracteres.',
+    });
+  }
 });
 
 // Remove variáveis com string vazia para que campos opcionais (ex:
@@ -104,6 +125,21 @@ if (!parsed.success) {
 
 const data = parsed.data;
 
+// Endpoint S3 efetivo: usa S3_ENDPOINT explícito ou, no R2, deriva do Account ID.
+const s3Endpoint =
+  data.S3_ENDPOINT ??
+  (data.R2_ACCOUNT_ID ? `https://${data.R2_ACCOUNT_ID}.r2.cloudflarestorage.com` : undefined);
+
+// Storage remoto considerado "configurado" só quando há TUDO o que é preciso
+// para subir e gerar uma URL pública estável.
+const hasRemoteStorage = Boolean(
+  s3Endpoint &&
+    data.S3_BUCKET &&
+    data.S3_ACCESS_KEY &&
+    data.S3_SECRET_KEY &&
+    data.S3_PUBLIC_URL,
+);
+
 export const env = {
   ...data,
   isProd: data.NODE_ENV === 'production',
@@ -119,6 +155,11 @@ export const env = {
     data.WHATSAPP_PROVIDER === 'evolution'
       ? Boolean(data.EVOLUTION_API_KEY && data.EVOLUTION_INSTANCE)
       : Boolean(data.ZAPI_INSTANCE_ID && data.ZAPI_TOKEN),
+  // Storage remoto (R2/S3)
+  s3Endpoint,
+  hasRemoteStorage,
+  // Remove a barra final da URL pública para concatenar com segurança.
+  s3PublicUrl: data.S3_PUBLIC_URL?.replace(/\/+$/, ''),
 } as const;
 
 export type Env = typeof env;

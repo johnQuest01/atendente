@@ -27,6 +27,9 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
   let code = 'INTERNAL_ERROR';
   let message = 'Erro interno do servidor.';
   let details: unknown;
+  // Erro inesperado (não tratado): a mensagem pode conter detalhes internos
+  // (SQL, caminhos, stack) — NUNCA é exposta ao cliente em produção.
+  let unexpected = false;
 
   if (err instanceof AppError) {
     statusCode = err.statusCode;
@@ -43,6 +46,7 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
     code = 'UPLOAD_ERROR';
     message = err.code === 'LIMIT_FILE_SIZE' ? 'Arquivo excede o tamanho máximo.' : err.message;
   } else if (err instanceof Error) {
+    unexpected = true;
     message = err.message || message;
   }
 
@@ -52,8 +56,11 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
     logger.warn(`${req.method} ${req.path} -> ${statusCode}: ${message}`);
   }
 
-  const body: ErrorBody = { error: { code, message } };
-  if (details !== undefined) body.error.details = details;
+  // Em produção, erros inesperados retornam mensagem genérica (sem vazar nada).
+  const safeMessage = unexpected && env.isProd ? 'Erro interno do servidor.' : message;
+  const body: ErrorBody = { error: { code, message: safeMessage } };
+  if (details !== undefined && !(unexpected && env.isProd)) body.error.details = details;
+  // Stack apenas em desenvolvimento, para depuração local.
   if (statusCode >= 500 && env.isDev && err instanceof Error) {
     body.error.details = { stack: err.stack };
   }

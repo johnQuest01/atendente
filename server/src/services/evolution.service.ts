@@ -52,6 +52,39 @@ async function post(endpoint: string, body: Record<string, unknown>): Promise<st
   return data.key?.id ?? data.messageId ?? null;
 }
 
+export interface ProviderStatus {
+  ok: boolean;
+  detail: string;
+}
+
+/**
+ * Consulta o estado REAL da instância na Evolution API
+ * (GET /instance/connectionState/:instance). state === 'open' = conectado.
+ */
+export async function getConnectionStatus(): Promise<ProviderStatus> {
+  if (!env.hasEvolution) {
+    return { ok: false, detail: 'Evolution API não configurada (apikey/instância ausentes).' };
+  }
+  try {
+    const res = await fetch(`${env.EVOLUTION_BASE_URL}/instance/connectionState/${env.EVOLUTION_INSTANCE}`, {
+      headers: headers(),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      return { ok: false, detail: `Evolution respondeu HTTP ${res.status}: ${text.slice(0, 120)}` };
+    }
+    const data = (await res.json().catch(() => ({}))) as { instance?: { state?: string } };
+    const state = data.instance?.state;
+    return state === 'open'
+      ? { ok: true, detail: 'Instância conectada (open).' }
+      : { ok: false, detail: `Instância não conectada (estado: ${state ?? 'desconhecido'}).` };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, detail: msg.includes('timeout') ? 'Tempo esgotado ao consultar a Evolution.' : msg };
+  }
+}
+
 export function sendText(phone: string, message: string): Promise<string | null> {
   return post('message/sendText', { number: phone, text: message });
 }

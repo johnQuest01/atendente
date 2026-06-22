@@ -54,8 +54,9 @@ export async function setAudioFileUrl(id: string, fileUrl: string): Promise<void
 }
 
 export interface UpdateAudioFileInput {
-  fileData: Buffer;
-  mimeType: string;
+  // null no modo remoto (R2): o conteúdo vive no bucket, não no banco.
+  fileData: Buffer | null;
+  mimeType: string | null;
   fileUrl: string;
   fileSizeKb?: number | null;
   durationSeconds?: number | null;

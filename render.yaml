@@ -66,3 +66,18 @@ services:
         value: whisper-large-v3
       - key: STT_LANGUAGE
         value: pt
+      # ---------- Storage de mídia: Cloudflare R2 (URL pública permanente) ----------
+      # Com estas vars preenchidas, os áudios vão para o R2 e ganham URL de CDN
+      # que a Z-API sempre baixa — sem depender do backend estar no ar.
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ACCESS_KEY
+        sync: false
+      - key: S3_SECRET_KEY
+        sync: false
+      - key: S3_PUBLIC_URL
+        sync: false
+      - key: S3_REGION
+        value: auto

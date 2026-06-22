@@ -16,7 +16,13 @@ export const loginSchema = z.object({
 export const registerSchema = z.object({
   name: z.string().min(2).max(100),
   email: z.string().email(),
-  password: z.string().min(6).max(100),
+  // Senha mais forte: mínimo de 8 caracteres com letra e número.
+  password: z
+    .string()
+    .min(8, 'A senha deve ter ao menos 8 caracteres.')
+    .max(100)
+    .regex(/[A-Za-z]/, 'A senha deve conter ao menos uma letra.')
+    .regex(/[0-9]/, 'A senha deve conter ao menos um número.'),
   role: z.enum(['admin', 'operator']).default('operator'),
 });
 

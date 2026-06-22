@@ -1,16 +1,21 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import multer from 'multer';
-import { env } from '../config/env';
+import type { Request } from 'express';
 import { AppError } from '../utils/errors';
 
-// Garante que o diretório de uploads exista (dev local).
-const tmpDir = path.join(env.uploadDirAbsolute, 'tmp');
+// Gravamos o upload no diretório TEMPORÁRIO DO SO (sempre gravável), e não no
+// disco persistente do Render — que pode encher, ficar indisponível ou ser
+// recriado num deploy, causando "não foi possível salvar o áudio". O arquivo
+// final vai para o storage (R2/S3) logo em seguida.
+const tmpDir = path.join(os.tmpdir(), 'mayra-uploads');
 fs.mkdirSync(tmpDir, { recursive: true });
 
 const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, tmpDir),
-  filename: (_req, file, cb) => {
+  destination: (_req: Request, _file: Express.Multer.File, cb: (err: Error | null, dest: string) => void) =>
+    cb(null, tmpDir),
+  filename: (_req: Request, file: Express.Multer.File, cb: (err: Error | null, name: string) => void) => {
     const ext = path.extname(file.originalname) || '';
     const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
     cb(null, unique);

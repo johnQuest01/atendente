@@ -8,20 +8,11 @@ import { Toggle } from '@/components/ui/Toggle';
 import { useAuth } from '@/hooks/useAuth';
 import { useAgentStatus, useSetAgentStatus, AGENT_QUERY_KEY } from '@/hooks/useAgent';
 import { usePersona, useSetPersona } from '@/hooks/usePersona';
+import { useSystemStatus, type ServiceCheck } from '@/hooks/useSystemStatus';
 import { useSocket } from '@/hooks/useSocket';
 import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
 import { initials } from '@/utils/formatters';
-
-interface HealthData {
-  status: string;
-  db: boolean;
-  anthropic: boolean;
-  transcription: boolean;
-  zapi: boolean;
-  whatsappProvider?: 'zapi' | 'evolution';
-  timestamp: string;
-}
 
 const PROVIDER_LABEL: Record<string, string> = {
   zapi: 'Z-API',
@@ -30,12 +21,11 @@ const PROVIDER_LABEL: Record<string, string> = {
 
 export default function Settings() {
   const { user, logout } = useAuth();
-  const [health, setHealth] = useState<HealthData | null>(null);
-  const [loading, setLoading] = useState(false);
 
   const qc = useQueryClient();
   const { data: agentEnabled } = useAgentStatus();
   const setAgent = useSetAgentStatus();
+  const { data: health, isFetching, refetch } = useSystemStatus();
 
   // Sincroniza o status em tempo real se ele for alterado em outro dispositivo.
   const onAgentStatus = useCallback(
@@ -48,23 +38,6 @@ export default function Settings() {
   useSocket({ 'agent:status': onAgentStatus });
 
   const isOn = agentEnabled ?? true;
-
-  async function checkHealth() {
-    setLoading(true);
-    try {
-      const base = import.meta.env.VITE_API_URL ?? '';
-      const res = await fetch(`${base}/health`);
-      setHealth((await res.json()) as HealthData);
-    } catch {
-      setHealth(null);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    void checkHealth();
-  }, []);
 
   return (
     <>
@@ -109,23 +82,28 @@ export default function Settings() {
         <Card>
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-bold text-text-primary">Status do sistema</h2>
-            <Button size="sm" variant="secondary" loading={loading} onClick={checkHealth}>
+            <Button size="sm" variant="secondary" loading={isFetching} onClick={() => void refetch()}>
               Testar
             </Button>
           </div>
           <ul className="flex flex-col divide-y divide-border">
-            <StatusRow label="Servidor / Banco" ok={Boolean(health?.db)} />
-            <StatusRow label="Claude (Anthropic)" ok={Boolean(health?.anthropic)} />
-            <StatusRow label="Transcrição de áudio (STT)" ok={Boolean(health?.transcription)} />
+            <StatusRow label="Servidor / Banco" check={health?.services.database} />
+            <StatusRow label="Claude (Anthropic)" check={health?.services.claude} />
+            <StatusRow label="Transcrição de áudio (STT)" check={health?.services.transcription} />
             <StatusRow
               label={`WhatsApp (${PROVIDER_LABEL[health?.whatsappProvider ?? 'zapi'] ?? 'Z-API'})`}
-              ok={Boolean(health?.zapi)}
+              check={health?.services.whatsapp}
             />
           </ul>
           {health && (
-            <p className="mt-3 text-xs text-text-secondary">
-              Última verificação: {new Date(health.timestamp).toLocaleString('pt-BR')}
-            </p>
+            <div className="mt-3 flex items-center justify-between gap-2">
+              <p className="text-xs text-text-secondary">
+                Última verificação: {new Date(health.timestamp).toLocaleString('pt-BR')}
+              </p>
+              <Badge tone={health.storage === 'remote' ? 'success' : 'warning'}>
+                {health.storage === 'remote' ? 'Mídia: CDN (R2)' : 'Mídia: local'}
+              </Badge>
+            </div>
           )}
         </Card>
 
@@ -216,11 +194,21 @@ function PersonaCard() {
   );
 }
 
-function StatusRow({ label, ok }: { label: string; ok: boolean }) {
+function StatusRow({ label, check }: { label: string; check?: ServiceCheck }) {
+  const ok = check?.ok ?? false;
   return (
-    <li className="flex items-center justify-between py-2.5">
-      <span className="text-sm text-text-primary">{label}</span>
-      <Badge tone={ok ? 'success' : 'danger'}>{ok ? 'OK' : 'Indisponível'}</Badge>
+    <li className="flex items-start justify-between gap-3 py-2.5">
+      <div className="min-w-0">
+        <span className="text-sm text-text-primary">{label}</span>
+        {check?.detail && (
+          <p className="mt-0.5 truncate text-xs text-text-secondary" title={check.detail}>
+            {check.detail}
+          </p>
+        )}
+      </div>
+      <Badge tone={check ? (ok ? 'success' : 'danger') : 'warning'}>
+        {check ? (ok ? 'OK' : 'Falha') : '...'}
+      </Badge>
     </li>
   );
 }

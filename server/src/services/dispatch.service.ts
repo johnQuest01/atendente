@@ -1,6 +1,6 @@
 import { env } from '../config/env';
 import { logger } from '../config/logger';
-import { getAudioById, getAudioBinary, incrementAudioUsage } from '../db/queries/audios';
+import { getAudioById, incrementAudioUsage } from '../db/queries/audios';
 import { getScriptById, incrementScriptUsage } from '../db/queries/messages_scripts';
 import { getProductById } from '../db/queries/products';
 import { insertMessage } from '../db/queries/messages';
@@ -14,12 +14,22 @@ interface DispatchContext {
   client: Client;
 }
 
+/** True se a URL aponta para um host EXTERNO (ex.: CDN do R2), não o backend. */
+function isExternalUrl(fileUrl: string): boolean {
+  try {
+    return new URL(fileUrl).host !== new URL(env.PUBLIC_BASE_URL).host;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Garante que a URL da mídia use o host público atual (env.PUBLIC_BASE_URL).
- * Necessário porque a URL é salva no momento do upload, mas o host público
- * (ex.: túnel cloudflared) pode mudar — sem isso, mídias antigas quebrariam.
+ * Garante que a URL servida pelo PRÓPRIO backend use o host público atual.
+ * Só se aplica a URLs do backend (/media, /uploads) — nunca reescreve uma URL
+ * externa (R2/CDN), que já é permanente.
  */
 function toCurrentPublicUrl(fileUrl: string): string {
+  if (isExternalUrl(fileUrl)) return fileUrl;
   try {
     const current = new URL(env.PUBLIC_BASE_URL);
     const original = new URL(fileUrl);
@@ -31,42 +41,24 @@ function toCurrentPublicUrl(fileUrl: string): string {
   }
 }
 
-/** URL pública (rota /media ou file_url legado) usada para tocar o áudio no painel. */
+/** URL pública estável usada para enviar/tocar o áudio. */
 function audioPublicUrl(audio: Audio): string {
-  // Se o áudio está guardado no banco, usamos a rota estável /media (acessível
-  // pela Z-API mesmo em produção). Senão, caímos no file_url salvo (legado).
-  return audio.has_file_data
-    ? `${env.PUBLIC_BASE_URL}/media/audios/${audio.id}.ogg`
-    : toCurrentPublicUrl(audio.file_url);
+  // 1) Blob no banco (dev/legado): rota estável /media servida do banco.
+  if (audio.has_file_data) return `${env.PUBLIC_BASE_URL}/media/audios/${audio.id}.ogg`;
+  // 2) URL externa (R2/CDN): permanente, independe do backend — usa direto.
+  if (isExternalUrl(audio.file_url)) return audio.file_url;
+  // 3) Legado servido pelo backend: corrige o host atual.
+  return toCurrentPublicUrl(audio.file_url);
 }
 
 /**
- * Envia o áudio ao provedor de WhatsApp. Estratégia (em ordem de robustez):
- *   1. Base64 direto do banco — não depende de a Z-API conseguir BAIXAR uma URL
- *      pública. Era exatamente isso que falhava em produção: o host público
- *      (Render efêmero / túnel cloudflared expirado) devolvia 404 e a Z-API
- *      simplesmente não enviava o áudio.
- *   2. URL pública (/media ou file_url legado) — usada quando não há bytes no
- *      banco (áudios antigos) ou se o envio por base64 falhar.
- * Retorna o id da mensagem na Z-API (ou null se o provedor não devolver).
+ * Envia o áudio ao provedor de WhatsApp pela URL pública ESTÁVEL.
+ *
+ * Sem base64: payloads base64 estouram limite/timeout da Z-API e o prefixo
+ * `data:` costuma ser rejeitado — era a causa de "só vai texto, sem áudio".
+ * A URL do R2 é um CDN permanente que a Z-API sempre consegue baixar.
  */
-async function sendAudioToProvider(phone: string, audio: Audio, publicUrl: string): Promise<string | null> {
-  if (audio.has_file_data) {
-    const bin = await getAudioBinary(audio.id);
-    if (bin) {
-      const dataUri = `data:${bin.mime || 'audio/ogg'};base64,${bin.data.toString('base64')}`;
-      try {
-        return await whatsapp.sendAudio(phone, dataUri);
-      } catch (err) {
-        logger.warn(
-          `Envio de áudio por base64 falhou (audio=${audio.id}); tentando por URL pública.`,
-          err,
-        );
-      }
-    } else {
-      logger.warn(`Áudio ${audio.id} marcado com has_file_data mas sem bytes no banco.`);
-    }
-  }
+function sendAudioToProvider(phone: string, publicUrl: string): Promise<string | null> {
   return whatsapp.sendAudio(phone, publicUrl);
 }
 
@@ -86,7 +78,7 @@ export async function dispatchAudio(ctx: DispatchContext, audioId: string): Prom
 
   let zapiId: string | null;
   try {
-    zapiId = await sendAudioToProvider(ctx.client.phone, audio, publicUrl);
+    zapiId = await sendAudioToProvider(ctx.client.phone, publicUrl);
   } catch (err) {
     // Não derruba o fluxo nem registra uma mensagem "enviada" que nunca chegou:
     // retornando null, o webhook cai no fallback (Claude/texto) e o cliente não
