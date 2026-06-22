@@ -231,7 +231,7 @@ interface AiPreset {
 
 // Atalhos para preencher os campos. O failover funciona com qualquer combinação.
 const AI_PRESETS: AiPreset[] = [
-  { id: 'claude', kind: 'anthropic', label: 'Claude', baseUrl: '', model: 'claude-sonnet-4-20250514' },
+  { id: 'claude', kind: 'anthropic', label: 'Claude', baseUrl: '', model: 'claude-sonnet-4-6' },
   { id: 'gemini', kind: 'gemini', label: 'Gemini', baseUrl: '', model: 'gemini-1.5-flash', free: true },
   { id: 'groq', kind: 'openai', label: 'Groq', baseUrl: 'https://api.groq.com/openai/v1', model: 'llama-3.3-70b-versatile', free: true },
   { id: 'openai', kind: 'openai', label: 'ChatGPT', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },

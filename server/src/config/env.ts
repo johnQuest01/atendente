@@ -38,7 +38,7 @@ const envSchema = z.object({
   SUPERADMIN_PASSWORD: z.string().min(8).optional(),
 
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
-  CLAUDE_MODEL: z.string().default('claude-sonnet-4-20250514'),
+  CLAUDE_MODEL: z.string().default('claude-sonnet-4-6'),
   STORE_NAME: z.string().optional(),
 
   // Provedor de WhatsApp ativo.

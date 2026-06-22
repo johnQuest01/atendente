@@ -52,6 +52,10 @@ services:
       # IA (Anthropic / Claude)
       - key: ANTHROPIC_API_KEY
         sync: false
+      # Modelo do Claude. Mantenha um modelo ATUAL (os antigos sao retirados e
+      # passam a responder 404). Pode trocar/adicionar outras IAs no painel /admin.
+      - key: CLAUDE_MODEL
+        value: claude-sonnet-4-6
       - key: STORE_NAME
         value: Maryland
       # WhatsApp (Z-API)
