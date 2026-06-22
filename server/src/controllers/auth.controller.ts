@@ -1,10 +1,16 @@
 import type { Request, Response } from 'express';
-import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import type { SignOptions } from 'jsonwebtoken';
 import { z } from 'zod';
 import { env } from '../config/env';
-import { createUser, findUserByEmail, findUserById } from '../db/queries/users';
+import {
+  createUser,
+  findUserByEmail,
+  findUserById,
+  updateUserPasswordHash,
+} from '../db/queries/users';
+import { hashPassword, needsRehash, verifyPassword } from '../utils/password';
+import { logger } from '../config/logger';
 import { ConflictError, UnauthorizedError } from '../utils/errors';
 import type { JwtPayload } from '../types';
 
@@ -36,8 +42,15 @@ export async function login(req: Request, res: Response): Promise<void> {
   const user = await findUserByEmail(email);
   if (!user) throw new UnauthorizedError('E-mail ou senha inválidos.');
 
-  const valid = await bcrypt.compare(password, user.password_hash);
+  const valid = await verifyPassword(password, user.password_hash);
   if (!valid) throw new UnauthorizedError('E-mail ou senha inválidos.');
+
+  // Rehash transparente: migra hashes legados (bcrypt) para scrypt no login.
+  if (needsRehash(user.password_hash)) {
+    void hashPassword(password)
+      .then((hash) => updateUserPasswordHash(user.id, hash))
+      .catch((err) => logger.warn('Falha ao migrar hash de senha para scrypt', err));
+  }
 
   const token = signToken({
     sub: user.id,
@@ -61,7 +74,7 @@ export async function register(req: Request, res: Response): Promise<void> {
   const existing = await findUserByEmail(input.email);
   if (existing) throw new ConflictError('Já existe um usuário com este e-mail.');
 
-  const passwordHash = await bcrypt.hash(input.password, 10);
+  const passwordHash = await hashPassword(input.password);
   const user = await createUser({
     name: input.name,
     email: input.email,

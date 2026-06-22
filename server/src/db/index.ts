@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from 'pg';
 import { env } from '../config/env';
 import { logger } from '../config/logger';
@@ -19,6 +20,61 @@ pool.on('error', (err) => {
 });
 
 /**
+ * Escopo de tenant da requisição (BUG 1 — RLS / defesa em profundidade).
+ *
+ * Guardamos o tenant_id do usuário autenticado (ou resolvido no webhook) num
+ * AsyncLocalStorage. Quando há tenant no escopo, cada query roda numa transação
+ * curta com `SET LOCAL app.tenant_id` — a variável de sessão que as policies de
+ * Row-Level Security usam para filtrar as linhas no PRÓPRIO banco. Assim, mesmo
+ * que uma query futura esqueça o `WHERE tenant_id = ...`, o banco recusa o
+ * vazamento entre empresas.
+ *
+ * Usamos transação curta por query (em vez de segurar uma conexão durante toda
+ * a requisição) para NÃO reter conexões do pool durante chamadas externas
+ * lentas (IA, Z-API) — o `SET LOCAL` é revertido automaticamente no COMMIT.
+ *
+ * Super-admin e tarefas de sistema (seed/migrations) rodam SEM tenant no escopo:
+ * a policy é permissiva quando a variável está vazia, então operações
+ * cross-tenant legítimas continuam funcionando.
+ */
+const tenantStorage = new AsyncLocalStorage<string>();
+
+/** Executa `fn` com o tenant no escopo (ativa o RLS por requisição). */
+export function runWithTenant<T>(tenantId: string, fn: () => T): T {
+  if (!env.RLS_ENFORCE || !tenantId) return fn();
+  return tenantStorage.run(tenantId, fn);
+}
+
+/** Tenant atualmente no escopo (ou undefined fora de requisição/escopo). */
+export function currentTenantId(): string | undefined {
+  return tenantStorage.getStore();
+}
+
+/** Roda uma operação numa transação curta com `app.tenant_id` setado (RLS). */
+async function runScoped<T>(
+  tenantId: string,
+  run: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+    const result = await run(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch {
+      /* conexão pode já estar inutilizável; o release a descarta */
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Executa uma query parametrizada. NUNCA concatene SQL manualmente —
  * sempre passe valores via `params` ($1, $2, ...).
  */
@@ -27,7 +83,10 @@ export async function query<T extends QueryResultRow = QueryResultRow>(
   params: ReadonlyArray<unknown> = [],
 ): Promise<QueryResult<T>> {
   const start = Date.now();
-  const result = await pool.query<T>(text, params as unknown[]);
+  const tenantId = tenantStorage.getStore();
+  const result = tenantId
+    ? await runScoped(tenantId, (client) => client.query<T>(text, params as unknown[]))
+    : await pool.query<T>(text, params as unknown[]);
   const duration = Date.now() - start;
   if (env.isDev) {
     logger.debug('SQL', { duration_ms: duration, rows: result.rowCount, text: text.replace(/\s+/g, ' ').trim().slice(0, 120) });
@@ -48,9 +107,14 @@ export async function queryOne<T extends QueryResultRow = QueryResultRow>(
 export async function withTransaction<T>(
   fn: (client: PoolClient) => Promise<T>,
 ): Promise<T> {
+  const tenantId = tenantStorage.getStore();
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    // Mantém o isolamento RLS também nas operações atômicas multi-statement.
+    if (tenantId) {
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [tenantId]);
+    }
     const result = await fn(client);
     await client.query('COMMIT');
     return result;

@@ -11,6 +11,11 @@ export async function findUserById(id: string): Promise<PublicUser | null> {
   return queryOne<PublicUser>(`SELECT ${PUBLIC_COLS} FROM users WHERE id = $1`, [id]);
 }
 
+/** Atualiza apenas o hash da senha (usado no rehash transparente do login). */
+export async function updateUserPasswordHash(id: string, passwordHash: string): Promise<void> {
+  await query('UPDATE users SET password_hash = $2 WHERE id = $1', [id, passwordHash]);
+}
+
 export async function createUser(input: {
   name: string;
   email: string;

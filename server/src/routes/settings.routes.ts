@@ -15,10 +15,19 @@ import {
   putWhatsappConnection,
   updateWhatsappSchema,
 } from '../controllers/settings.controller';
+import {
+  tenantAiProviders,
+  createAiProviderSchema,
+  updateAiProviderSchema,
+  aiProviderIdParamSchema,
+  testAiCredsSchema,
+} from '../controllers/ai_providers.controller';
 
 const router = Router();
 
 router.use(authenticate);
+
+const adminOnly = authorize('admin', 'superadmin');
 
 router.get('/agent', asyncHandler(getAgentStatus));
 router.put('/agent', validate({ body: updateAgentSchema }), asyncHandler(putAgentStatus));
@@ -33,9 +42,45 @@ router.get('/status', asyncHandler(getSystemStatus));
 router.get('/whatsapp', asyncHandler(getWhatsappConnection));
 router.put(
   '/whatsapp',
-  authorize('admin', 'superadmin'),
+  adminOnly,
   validate({ body: updateWhatsappSchema }),
   asyncHandler(putWhatsappConnection),
+);
+
+// IA da EMPRESA (BYO): conectar/ordenar as próprias chaves. Só admin gerencia.
+// Quando a empresa tem provedores próprios, eles têm prioridade sobre o padrão
+// da plataforma e o uso NÃO conta no teto mensal.
+router.get('/ai/usage', asyncHandler(tenantAiProviders.getAiUsageInfo));
+router.get('/ai/providers', adminOnly, asyncHandler(tenantAiProviders.getAiProviders));
+router.post(
+  '/ai/providers',
+  adminOnly,
+  validate({ body: createAiProviderSchema }),
+  asyncHandler(tenantAiProviders.postAiProvider),
+);
+router.post(
+  '/ai/providers/test',
+  adminOnly,
+  validate({ body: testAiCredsSchema }),
+  asyncHandler(tenantAiProviders.testAiCreds),
+);
+router.patch(
+  '/ai/providers/:id',
+  adminOnly,
+  validate({ params: aiProviderIdParamSchema, body: updateAiProviderSchema }),
+  asyncHandler(tenantAiProviders.patchAiProvider),
+);
+router.delete(
+  '/ai/providers/:id',
+  adminOnly,
+  validate({ params: aiProviderIdParamSchema }),
+  asyncHandler(tenantAiProviders.removeAiProvider),
+);
+router.post(
+  '/ai/providers/:id/test',
+  adminOnly,
+  validate({ params: aiProviderIdParamSchema }),
+  asyncHandler(tenantAiProviders.testAiProvider),
 );
 
 export default router;

@@ -11,15 +11,10 @@ import {
   tenantIdParamSchema,
 } from '../controllers/admin.controller';
 import {
-  getAiProviders,
-  postAiProvider,
+  adminAiProviders,
   createAiProviderSchema,
-  patchAiProvider,
   updateAiProviderSchema,
-  removeAiProvider,
   aiProviderIdParamSchema,
-  testAiProvider,
-  testAiCreds,
   testAiCredsSchema,
 } from '../controllers/ai_providers.controller';
 
@@ -36,24 +31,32 @@ router.patch(
   asyncHandler(patchTenant),
 );
 
-// Provedores de IA da plataforma (trocar de agente + cadeia de failover).
-router.get('/ai/providers', asyncHandler(getAiProviders));
-router.post('/ai/providers', validate({ body: createAiProviderSchema }), asyncHandler(postAiProvider));
-router.post('/ai/providers/test', validate({ body: testAiCredsSchema }), asyncHandler(testAiCreds));
+// Provedores de IA GLOBAIS da plataforma (trocar de agente + cadeia de failover).
+router.get('/ai/providers', asyncHandler(adminAiProviders.getAiProviders));
+router.post(
+  '/ai/providers',
+  validate({ body: createAiProviderSchema }),
+  asyncHandler(adminAiProviders.postAiProvider),
+);
+router.post(
+  '/ai/providers/test',
+  validate({ body: testAiCredsSchema }),
+  asyncHandler(adminAiProviders.testAiCreds),
+);
 router.patch(
   '/ai/providers/:id',
   validate({ params: aiProviderIdParamSchema, body: updateAiProviderSchema }),
-  asyncHandler(patchAiProvider),
+  asyncHandler(adminAiProviders.patchAiProvider),
 );
 router.delete(
   '/ai/providers/:id',
   validate({ params: aiProviderIdParamSchema }),
-  asyncHandler(removeAiProvider),
+  asyncHandler(adminAiProviders.removeAiProvider),
 );
 router.post(
   '/ai/providers/:id/test',
   validate({ params: aiProviderIdParamSchema }),
-  asyncHandler(testAiProvider),
+  asyncHandler(adminAiProviders.testAiProvider),
 );
 
 export default router;

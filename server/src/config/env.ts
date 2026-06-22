@@ -99,6 +99,12 @@ const envSchema = z.object({
 
   DB_POOL_MAX: z.coerce.number().int().positive().default(10),
   DB_SSL: booleanish(true),
+
+  // Defesa em profundidade (RLS): quando true (padrão), cada requisição seta
+  // app.tenant_id e o banco aplica Row-Level Security por empresa. Kill-switch:
+  // defina RLS_ENFORCE=false para voltar ao isolamento só na aplicação sem
+  // redeploy/rollback de migration, caso algo inesperado ocorra em produção.
+  RLS_ENFORCE: booleanish(true),
 }).superRefine((data, ctx) => {
   // Em produção, exigimos um segredo de JWT forte (>= 32 chars).
   if (data.NODE_ENV === 'production' && data.JWT_SECRET.length < 32) {

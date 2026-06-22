@@ -59,28 +59,41 @@ async function checkDatabase(): Promise<ServiceCheck> {
  * descreve a cadeia de fallback. Com mais de um provedor, a IA é considerada
  * "ok" mesmo se o ativo falhar (o failover cobre).
  */
-async function checkAi(): Promise<{ check: ServiceCheck; provider: string }> {
-  const chain = await resolveChain();
-  if (chain.length === 0) {
+const SOURCE_LABEL: Record<string, string> = {
+  tenant: 'chaves da empresa',
+  global: 'padrão da plataforma',
+  env: 'padrão da plataforma (.env)',
+};
+
+async function checkAi(tenantId: string): Promise<{ check: ServiceCheck; provider: string }> {
+  const chain = await resolveChain(tenantId);
+  if (chain.providers.length === 0) {
     return { check: { ok: false, detail: 'Nenhum provedor de IA configurado.' }, provider: 'nenhum' };
   }
 
-  const status = await getChainStatus();
-  const isCold = (id: string) => status.find((s) => s.id === id)?.inCooldown ?? false;
-  const active = chain.find((p) => !isCold(p.id)) ?? chain[0];
-  const others = chain.filter((p) => p.id !== active.id).map((p) => p.label);
+  const status = await getChainStatus(tenantId);
+  const isCold = (id: string) => status.items.find((s) => s.id === id)?.inCooldown ?? false;
+  const active = chain.providers.find((p) => !isCold(p.id)) ?? chain.providers[0];
+  const others = chain.providers.filter((p) => p.id !== active.id).map((p) => p.label);
   const fallbackTxt = others.length ? ` Fallback: ${others.join(' → ')}.` : ' Sem fallback configurado.';
-  const hasFallback = chain.length > 1;
+  const sourceTxt = chain.source ? ` [${SOURCE_LABEL[chain.source] ?? chain.source}]` : '';
+  const hasFallback = chain.providers.length > 1;
 
   try {
     const result = await adapters[active.kind].validateKey(active.creds);
     return {
-      check: { ok: result.ok || hasFallback, detail: `Ativa: ${active.label}. ${result.detail}${fallbackTxt}` },
+      check: {
+        ok: result.ok || hasFallback,
+        detail: `Ativa: ${active.label}${sourceTxt}. ${result.detail}${fallbackTxt}`,
+      },
       provider: active.label,
     };
   } catch (err) {
     return {
-      check: { ok: hasFallback, detail: `${active.label}: ${errMessage(err, 'Falha ao validar.')}${fallbackTxt}` },
+      check: {
+        ok: hasFallback,
+        detail: `${active.label}: ${errMessage(err, 'Falha ao validar.')}${fallbackTxt}`,
+      },
       provider: active.label,
     };
   }
@@ -119,7 +132,7 @@ export async function getHealthReport(tenantId: string, force = false): Promise<
   const wa = await getTenantWhatsapp(tenantId);
   const [database, ai, wpp, transcription] = await Promise.all([
     checkDatabase(),
-    checkAi(),
+    checkAi(tenantId),
     wa.getConnectionStatus(),
     checkTranscription(),
   ]);

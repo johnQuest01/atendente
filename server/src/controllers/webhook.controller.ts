@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { env } from '../config/env';
 import { logger } from '../config/logger';
 import { DEFAULT_TENANT_ID } from '../config/tenant';
+import { runWithTenant } from '../db';
 import { findOrCreateClient, updateClient } from '../db/queries/clients';
 import {
   findOpenConversationByClient,
@@ -107,7 +108,8 @@ export async function handleWhatsappWebhook(req: Request, res: Response): Promis
   // Responde rápido ao provedor; processa o resto de forma assíncrona.
   res.status(200).json({ ok: true });
 
-  void processInbound(tenantId, inbound).catch((err) => {
+  // Processamento no escopo do tenant resolvido (ativa o RLS — BUG 1).
+  void runWithTenant(tenantId, () => processInbound(tenantId, inbound)).catch((err) => {
     logger.error('Erro ao processar mensagem inbound', err);
   });
 }
@@ -215,7 +217,7 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
   const history = await getRecentMessagesForAI(tenantId, conversation.id, 20);
 
   // Coleta de dados do cliente em segundo plano (não bloqueia a resposta).
-  if (await isAiConfigured()) {
+  if (await isAiConfigured(tenantId)) {
     void enrichClientFromConversation(tenantId, client, history).catch((err) =>
       logger.warn('Falha ao enriquecer cliente', err),
     );
@@ -226,14 +228,17 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
     listScripts(tenantId, true),
     getAiPersona(tenantId),
   ]);
-  const reply = await generateReply({
-    history,
-    client,
-    products,
-    scripts,
-    storeName: env.STORE_NAME,
-    systemPrompt,
-  });
+  const reply = await generateReply(
+    {
+      history,
+      client,
+      products,
+      scripts,
+      storeName: env.STORE_NAME,
+      systemPrompt,
+    },
+    tenantId,
+  );
   if (reply) {
     await dispatchText(ctx, reply);
   } else {
@@ -290,7 +295,7 @@ async function enrichClientFromConversation(
   const missing = !client.name || !client.company_name || !client.segment || !client.notes;
   if (!missing) return;
 
-  const info = await extractClientInfo(history);
+  const info = await extractClientInfo(history, tenantId);
   if (!info) return;
 
   const patch: Record<string, string> = {};

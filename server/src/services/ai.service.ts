@@ -105,10 +105,14 @@ export interface GenerateReplyInput {
 
 /**
  * Gera uma resposta humanizada de vendas com base no histórico da conversa,
- * usando o provedor de IA ativo (com failover automático). Retorna null se
- * nenhum provedor estiver configurado ou todos falharem.
+ * usando a corrente de IA DA EMPRESA (com failover automático). Conta no teto
+ * mensal quando a plataforma paga. Retorna null se nenhum provedor estiver
+ * disponível, o teto foi atingido, ou todos falharem.
  */
-export async function generateReply(input: GenerateReplyInput): Promise<string | null> {
+export async function generateReply(
+  input: GenerateReplyInput,
+  tenantId: string,
+): Promise<string | null> {
   const messages = toChatMessages(input.history);
   if (messages.length === 0) {
     messages.push({ role: 'user', content: 'Oi' });
@@ -124,9 +128,11 @@ export async function generateReply(input: GenerateReplyInput): Promise<string |
     buildCatalog(input.products) +
     buildScriptsReference(input.scripts);
 
-  const result = await complete({ system, messages, maxTokens: 500, temperature: 0.7 });
+  const result = await complete({ system, messages, maxTokens: 500, temperature: 0.7 }, tenantId, {
+    meter: true,
+  });
   if (!result) {
-    logger.warn('Sem resposta da IA (nenhum provedor disponível ou todos em falha).');
+    logger.warn('Sem resposta da IA (nenhum provedor disponível, teto atingido ou todos em falha).');
     return null;
   }
   return result.text || null;
@@ -141,11 +147,13 @@ export interface ExtractedClientInfo {
 
 /**
  * Extrai dados estruturados do cliente a partir do histórico da conversa
- * (nome, empresa, segmento, necessidade). Usa o provedor de IA ativo. Retorna
- * null se a IA não estiver configurada ou se não houver nada confiável.
+ * (nome, empresa, segmento, necessidade). Usa a corrente de IA da empresa.
+ * Não conta no teto (meter:false), mas respeita-o (não roda se já estourou).
+ * Retorna null se a IA não estiver configurada ou se não houver nada confiável.
  */
 export async function extractClientInfo(
   history: AiHistoryMessage[],
+  tenantId: string,
 ): Promise<ExtractedClientInfo | null> {
   const transcript = history
     .filter((m) => (m.type === 'text' || m.type === 'audio') && m.content && m.content !== '[áudio]')
@@ -166,12 +174,16 @@ export async function extractClientInfo(
     'Use null quando a informação não estiver clara. NUNCA invente.',
   ].join('\n');
 
-  const result = await complete({
-    system,
-    messages: [{ role: 'user', content: transcript }],
-    maxTokens: 300,
-    temperature: 0,
-  });
+  const result = await complete(
+    {
+      system,
+      messages: [{ role: 'user', content: transcript }],
+      maxTokens: 300,
+      temperature: 0,
+    },
+    tenantId,
+    { meter: false },
+  );
   if (!result) return null;
 
   try {

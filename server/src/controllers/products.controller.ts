@@ -11,6 +11,7 @@ import fs from 'node:fs/promises';
 import { cleanupTmp } from '../services/storage.service';
 import { insertMediaFile } from '../db/queries/media_files';
 import { env } from '../config/env';
+import { signMediaToken } from '../utils/media-token';
 import { AppError, NotFoundError } from '../utils/errors';
 
 export const idParamSchema = z.object({ id: z.string().uuid() });
@@ -96,7 +97,9 @@ export async function uploadProductImages(req: Request, res: Response): Promise<
         sizeKb: Math.round(data.length / 1024),
       });
       // URL pública estável servida pelo banco (acessível pela Z-API e sobrevive a deploys).
-      urls.push(`${env.PUBLIC_BASE_URL}/media/files/${id}`);
+      // Token assinado amarra o arquivo à empresa (BUG 2 — sem acesso cruzado).
+      const token = signMediaToken(tenantId, id);
+      urls.push(`${env.PUBLIC_BASE_URL}/media/files/${id}?t=${token}`);
     }
   } finally {
     for (const file of files) await cleanupTmp(file.path);

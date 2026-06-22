@@ -1,8 +1,8 @@
 import type { Request, Response } from 'express';
-import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { createTenant, getTenantById, listTenants, updateTenant } from '../db/queries/tenants';
 import { createUser, findUserByEmail } from '../db/queries/users';
+import { hashPassword } from '../utils/password';
 import { ConflictError, NotFoundError } from '../utils/errors';
 
 /**
@@ -36,7 +36,7 @@ export async function postTenant(req: Request, res: Response): Promise<void> {
   if (existing) throw new ConflictError('Já existe um usuário com este e-mail.');
 
   const tenant = await createTenant(input.name);
-  const passwordHash = await bcrypt.hash(input.adminPassword, 10);
+  const passwordHash = await hashPassword(input.adminPassword);
   const admin = await createUser({
     name: input.adminName,
     email: input.adminEmail,
@@ -54,10 +54,15 @@ export const updateTenantSchema = z
   .object({
     name: z.string().min(2).max(120).optional(),
     is_active: z.boolean().optional(),
+    // Teto mensal de mensagens de IA (plano base). null = ilimitado.
+    ai_message_limit: z
+      .union([z.coerce.number().int().min(0).max(1_000_000), z.null()])
+      .optional(),
   })
-  .refine((d) => d.name !== undefined || d.is_active !== undefined, {
-    message: 'Informe ao menos um campo para atualizar.',
-  });
+  .refine(
+    (d) => d.name !== undefined || d.is_active !== undefined || d.ai_message_limit !== undefined,
+    { message: 'Informe ao menos um campo para atualizar.' },
+  );
 
 /** Renomeia / ativa / desativa uma empresa. */
 export async function patchTenant(req: Request, res: Response): Promise<void> {

@@ -25,6 +25,10 @@ services:
         value: production
       - key: PORT
         value: 3001
+      # Row-Level Security (defesa em profundidade por empresa no banco). Kill-
+      # switch: troque para "false" no painel se precisar desativar sem rollback.
+      - key: RLS_ENFORCE
+        value: "true"
       # Pasta de uploads apontando para o disco persistente.
       - key: UPLOAD_DIR
         value: /var/data/uploads

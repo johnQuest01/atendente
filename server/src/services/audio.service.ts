@@ -6,6 +6,7 @@ import ffmpeg from 'fluent-ffmpeg';
 import { logger } from '../config/logger';
 import { AppError } from '../utils/errors';
 import { persistFile, cleanupTmp, storageMode } from './storage.service';
+import { signMediaToken } from '../utils/media-token';
 import {
   createAudio,
   setAudioFileUrl,
@@ -116,11 +117,12 @@ async function prepareAudioFromTmp(tmpFilePath: string): Promise<PreparedAudio> 
  * URL pública final do áudio:
  * - Remoto (R2): a própria URL do CDN (independente do backend).
  * - Local (dev): rota /media servida do banco (precisa do backend no ar).
+ *   Acompanha token assinado que escopa a mídia por empresa (BUG 2).
  */
-function publicUrlForAudio(audioId: string, storedUrl: string): string {
-  return storageMode === 'remote'
-    ? storedUrl
-    : `${env.PUBLIC_BASE_URL}/media/audios/${audioId}.ogg`;
+function publicUrlForAudio(tenantId: string, audioId: string, storedUrl: string): string {
+  if (storageMode === 'remote') return storedUrl;
+  const token = signMediaToken(tenantId, audioId);
+  return `${env.PUBLIC_BASE_URL}/media/audios/${audioId}.ogg?t=${token}`;
 }
 
 export async function processAndStoreAudio(input: ProcessAudioInput): Promise<Audio> {
@@ -142,7 +144,7 @@ export async function processAndStoreAudio(input: ProcessAudioInput): Promise<Au
   };
   const audio = await createAudio(input.tenantId, dbInput);
 
-  const finalUrl = publicUrlForAudio(audio.id, prepared.storedUrl);
+  const finalUrl = publicUrlForAudio(input.tenantId, audio.id, prepared.storedUrl);
   await setAudioFileUrl(input.tenantId, audio.id, finalUrl);
   audio.file_url = finalUrl;
   return audio;
@@ -158,7 +160,7 @@ export async function replaceAudioFile(
   tmpFilePath: string,
 ): Promise<Audio | null> {
   const prepared = await prepareAudioFromTmp(tmpFilePath);
-  const finalUrl = publicUrlForAudio(id, prepared.storedUrl);
+  const finalUrl = publicUrlForAudio(tenantId, id, prepared.storedUrl);
   return updateAudioFile(tenantId, id, {
     fileData: prepared.fileData,
     mimeType: prepared.fileData ? 'audio/ogg' : null,

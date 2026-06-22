@@ -1,6 +1,5 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env';
 import {
@@ -10,6 +9,7 @@ import {
   normalizePhone,
   setBlockedActive,
 } from '../db/queries/blocked';
+import { verifyPassword } from '../utils/password';
 import { AppError, NotFoundError, UnauthorizedError } from '../utils/errors';
 
 export const idParamSchema = z.object({ id: z.string().uuid() });
@@ -26,7 +26,7 @@ export const unlockSchema = z.object({
 export async function unlockBlocked(req: Request, res: Response): Promise<void> {
   const { email, password } = req.body as z.infer<typeof unlockSchema>;
   const emailOk = email.trim().toLowerCase() === env.BLOCK_ADMIN_EMAIL.toLowerCase();
-  const passOk = emailOk && (await bcrypt.compare(password, env.BLOCK_ADMIN_PASSWORD_HASH));
+  const passOk = emailOk && (await verifyPassword(password, env.BLOCK_ADMIN_PASSWORD_HASH));
   if (!emailOk || !passOk) {
     throw new UnauthorizedError('Login ou senha do cadeado incorretos.');
   }

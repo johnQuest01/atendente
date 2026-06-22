@@ -1,9 +1,9 @@
-import bcrypt from 'bcryptjs';
 import { pool, closePool, queryOne } from './index';
 import { env } from '../config/env';
 import { logger } from '../config/logger';
 import { DEFAULT_TENANT_ID } from '../config/tenant';
 import { hasEncryptionKey } from '../utils/crypto';
+import { hashPassword } from '../utils/password';
 import {
   getConnectionByTenant,
   upsertConnection,
@@ -31,7 +31,7 @@ async function seedAdmin(): Promise<void> {
     return;
   }
 
-  const hash = await bcrypt.hash(env.SEED_ADMIN_PASSWORD, 10);
+  const hash = await hashPassword(env.SEED_ADMIN_PASSWORD);
   await pool.query(
     `INSERT INTO users (name, email, password_hash, role, tenant_id)
      VALUES ($1, $2, $3, 'admin', $4)`,
@@ -76,7 +76,7 @@ async function ensureSuperAdmin(): Promise<void> {
     return;
   }
 
-  const hash = await bcrypt.hash(env.SUPERADMIN_PASSWORD, 10);
+  const hash = await hashPassword(env.SUPERADMIN_PASSWORD);
   await pool.query(
     `INSERT INTO users (name, email, password_hash, role, tenant_id)
      VALUES ($1, $2, $3, 'superadmin', $4)`,
@@ -149,9 +149,9 @@ async function ensureDefaultAiProvider(): Promise<void> {
     return;
   }
 
-  const count = await countAiProviders();
+  const count = await countAiProviders(null);
   if (count > 0) {
-    logger.info(`Provedores de IA já cadastrados (${count}). Nada a fazer.`);
+    logger.info(`Provedores de IA globais já cadastrados (${count}). Nada a fazer.`);
     return;
   }
 
@@ -161,6 +161,7 @@ async function ensureDefaultAiProvider(): Promise<void> {
   }
 
   await createAiProvider({
+    tenantId: null,
     kind: 'anthropic',
     label: 'Claude',
     apiKey: env.ANTHROPIC_API_KEY,

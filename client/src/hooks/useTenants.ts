@@ -9,6 +9,10 @@ export interface TenantSummary {
   users_count: number;
   has_whatsapp: boolean;
   whatsapp_status: string | null;
+  /** Teto mensal de mensagens de IA no plano base (null = ilimitado). */
+  ai_message_limit: number | null;
+  /** Mensagens de IA (pagas pela plataforma) usadas no mês atual. */
+  ai_used: number;
 }
 
 export interface CreateTenantInput {
@@ -51,6 +55,7 @@ export function useUpdateTenant() {
       id: string;
       name?: string;
       is_active?: boolean;
+      ai_message_limit?: number | null;
     }) => {
       const { data } = await api.patch(`/admin/tenants/${id}`, patch);
       return data;

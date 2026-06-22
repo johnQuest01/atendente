@@ -45,16 +45,23 @@ export async function getAudioById(tenantId: string, id: string): Promise<Audio 
 
 /**
  * Retorna os bytes do áudio (para servir em /media/audios/:id).
- * Busca apenas por id (UUID): a rota /media é pública e o isolamento por
- * tenant dela fica para a Fase 2.
+ * Quando `tenantId` é informado (token assinado na URL), filtra por empresa —
+ * impedindo que um id de outra empresa seja buscado. Sem tenant (URL legada
+ * sem token), mantém o comportamento antigo por compatibilidade.
  */
 export async function getAudioBinary(
   id: string,
+  tenantId?: string | null,
 ): Promise<{ data: Buffer; mime: string } | null> {
-  const row = await queryOne<{ file_data: Buffer | null; mime_type: string | null }>(
-    'SELECT file_data, mime_type FROM audios WHERE id = $1',
-    [id],
-  );
+  const row = tenantId
+    ? await queryOne<{ file_data: Buffer | null; mime_type: string | null }>(
+        'SELECT file_data, mime_type FROM audios WHERE id = $1 AND tenant_id = $2',
+        [id, tenantId],
+      )
+    : await queryOne<{ file_data: Buffer | null; mime_type: string | null }>(
+        'SELECT file_data, mime_type FROM audios WHERE id = $1',
+        [id],
+      );
   if (!row || !row.file_data) return null;
   return { data: row.file_data, mime: row.mime_type ?? 'audio/ogg' };
 }

@@ -20,14 +20,23 @@ export async function insertMediaFile(tenantId: string, input: InsertMediaFileIn
 
 /**
  * Lê os bytes de um arquivo de mídia (para servir em /media/files/:id).
- * Busca apenas por id (UUID): a rota /media é pública e o isolamento por
- * tenant dela fica para a Fase 2.
+ * Quando `tenantId` é informado (token assinado na URL), filtra por empresa —
+ * impedindo acesso cruzado entre empresas por um id conhecido. Sem tenant (URL
+ * legada sem token), mantém o comportamento antigo por compatibilidade.
  */
-export async function getMediaFile(id: string): Promise<{ data: Buffer; mime: string } | null> {
-  const row = await queryOne<{ data: Buffer | null; mime: string | null }>(
-    'SELECT data, mime FROM media_files WHERE id = $1',
-    [id],
-  );
+export async function getMediaFile(
+  id: string,
+  tenantId?: string | null,
+): Promise<{ data: Buffer; mime: string } | null> {
+  const row = tenantId
+    ? await queryOne<{ data: Buffer | null; mime: string | null }>(
+        'SELECT data, mime FROM media_files WHERE id = $1 AND tenant_id = $2',
+        [id, tenantId],
+      )
+    : await queryOne<{ data: Buffer | null; mime: string | null }>(
+        'SELECT data, mime FROM media_files WHERE id = $1',
+        [id],
+      );
   if (!row || !row.data) return null;
   return { data: row.data, mime: row.mime ?? 'application/octet-stream' };
 }

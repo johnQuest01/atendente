@@ -17,6 +17,8 @@ import {
   useSaveWhatsappConnection,
   type WhatsappConnectionInput,
 } from '@/hooks/useWhatsappConnection';
+import { useAiUsage } from '@/hooks/useAiProviders';
+import { AiProvidersManager } from '@/components/ai/AiProvidersManager';
 import { useSocket } from '@/hooks/useSocket';
 import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
@@ -127,6 +129,8 @@ export default function Settings() {
 
         <WhatsappCard canEdit={user?.role === 'admin' || user?.role === 'superadmin'} />
 
+        {(user?.role === 'admin' || user?.role === 'superadmin') && <AiCard />}
+
         {user?.role === 'superadmin' && (
           <Link to="/admin" className="block">
             <Card className="flex items-center gap-3 transition-colors hover:border-primary/40">
@@ -147,6 +151,39 @@ export default function Settings() {
         </Button>
       </div>
     </>
+  );
+}
+
+function AiCard() {
+  const { data: usage } = useAiUsage('tenant');
+  const over =
+    !!usage && usage.source !== 'tenant' && usage.limit != null && usage.used >= usage.limit;
+
+  return (
+    <Card>
+      <div className="mb-3">
+        <h2 className="text-base font-bold text-text-primary">Inteligência Artificial da empresa</h2>
+        <p className="text-sm text-text-secondary">
+          Conecte suas próprias chaves e defina a ordem de atendimento. Quando os tokens de uma IA
+          acabam, o sistema passa automaticamente para a próxima — sem parar a automação.
+        </p>
+      </div>
+
+      {usage && (
+        <div className="mb-3 flex items-center justify-between gap-2 rounded-xl border border-border bg-bg px-3 py-2">
+          <span className="text-xs text-text-secondary">
+            Uso de IA neste mês{usage.source === 'tenant' ? ' (suas chaves)' : ' (plano)'}
+          </span>
+          <Badge tone={over ? 'danger' : 'neutral'}>
+            {usage.source === 'tenant' || usage.limit == null
+              ? `${usage.used} mensagem(ns)`
+              : `${usage.used}/${usage.limit}`}
+          </Badge>
+        </div>
+      )}
+
+      <AiProvidersManager scope="tenant" />
+    </Card>
   );
 }
 
@@ -186,8 +223,8 @@ function PersonaCard() {
         <div className="min-w-0">
           <h2 className="text-base font-bold text-text-primary">Personalidade da IA</h2>
           <p className="text-sm text-text-secondary">
-            Escreva o contexto, o jeito de falar e as regras que o Claude deve seguir. É como
-            escrever as instruções direto pra IA — ela lê e responde os clientes seguindo isto.
+            Escreva o contexto, o jeito de falar e as regras que a IA deve seguir. É como escrever
+            as instruções direto pra IA — ela lê e responde os clientes seguindo isto.
           </p>
         </div>
         <Badge tone={isDefault ? 'primary' : 'success'}>{isDefault ? 'Padrão' : 'Personalizado'}</Badge>
