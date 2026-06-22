@@ -25,13 +25,22 @@ export async function findOrCreateOpenConversation(clientId: string): Promise<Co
   const existing = await findOpenConversationByClient(clientId);
   if (existing) return existing;
 
-  const { rows } = await query<Conversation>(
-    `INSERT INTO conversations (client_id, status)
-     VALUES ($1, 'open')
-     RETURNING *`,
-    [clientId],
-  );
-  return rows[0];
+  try {
+    const { rows } = await query<Conversation>(
+      `INSERT INTO conversations (client_id, status)
+       VALUES ($1, 'open')
+       RETURNING *`,
+      [clientId],
+    );
+    return rows[0];
+  } catch (err) {
+    // Corrida: outra requisição abriu a conversa ao mesmo tempo e o índice único
+    // parcial (uq_conversations_active_per_client) barrou esta. Em vez de propagar
+    // o erro, buscamos a conversa ativa que venceu a corrida.
+    const open = await findOpenConversationByClient(clientId);
+    if (open) return open;
+    throw err;
+  }
 }
 
 export async function getConversationById(id: string): Promise<Conversation | null> {

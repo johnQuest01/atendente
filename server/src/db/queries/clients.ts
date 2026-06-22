@@ -6,22 +6,16 @@ export async function findClientByPhone(phone: string): Promise<Client | null> {
 }
 
 export async function findOrCreateClient(phone: string, name?: string | null): Promise<Client> {
-  const existing = await findClientByPhone(phone);
-  if (existing) {
-    const { rows } = await query<Client>(
-      `UPDATE clients
-         SET last_contact_at = NOW(),
-             name = COALESCE(name, $2)
-       WHERE phone = $1
-       RETURNING *`,
-      [phone, name ?? null],
-    );
-    return rows[0];
-  }
-
+  // Upsert atômico: evita a corrida em que duas mensagens simultâneas de um
+  // número NOVO violariam a restrição UNIQUE(phone) e fariam a 2ª falhar.
+  // Mantém o nome já cadastrado (só preenche se estiver vazio) e atualiza o
+  // último contato — preservando o comportamento anterior.
   const { rows } = await query<Client>(
     `INSERT INTO clients (phone, name)
      VALUES ($1, $2)
+     ON CONFLICT (phone) DO UPDATE
+       SET last_contact_at = NOW(),
+           name = COALESCE(clients.name, EXCLUDED.name)
      RETURNING *`,
     [phone, name ?? null],
   );
