@@ -35,6 +35,17 @@ services:
       # Segredo do JWT gerado automaticamente pelo Render.
       - key: JWT_SECRET
         generateValue: true
+      # Chave para cifrar as credenciais de WhatsApp das empresas (AES-256-GCM).
+      # Gerada automaticamente; se trocar depois, as conexões salvas precisam ser
+      # recadastradas (o tenant padrão tem fallback no .env).
+      - key: ENCRYPTION_KEY
+        generateValue: true
+      # Dono da plataforma (super-admin): cria/gerencia as empresas. Preencha o
+      # e-mail; se a conta não existir, defina também SUPERADMIN_PASSWORD.
+      - key: SUPERADMIN_EMAIL
+        sync: false
+      - key: SUPERADMIN_PASSWORD
+        sync: false
       # URL do frontend (Vercel) para liberar CORS — preencher após o deploy do Vercel.
       - key: FRONTEND_URL
         sync: false

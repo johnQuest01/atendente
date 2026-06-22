@@ -8,6 +8,7 @@ import keywordsRoutes from './keywords.routes';
 import dashboardRoutes from './dashboard.routes';
 import settingsRoutes from './settings.routes';
 import blockedRoutes from './blocked.routes';
+import adminRoutes from './admin.routes';
 
 const api = Router();
 
@@ -20,5 +21,6 @@ api.use('/keywords', keywordsRoutes);
 api.use('/dashboard', dashboardRoutes);
 api.use('/settings', settingsRoutes);
 api.use('/blocked', blockedRoutes);
+api.use('/admin', adminRoutes);
 
 export default api;

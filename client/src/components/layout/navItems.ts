@@ -1,6 +1,7 @@
 import type { ComponentType, SVGProps } from 'react';
 import {
   AudioIcon,
+  BuildingIcon,
   ChatIcon,
   DashboardIcon,
   KeyIcon,
@@ -15,6 +16,8 @@ export interface NavItem {
   icon: ComponentType<SVGProps<SVGSVGElement>>;
   /** Aparece na bottom nav (mobile). */
   primary: boolean;
+  /** Só visível para o dono da plataforma (super-admin). */
+  superadminOnly?: boolean;
 }
 
 export const NAV_ITEMS: NavItem[] = [
@@ -25,4 +28,5 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/scripts', label: 'Scripts', icon: TextIcon, primary: false },
   { to: '/keywords', label: 'Keywords', icon: KeyIcon, primary: false },
   { to: '/configuracoes', label: 'Config', icon: SettingsIcon, primary: true },
+  { to: '/admin', label: 'Empresas', icon: BuildingIcon, primary: false, superadminOnly: true },
 ];

@@ -3,6 +3,12 @@ import { pool, closePool, queryOne } from './index';
 import { env } from '../config/env';
 import { logger } from '../config/logger';
 import { DEFAULT_TENANT_ID } from '../config/tenant';
+import { hasEncryptionKey } from '../utils/crypto';
+import {
+  getConnectionByTenant,
+  upsertConnection,
+  type WhatsappSecrets,
+} from './queries/whatsapp_connections';
 import type { User } from '../types';
 
 /** Garante a empresa (tenant) padrão da Fase 1, com UUID fixo. Idempotente. */
@@ -34,8 +40,104 @@ async function seedAdmin(): Promise<void> {
   logger.info(`Usuário admin criado: ${env.SEED_ADMIN_EMAIL} / senha definida em SEED_ADMIN_PASSWORD`);
 }
 
+/**
+ * Garante o dono da plataforma (super-admin). Se SUPERADMIN_EMAIL existir entre
+ * os usuários, promove a 'superadmin'. Se não existir e houver
+ * SUPERADMIN_PASSWORD, cria a conta no tenant padrão. Idempotente.
+ */
+async function ensureSuperAdmin(): Promise<void> {
+  const email = env.SUPERADMIN_EMAIL;
+  if (!email) {
+    logger.info('SUPERADMIN_EMAIL não definido — pulando criação do super-admin.');
+    return;
+  }
+
+  const existing = await queryOne<{ id: string; role: string }>(
+    'SELECT id, role FROM users WHERE email = $1',
+    [email.toLowerCase()],
+  );
+
+  if (existing) {
+    if (existing.role !== 'superadmin') {
+      await pool.query(`UPDATE users SET role = 'superadmin' WHERE id = $1`, [existing.id]);
+      logger.info(`Usuário ${email} promovido a super-admin (dono da plataforma).`);
+    } else {
+      logger.info(`Super-admin já configurado (${email}). Nada a fazer.`);
+    }
+    return;
+  }
+
+  if (!env.SUPERADMIN_PASSWORD) {
+    logger.warn(
+      `SUPERADMIN_EMAIL (${email}) não existe e SUPERADMIN_PASSWORD não foi definido — ` +
+        'crie o usuário ou defina a senha para o seed criar a conta.',
+    );
+    return;
+  }
+
+  const hash = await bcrypt.hash(env.SUPERADMIN_PASSWORD, 10);
+  await pool.query(
+    `INSERT INTO users (name, email, password_hash, role, tenant_id)
+     VALUES ($1, $2, $3, 'superadmin', $4)`,
+    ['Plataforma', email.toLowerCase(), hash, DEFAULT_TENANT_ID],
+  );
+  logger.info(`Super-admin criado: ${email} / senha definida em SUPERADMIN_PASSWORD`);
+}
+
+function logWebhookUrl(token: string): void {
+  const base = env.PUBLIC_BASE_URL.replace(/\/+$/, '');
+  logger.info(`URL de webhook da empresa padrão (configure na Z-API): ${base}/webhook/whatsapp/${token}`);
+}
+
+/**
+ * Continuidade (Fase 2): cria a conexão de WhatsApp da empresa padrão a partir
+ * das credenciais do .env, para a operação atual seguir funcionando com a nova
+ * arquitetura por empresa. Idempotente: se já existir conexão, não recria.
+ */
+async function ensureDefaultWhatsappConnection(): Promise<void> {
+  if (!hasEncryptionKey()) {
+    logger.warn(
+      'ENCRYPTION_KEY ausente — não migrei a conexão do .env. O tenant padrão segue no fallback do .env.',
+    );
+    return;
+  }
+
+  const existing = await getConnectionByTenant(DEFAULT_TENANT_ID);
+  if (existing) {
+    logger.info('Conexão de WhatsApp do tenant padrão já existe. Nada a fazer.');
+    logWebhookUrl(existing.webhook_token);
+    return;
+  }
+
+  const provider = env.WHATSAPP_PROVIDER;
+  const hasCreds =
+    provider === 'evolution'
+      ? Boolean(env.EVOLUTION_API_KEY && env.EVOLUTION_INSTANCE)
+      : Boolean(env.ZAPI_INSTANCE_ID && env.ZAPI_TOKEN);
+  if (!hasCreds) {
+    logger.info('Sem credenciais de WhatsApp no .env — pulando criação da conexão padrão.');
+    return;
+  }
+
+  const secrets: WhatsappSecrets =
+    provider === 'evolution'
+      ? { apiKey: env.EVOLUTION_API_KEY, instance: env.EVOLUTION_INSTANCE }
+      : {
+          instanceId: env.ZAPI_INSTANCE_ID,
+          token: env.ZAPI_TOKEN,
+          clientToken: env.ZAPI_CLIENT_TOKEN,
+        };
+  const baseUrl = provider === 'evolution' ? env.EVOLUTION_BASE_URL : env.ZAPI_BASE_URL;
+
+  const conn = await upsertConnection(DEFAULT_TENANT_ID, { provider, secrets, baseUrl });
+  logger.info('Conexão de WhatsApp do tenant padrão criada a partir do .env.');
+  logWebhookUrl(conn.webhook_token);
+}
+
 ensureDefaultTenant()
   .then(() => seedAdmin())
+  .then(() => ensureSuperAdmin())
+  .then(() => ensureDefaultWhatsappConnection())
   .then(() => closePool())
   .then(() => process.exit(0))
   .catch(async (err) => {

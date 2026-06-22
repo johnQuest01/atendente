@@ -1,23 +1,38 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { PageHeader } from '@/components/layout/AppShell';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Toggle } from '@/components/ui/Toggle';
+import { Input, Select } from '@/components/ui/Input';
+import { BuildingIcon } from '@/components/ui/Icons';
 import { useAuth } from '@/hooks/useAuth';
 import { useAgentStatus, useSetAgentStatus, AGENT_QUERY_KEY } from '@/hooks/useAgent';
 import { usePersona, useSetPersona } from '@/hooks/usePersona';
 import { useSystemStatus, type ServiceCheck } from '@/hooks/useSystemStatus';
+import {
+  useWhatsappConnection,
+  useSaveWhatsappConnection,
+  type WhatsappConnectionInput,
+} from '@/hooks/useWhatsappConnection';
 import { useSocket } from '@/hooks/useSocket';
 import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
 import { initials } from '@/utils/formatters';
+import type { UserRole } from '@/types';
 
 const PROVIDER_LABEL: Record<string, string> = {
   zapi: 'Z-API',
   evolution: 'Evolution API',
 };
+
+function roleLabel(role: UserRole): string {
+  if (role === 'superadmin') return 'Dono da plataforma';
+  if (role === 'admin') return 'Administrador';
+  return 'Operador';
+}
 
 export default function Settings() {
   const { user, logout } = useAuth();
@@ -75,7 +90,7 @@ export default function Settings() {
           <div className="min-w-0 flex-1">
             <p className="truncate text-lg font-bold text-text-primary">{user?.name}</p>
             <p className="truncate text-sm text-text-secondary">{user?.email}</p>
-            {user && <Badge tone="primary" className="mt-1">{user.role === 'admin' ? 'Administrador' : 'Operador'}</Badge>}
+            {user && <Badge tone="primary" className="mt-1">{roleLabel(user.role)}</Badge>}
           </div>
         </Card>
 
@@ -107,13 +122,22 @@ export default function Settings() {
           )}
         </Card>
 
-        <Card>
-          <h2 className="mb-2 text-sm font-bold text-text-primary">Webhook do WhatsApp</h2>
-          <p className="text-sm text-text-secondary">
-            Configure na Z-API a URL de mensagens recebidas apontando para o endpoint{' '}
-            <code className="rounded bg-bg px-1 py-0.5 text-xs">POST /webhook/whatsapp</code> do servidor.
-          </p>
-        </Card>
+        <WhatsappCard canEdit={user?.role === 'admin' || user?.role === 'superadmin'} />
+
+        {user?.role === 'superadmin' && (
+          <Link to="/admin" className="block">
+            <Card className="flex items-center gap-3 transition-colors hover:border-primary/40">
+              <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary-light text-primary">
+                <BuildingIcon width={22} height={22} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-bold text-text-primary">Painel da plataforma</p>
+                <p className="text-xs text-text-secondary">Gerencie as empresas e seus administradores.</p>
+              </div>
+              <span className="text-text-secondary">›</span>
+            </Card>
+          </Link>
+        )}
 
         <Button variant="danger" fullWidth onClick={logout}>
           Sair da conta
@@ -190,6 +214,185 @@ function PersonaCard() {
           </Button>
         </div>
       </div>
+    </Card>
+  );
+}
+
+function WhatsappCard({ canEdit }: { canEdit: boolean }) {
+  const { data, isFetching, refetch } = useWhatsappConnection();
+  const save = useSaveWhatsappConnection();
+
+  const [editing, setEditing] = useState(false);
+  const [provider, setProvider] = useState<'zapi' | 'evolution'>('zapi');
+  const [instanceId, setInstanceId] = useState('');
+  const [token, setToken] = useState('');
+  const [clientToken, setClientToken] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [instance, setInstance] = useState('');
+  const [baseUrl, setBaseUrl] = useState('');
+
+  useEffect(() => {
+    if (data && !editing) setProvider(data.provider);
+  }, [data, editing]);
+
+  const status = data?.status;
+  const ok = status?.ok ?? false;
+  const tone = !data ? 'warning' : ok ? 'success' : data.configured ? 'danger' : 'warning';
+  const label = !data ? '...' : ok ? 'Conectado' : data.configured ? 'Offline' : 'Não configurado';
+
+  function copyWebhook() {
+    if (!data?.webhookUrl) return;
+    void navigator.clipboard?.writeText(data.webhookUrl).then(
+      () => toast('URL de webhook copiada!', 'success'),
+      () => toast('Não foi possível copiar — copie manualmente.', 'error'),
+    );
+  }
+
+  function resetFields() {
+    setInstanceId('');
+    setToken('');
+    setClientToken('');
+    setApiKey('');
+    setInstance('');
+    setBaseUrl('');
+  }
+
+  function submit() {
+    const payload: WhatsappConnectionInput = { provider };
+    if (provider === 'zapi') {
+      if (instanceId.trim()) payload.instanceId = instanceId.trim();
+      if (token.trim()) payload.token = token.trim();
+      if (clientToken.trim()) payload.clientToken = clientToken.trim();
+    } else {
+      if (apiKey.trim()) payload.apiKey = apiKey.trim();
+      if (instance.trim()) payload.instance = instance.trim();
+    }
+    if (baseUrl.trim()) payload.baseUrl = baseUrl.trim();
+
+    save.mutate(payload, {
+      onSuccess: () => {
+        setEditing(false);
+        resetFields();
+        toast('Conexão de WhatsApp salva!', 'success');
+      },
+      onError: (err) => toast(getErrorMessage(err), 'error'),
+    });
+  }
+
+  return (
+    <Card>
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <h2 className="text-base font-bold text-text-primary">Conexão do WhatsApp</h2>
+          <p className="text-sm text-text-secondary">
+            Conecte a instância de WhatsApp desta empresa. O agente envia e recebe por ela.
+          </p>
+        </div>
+        <Badge tone={tone}>{label}</Badge>
+      </div>
+
+      {status?.detail && <p className="mb-3 text-xs text-text-secondary">{status.detail}</p>}
+
+      {data?.webhookUrl && (
+        <div className="mb-3 rounded-xl border border-border bg-bg p-3">
+          <p className="mb-1 text-xs font-semibold text-text-primary">URL de webhook desta empresa</p>
+          <p className="mb-2 text-xs text-text-secondary">
+            Cole no painel da {PROVIDER_LABEL[data.provider] ?? 'Z-API'} (mensagens recebidas e status).
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="block flex-1 truncate rounded-lg bg-surface px-2 py-1.5 text-xs text-text-primary">
+              {data.webhookUrl}
+            </code>
+            <Button size="sm" variant="secondary" onClick={copyWebhook}>
+              Copiar
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {canEdit && data?.encryptionAvailable === false && (
+        <p className="mb-3 rounded-lg bg-warning/12 px-3 py-2 text-xs text-warning">
+          Defina ENCRYPTION_KEY no servidor para salvar as credenciais com segurança.
+        </p>
+      )}
+
+      {!canEdit ? (
+        <p className="text-xs text-text-secondary">Apenas administradores podem alterar a conexão.</p>
+      ) : editing ? (
+        <div className="flex flex-col gap-3">
+          <Select
+            label="Provedor"
+            value={provider}
+            onChange={(e) => setProvider(e.target.value as 'zapi' | 'evolution')}
+          >
+            <option value="zapi">Z-API</option>
+            <option value="evolution">Evolution API</option>
+          </Select>
+
+          {provider === 'zapi' ? (
+            <>
+              <Input
+                label="Instance ID"
+                value={instanceId}
+                onChange={(e) => setInstanceId(e.target.value)}
+                placeholder={data?.instanceId ? `Salvo (${data.instanceId})` : 'Ex.: 3DF1A2...'}
+              />
+              <Input
+                label="Token"
+                value={token}
+                onChange={(e) => setToken(e.target.value)}
+                placeholder={data?.hasToken ? '•••• salvo (vazio = manter)' : 'Token da instância'}
+              />
+              <Input
+                label="Client-Token (opcional)"
+                value={clientToken}
+                onChange={(e) => setClientToken(e.target.value)}
+                placeholder={data?.hasClientToken ? '•••• salvo (vazio = manter)' : 'Segurança da conta'}
+              />
+            </>
+          ) : (
+            <>
+              <Input
+                label="API Key"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={data?.hasApiKey ? '•••• salvo (vazio = manter)' : 'apikey da Evolution'}
+              />
+              <Input
+                label="Instância"
+                value={instance}
+                onChange={(e) => setInstance(e.target.value)}
+                placeholder={data?.instance ? `Salvo (${data.instance})` : 'Nome da instância'}
+              />
+            </>
+          )}
+
+          <Input
+            label="URL base (opcional)"
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder={data?.baseUrl ?? (provider === 'zapi' ? 'https://api.z-api.io/instances' : 'http://...')}
+          />
+
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="secondary" onClick={() => setEditing(false)} disabled={save.isPending}>
+              Cancelar
+            </Button>
+            <Button size="sm" onClick={submit} loading={save.isPending} disabled={data?.encryptionAvailable === false}>
+              Salvar conexão
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between gap-2">
+          <Button size="sm" variant="secondary" loading={isFetching} onClick={() => void refetch()}>
+            Testar conexão
+          </Button>
+          <Button size="sm" onClick={() => setEditing(true)}>
+            {data?.configured ? 'Editar credenciais' : 'Configurar'}
+          </Button>
+        </div>
+      )}
     </Card>
   );
 }

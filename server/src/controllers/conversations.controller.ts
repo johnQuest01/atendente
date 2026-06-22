@@ -80,7 +80,7 @@ export async function patchConversationStatus(req: Request, res: Response): Prom
   const conversation = await updateConversationStatus(tenantId, id, status);
   if (!conversation) throw new NotFoundError('Conversa');
 
-  emitConversationUpdated(conversation);
+  emitConversationUpdated(tenantId, conversation);
   res.json({ conversation });
 }
 

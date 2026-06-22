@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { asyncHandler } from '../utils/asyncHandler';
 import { validate } from '../middleware/validate';
 import { authenticate } from '../middleware/auth.middleware';
+import { authorize } from '../middleware/auth.middleware';
 import {
   getAgentStatus,
   putAgentStatus,
@@ -10,6 +11,9 @@ import {
   putPersona,
   updatePersonaSchema,
   getSystemStatus,
+  getWhatsappConnection,
+  putWhatsappConnection,
+  updateWhatsappSchema,
 } from '../controllers/settings.controller';
 
 const router = Router();
@@ -24,5 +28,14 @@ router.put('/persona', validate({ body: updatePersonaSchema }), asyncHandler(put
 
 // Status REAL das integrações (banco, Claude, WhatsApp, STT).
 router.get('/status', asyncHandler(getSystemStatus));
+
+// Conexão de WhatsApp da empresa (cadastro de credenciais). Só admin edita.
+router.get('/whatsapp', asyncHandler(getWhatsappConnection));
+router.put(
+  '/whatsapp',
+  authorize('admin', 'superadmin'),
+  validate({ body: updateWhatsappSchema }),
+  asyncHandler(putWhatsappConnection),
+);
 
 export default router;

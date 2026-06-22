@@ -1,19 +1,39 @@
-import { env } from '../config/env';
 import { logger } from '../config/logger';
 import { AppError } from '../utils/errors';
 
 /**
- * Integração com a Z-API para envio de mensagens no WhatsApp.
+ * Integracao com a Z-API para envio de mensagens no WhatsApp.
+ *
+ * Multi-tenant: NAO le mais o .env. Todas as funcoes recebem uma conexao
+ * (`ZapiConnection`) com as credenciais ja resolvidas/descriptografadas da
+ * empresa. O facade (whatsapp.service.ts) resolve a conexao por tenant.
  * Usa o `fetch` nativo do Node 18+.
  */
 
-function baseUrl(): string {
-  return `${env.ZAPI_BASE_URL}/${env.ZAPI_INSTANCE_ID}/token/${env.ZAPI_TOKEN}`;
+export interface ZapiConnection {
+  instanceId: string;
+  token: string;
+  clientToken?: string;
+  /** Ex.: https://api.z-api.io/instances */
+  baseUrl: string;
 }
 
-function headers(): Record<string, string> {
+export interface ProviderStatus {
+  ok: boolean;
+  detail: string;
+}
+
+function isConfigured(conn: ZapiConnection): boolean {
+  return Boolean(conn.instanceId && conn.token);
+}
+
+function baseUrl(conn: ZapiConnection): string {
+  return `${conn.baseUrl}/${conn.instanceId}/token/${conn.token}`;
+}
+
+function headers(conn: ZapiConnection): Record<string, string> {
   const h: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (env.ZAPI_CLIENT_TOKEN) h['Client-Token'] = env.ZAPI_CLIENT_TOKEN;
+  if (conn.clientToken) h['Client-Token'] = conn.clientToken;
   return h;
 }
 
@@ -23,51 +43,50 @@ interface ZapiResponse {
   [key: string]: unknown;
 }
 
-async function post(endpoint: string, body: Record<string, unknown>): Promise<string | null> {
-  if (!env.hasZapi) {
-    logger.warn(`Z-API não configurada — simulando envio de "${endpoint}".`, body);
+async function post(
+  conn: ZapiConnection,
+  endpoint: string,
+  body: Record<string, unknown>,
+): Promise<string | null> {
+  if (!isConfigured(conn)) {
+    logger.warn(`Z-API nao configurada — simulando envio de "${endpoint}".`, body);
     return `sim-${Date.now()}`;
   }
 
-  const url = `${baseUrl()}/${endpoint}`;
+  const url = `${baseUrl(conn)}/${endpoint}`;
   const res = await fetch(url, {
     method: 'POST',
-    headers: headers(),
+    headers: headers(conn),
     body: JSON.stringify(body),
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    // Loga com detalhe (endpoint + corpo da resposta) para depurar em produção
-    // sem expor tokens (que ficam apenas na URL, não logada).
+    // Loga com detalhe (endpoint + corpo da resposta) para depurar em producao
+    // sem expor tokens (que ficam apenas na URL, nao logada).
     logger.error(`Z-API ${endpoint} retornou ${res.status}: ${text}`);
     throw new AppError(`Z-API retornou ${res.status}: ${text}`, 502, 'ZAPI_ERROR');
   }
 
   const data = (await res.json().catch(() => ({}))) as ZapiResponse;
-  // A Z-API às vezes responde 200 com um erro no corpo (ex.: número inválido).
+  // A Z-API as vezes responde 200 com um erro no corpo (ex.: numero invalido).
   if (data.error || data.message === 'error') {
     logger.warn(`Z-API ${endpoint} respondeu 200 com erro no corpo:`, data);
   }
   return data.messageId ?? data.id ?? null;
 }
 
-export interface ProviderStatus {
-  ok: boolean;
-  detail: string;
-}
-
 /**
- * Consulta o estado REAL da conexão na Z-API (GET /status): indica se o
- * celular está pareado. Usado pela tela de status para refletir a realidade.
+ * Consulta o estado REAL da conexao na Z-API (GET /status): indica se o
+ * celular esta pareado. Usado pela tela de status para refletir a realidade.
  */
-export async function getConnectionStatus(): Promise<ProviderStatus> {
-  if (!env.hasZapi) {
-    return { ok: false, detail: 'Z-API não configurada (instance/token ausentes).' };
+export async function getConnectionStatus(conn: ZapiConnection): Promise<ProviderStatus> {
+  if (!isConfigured(conn)) {
+    return { ok: false, detail: 'Z-API nao configurada (instance/token ausentes).' };
   }
   try {
-    const res = await fetch(`${baseUrl()}/status`, {
-      headers: headers(),
+    const res = await fetch(`${baseUrl(conn)}/status`, {
+      headers: headers(conn),
       signal: AbortSignal.timeout(5000),
     });
     if (!res.ok) {
@@ -90,33 +109,39 @@ export async function getConnectionStatus(): Promise<ProviderStatus> {
 }
 
 /** Envia mensagem de texto. */
-export function sendText(phone: string, message: string): Promise<string | null> {
-  return post('send-text', { phone, message });
+export function sendText(conn: ZapiConnection, phone: string, message: string): Promise<string | null> {
+  return post(conn, 'send-text', { phone, message });
 }
 
-/** Envia áudio (URL .ogg). `audio` pode ser URL pública ou base64. */
-export function sendAudio(phone: string, audioUrl: string): Promise<string | null> {
+/** Envia audio (URL .ogg). `audio` pode ser URL publica ou base64. */
+export function sendAudio(conn: ZapiConnection, phone: string, audioUrl: string): Promise<string | null> {
   // waveform: true → o WhatsApp exibe como MENSAGEM DE VOZ (PTT), com a ondinha
-  // e o balão grande, igual a um áudio gravado de verdade. Sem isso, a Z-API
-  // manda como arquivo de áudio comum (balão menor, sem onda sonora).
-  return post('send-audio', { phone, audio: audioUrl, waveform: true });
+  // e o balao grande, igual a um audio gravado de verdade. Sem isso, a Z-API
+  // manda como arquivo de audio comum (balao menor, sem onda sonora).
+  return post(conn, 'send-audio', { phone, audio: audioUrl, waveform: true });
 }
 
 /**
  * Marca a mensagem recebida como lida (exibe o "tique azul" para o cliente).
- * Requer que a conta tenha as confirmações de leitura ATIVADAS no WhatsApp.
+ * Requer que a conta tenha as confirmacoes de leitura ATIVADAS no WhatsApp.
  */
-export function markAsRead(phone: string, messageId: string): Promise<string | null> {
-  return post('read-message', { phone, messageId });
+export function markAsRead(conn: ZapiConnection, phone: string, messageId: string): Promise<string | null> {
+  return post(conn, 'read-message', { phone, messageId });
 }
 
 /** Envia imagem com legenda opcional. */
-export function sendImage(phone: string, imageUrl: string, caption?: string): Promise<string | null> {
-  return post('send-image', { phone, image: imageUrl, caption: caption ?? '' });
+export function sendImage(
+  conn: ZapiConnection,
+  phone: string,
+  imageUrl: string,
+  caption?: string,
+): Promise<string | null> {
+  return post(conn, 'send-image', { phone, image: imageUrl, caption: caption ?? '' });
 }
 
-/** Envia várias imagens (uma por vez), retornando os IDs. */
+/** Envia varias imagens (uma por vez), retornando os IDs. */
 export async function sendImages(
+  conn: ZapiConnection,
   phone: string,
   imageUrls: string[],
   caption?: string,
@@ -124,7 +149,7 @@ export async function sendImages(
   const ids: Array<string | null> = [];
   for (let i = 0; i < imageUrls.length; i += 1) {
     // legenda apenas na primeira imagem
-    ids.push(await sendImage(phone, imageUrls[i], i === 0 ? caption : undefined));
+    ids.push(await sendImage(conn, phone, imageUrls[i], i === 0 ? caption : undefined));
   }
   return ids;
 }

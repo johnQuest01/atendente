@@ -58,8 +58,12 @@ function audioPublicUrl(audio: Audio): string {
  * `data:` costuma ser rejeitado — era a causa de "só vai texto, sem áudio".
  * A URL do R2 é um CDN permanente que a Z-API sempre consegue baixar.
  */
-function sendAudioToProvider(phone: string, publicUrl: string): Promise<string | null> {
-  return whatsapp.sendAudio(phone, publicUrl);
+function sendAudioToProvider(
+  wa: whatsapp.TenantWhatsapp,
+  phone: string,
+  publicUrl: string,
+): Promise<string | null> {
+  return wa.sendAudio(phone, publicUrl);
 }
 
 /** Envia um áudio do banco para o cliente e registra no log. */
@@ -77,9 +81,10 @@ export async function dispatchAudio(ctx: DispatchContext, audioId: string): Prom
 
   const publicUrl = audioPublicUrl(audio);
 
+  const wa = await whatsapp.getTenantWhatsapp(tenantId);
   let zapiId: string | null;
   try {
-    zapiId = await sendAudioToProvider(ctx.client.phone, publicUrl);
+    zapiId = await sendAudioToProvider(wa, ctx.client.phone, publicUrl);
   } catch (err) {
     // Não derruba o fluxo nem registra uma mensagem "enviada" que nunca chegou:
     // retornando null, o webhook cai no fallback (Claude/texto) e o cliente não
@@ -99,7 +104,7 @@ export async function dispatchAudio(ctx: DispatchContext, audioId: string): Prom
     audioId: audio.id,
     zapiMessageId: zapiId,
   });
-  emitNewMessage(ctx.conversation.id, msg);
+  emitNewMessage(tenantId, ctx.conversation.id, msg);
   return msg;
 }
 
@@ -114,7 +119,8 @@ export async function dispatchScript(ctx: DispatchContext, scriptId: string): Pr
     company_name: ctx.client.company_name ?? '',
   });
 
-  const zapiId = await whatsapp.sendText(ctx.client.phone, text);
+  const wa = await whatsapp.getTenantWhatsapp(tenantId);
+  const zapiId = await wa.sendText(ctx.client.phone, text);
   await incrementScriptUsage(tenantId, script.id);
 
   const msg = await insertMessage(tenantId, {
@@ -124,7 +130,7 @@ export async function dispatchScript(ctx: DispatchContext, scriptId: string): Pr
     content: text,
     zapiMessageId: zapiId,
   });
-  emitNewMessage(ctx.conversation.id, msg);
+  emitNewMessage(tenantId, ctx.conversation.id, msg);
   return msg;
 }
 
@@ -141,12 +147,13 @@ export async function dispatchProduct(ctx: DispatchContext, productId: string): 
   const caption = `*${product.name}*${product.description ? `\n${product.description}` : ''}${priceLine}${minLine}`;
 
   const imageUrls = product.image_urls.map(toCurrentPublicUrl);
+  const wa = await whatsapp.getTenantWhatsapp(tenantId);
   let zapiId: string | null = null;
   if (imageUrls.length > 0) {
-    const ids = await whatsapp.sendImages(ctx.client.phone, imageUrls, caption);
+    const ids = await wa.sendImages(ctx.client.phone, imageUrls, caption);
     zapiId = ids[0] ?? null;
   } else {
-    zapiId = await whatsapp.sendText(ctx.client.phone, caption);
+    zapiId = await wa.sendText(ctx.client.phone, caption);
   }
 
   const msg = await insertMessage(ctx.conversation.tenant_id, {
@@ -157,13 +164,14 @@ export async function dispatchProduct(ctx: DispatchContext, productId: string): 
     productId: product.id,
     zapiMessageId: zapiId,
   });
-  emitNewMessage(ctx.conversation.id, msg);
+  emitNewMessage(ctx.conversation.tenant_id, ctx.conversation.id, msg);
   return msg;
 }
 
 /** Envia um texto livre (resposta do Claude ou mensagem manual do operador). */
 export async function dispatchText(ctx: DispatchContext, text: string): Promise<MessageLog> {
-  const zapiId = await whatsapp.sendText(ctx.client.phone, text);
+  const wa = await whatsapp.getTenantWhatsapp(ctx.conversation.tenant_id);
+  const zapiId = await wa.sendText(ctx.client.phone, text);
   const msg = await insertMessage(ctx.conversation.tenant_id, {
     conversationId: ctx.conversation.id,
     direction: 'outbound',
@@ -171,6 +179,6 @@ export async function dispatchText(ctx: DispatchContext, text: string): Promise<
     content: text,
     zapiMessageId: zapiId,
   });
-  emitNewMessage(ctx.conversation.id, msg);
+  emitNewMessage(ctx.conversation.tenant_id, ctx.conversation.id, msg);
   return msg;
 }

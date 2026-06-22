@@ -53,6 +53,22 @@ export function requireBlockAccess(req: Request, _res: Response, next: NextFunct
   }
 }
 
+/**
+ * Exige que o usuário autenticado seja o DONO DA PLATAFORMA (superadmin).
+ * Usado nas rotas de gestão de empresas (/api/admin).
+ */
+export function requireSuperAdmin(req: Request, _res: Response, next: NextFunction): void {
+  if (!req.user) {
+    next(new UnauthorizedError());
+    return;
+  }
+  if (req.user.role !== 'superadmin') {
+    next(new ForbiddenError('Acesso restrito ao administrador da plataforma.'));
+    return;
+  }
+  next();
+}
+
 /** Exige que o usuário autenticado tenha um dos papéis informados. */
 export function authorize(...roles: UserRole[]) {
   return (req: Request, _res: Response, next: NextFunction): void => {

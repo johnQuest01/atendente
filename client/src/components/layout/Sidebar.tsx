@@ -6,6 +6,7 @@ import { initials } from '@/utils/formatters';
 
 export function Sidebar() {
   const { user, logout } = useAuth();
+  const items = NAV_ITEMS.filter((i) => !i.superadminOnly || user?.role === 'superadmin');
 
   return (
     <aside className="hidden w-64 shrink-0 flex-col border-r border-border/70 bg-surface/70 backdrop-blur-xl md:flex">
@@ -21,7 +22,7 @@ export function Sidebar() {
 
       <nav className="flex-1 px-3">
         <ul className="flex flex-col gap-1">
-          {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+          {items.map(({ to, label, icon: Icon }) => (
             <li key={to}>
               <NavLink
                 to={to}

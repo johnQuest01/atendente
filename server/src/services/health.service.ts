@@ -1,14 +1,18 @@
 import { env } from '../config/env';
 import { pool } from '../db';
-import * as whatsapp from './whatsapp.service';
+import { getTenantWhatsapp } from './whatsapp.service';
+import type { WhatsappProviderName } from '../db/queries/whatsapp_connections';
 
 /**
  * Health check REAL: cada serviço externo é TESTADO de fato (não apenas "a
  * variável existe"), com timeout curto e sem derrubar a resposta. Cada item
  * retorna { ok, detail } com o motivo legível da falha.
  *
- * Há um cache curto para evitar martelar as APIs externas se a tela de status
- * for atualizada várias vezes seguidas.
+ * O check de WhatsApp é POR EMPRESA (tenant): usa a conexão cadastrada do
+ * tenant. Banco, Claude e STT são globais (chave única da plataforma).
+ *
+ * Há um cache curto, por tenant, para evitar martelar as APIs externas se a
+ * tela de status for atualizada várias vezes seguidas.
  */
 
 export interface ServiceCheck {
@@ -19,7 +23,7 @@ export interface ServiceCheck {
 export interface HealthReport {
   status: 'ok' | 'degraded';
   timestamp: string;
-  whatsappProvider: 'zapi' | 'evolution';
+  whatsappProvider: WhatsappProviderName;
   storage: 'remote' | 'local';
   services: {
     database: ServiceCheck;
@@ -88,19 +92,21 @@ async function checkTranscription(): Promise<ServiceCheck> {
   }
 }
 
-let cache: { at: number; report: HealthReport } | null = null;
+const cache = new Map<string, { at: number; report: HealthReport }>();
 const CACHE_MS = 10_000;
 
-/** Monta o relatório completo de saúde (com cache curto). */
-export async function getHealthReport(force = false): Promise<HealthReport> {
-  if (!force && cache && Date.now() - cache.at < CACHE_MS) {
-    return cache.report;
+/** Monta o relatório completo de saúde do tenant (com cache curto por empresa). */
+export async function getHealthReport(tenantId: string, force = false): Promise<HealthReport> {
+  const cached = cache.get(tenantId);
+  if (!force && cached && Date.now() - cached.at < CACHE_MS) {
+    return cached.report;
   }
 
+  const wa = await getTenantWhatsapp(tenantId);
   const [database, claude, wpp, transcription] = await Promise.all([
     checkDatabase(),
     checkClaude(),
-    whatsapp.getConnectionStatus(),
+    wa.getConnectionStatus(),
     checkTranscription(),
   ]);
 
@@ -108,11 +114,11 @@ export async function getHealthReport(force = false): Promise<HealthReport> {
     // "degraded" se o essencial (banco ou WhatsApp) estiver fora.
     status: database.ok && wpp.ok ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),
-    whatsappProvider: env.WHATSAPP_PROVIDER,
+    whatsappProvider: wa.provider,
     storage: env.hasRemoteStorage ? 'remote' : 'local',
     services: { database, claude, whatsapp: wpp, transcription },
   };
 
-  cache = { at: Date.now(), report };
+  cache.set(tenantId, { at: Date.now(), report });
   return report;
 }

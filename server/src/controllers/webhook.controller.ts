@@ -28,11 +28,15 @@ import {
   dispatchText,
 } from '../services/dispatch.service';
 import {
-  markAsRead,
+  getTenantWhatsapp,
   parseInbound,
   parseStatusUpdate,
   type NormalizedInbound,
 } from '../services/whatsapp.service';
+import {
+  getConnectionByWebhookToken,
+  type WhatsappProviderName,
+} from '../db/queries/whatsapp_connections';
 
 /**
  * Orquestrador principal da IA. Recebe mensagens do provedor de WhatsApp
@@ -40,24 +44,38 @@ import {
  * registra, classifica a intenção e responde automaticamente.
  */
 export async function handleWhatsappWebhook(req: Request, res: Response): Promise<void> {
-  // Validação opcional de token de webhook.
-  if (env.WEBHOOK_VERIFY_TOKEN) {
-    const token = (req.query.token as string) ?? req.headers['x-webhook-token'];
-    if (token !== env.WEBHOOK_VERIFY_TOKEN) {
-      res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Token de webhook inválido.' } });
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const webhookToken = req.params.webhookToken as string | undefined;
+
+  // Resolve A QUAL EMPRESA pertence este webhook e qual provedor parsear.
+  let tenantId: string;
+  let provider: WhatsappProviderName;
+
+  if (webhookToken) {
+    // Rota por empresa: o token opaco da URL identifica a conexão.
+    const conn = await getConnectionByWebhookToken(webhookToken);
+    if (!conn || !conn.is_active) {
+      res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Conexão de webhook não encontrada.' } });
       return;
     }
+    tenantId = conn.tenant_id;
+    provider = conn.provider;
+  } else {
+    // Rota legada (sem token): tenant padrão + provedor do .env, protegida pelo
+    // WEBHOOK_VERIFY_TOKEN se configurado.
+    if (env.WEBHOOK_VERIFY_TOKEN) {
+      const token = (req.query.token as string) ?? req.headers['x-webhook-token'];
+      if (token !== env.WEBHOOK_VERIFY_TOKEN) {
+        res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Token de webhook inválido.' } });
+        return;
+      }
+    }
+    tenantId = DEFAULT_TENANT_ID;
+    provider = env.WHATSAPP_PROVIDER;
   }
 
-  const body = (req.body ?? {}) as Record<string, unknown>;
-
-  // Fase 1: existe um único WhatsApp global, então todo inbound pertence ao
-  // tenant padrão. Na Fase 2 isto vira resolução por instância/token de cada
-  // empresa (cada uma com sua própria conexão de WhatsApp).
-  const tenantId = DEFAULT_TENANT_ID;
-
   // Callbacks de status de entrega/leitura.
-  const statusUpdate = parseStatusUpdate(body);
+  const statusUpdate = parseStatusUpdate(provider, body);
   if (statusUpdate) {
     for (const id of statusUpdate.ids) {
       if (statusUpdate.status === 'READ') await markRead(tenantId, id);
@@ -67,7 +85,7 @@ export async function handleWhatsappWebhook(req: Request, res: Response): Promis
     return;
   }
 
-  const inbound = parseInbound(body);
+  const inbound = parseInbound(provider, body);
   if (!inbound) {
     res.status(200).json({ ok: true, ignored: true });
     return;
@@ -107,7 +125,7 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
 
   const existing = await findOpenConversationByClient(tenantId, client.id);
   const conversation = existing ?? (await findOrCreateOpenConversation(tenantId, client.id));
-  if (!existing) emitNewConversation(conversation);
+  if (!existing) emitNewConversation(tenantId, conversation);
 
   // Lê o flag global (com cache): se o atendente de IA estiver desligado, um
   // humano vai responder — então NÃO chamamos Claude/Z-API para responder.
@@ -117,7 +135,8 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
   // sem esperar transcrição nem geração de resposta. Best-effort, não bloqueia.
   // (Só quando o agente está ligado; desligado, quem "lê" é o humano.)
   if (agentEnabled && inbound.messageId) {
-    void markAsRead(inbound.phone, inbound.messageId).catch((err) =>
+    const wa = await getTenantWhatsapp(tenantId);
+    void wa.markAsRead(inbound.phone, inbound.messageId).catch((err) =>
       logger.warn('Falha ao marcar mensagem como lida (tique azul)', err),
     );
   }
@@ -141,7 +160,7 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
     content: transcription ?? inbound.text,
     zapiMessageId: inbound.messageId,
   });
-  emitNewMessage(conversation.id, inboundMsg);
+  emitNewMessage(tenantId, conversation.id, inboundMsg);
 
   // Agente desligado: mensagem registrada e exibida no painel, sem resposta
   // automática e sem tique azul (o humano decide quando ler/responder).

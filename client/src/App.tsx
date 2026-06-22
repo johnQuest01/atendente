@@ -11,6 +11,7 @@ import Products from '@/routes/Products';
 import Messages from '@/routes/Messages';
 import Keywords from '@/routes/Keywords';
 import Settings from '@/routes/Settings';
+import Admin from '@/routes/Admin';
 
 function ProtectedRoutes() {
   const { isAuthenticated, isInitialized } = useAuth();
@@ -39,6 +40,7 @@ function ProtectedRoutes() {
         <Route path="/scripts" element={<Messages />} />
         <Route path="/keywords" element={<Keywords />} />
         <Route path="/configuracoes" element={<Settings />} />
+        <Route path="/admin" element={<Admin />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </AppShell>

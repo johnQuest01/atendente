@@ -1,14 +1,25 @@
 import { env } from '../config/env';
 import { logger } from '../config/logger';
+import { DEFAULT_TENANT_ID } from '../config/tenant';
 import type { MessageType } from '../types';
 import * as zapi from './zapi.service';
 import * as evolution from './evolution.service';
+import {
+  getConnectionByTenant,
+  type WhatsappConnection,
+  type WhatsappProviderName,
+} from '../db/queries/whatsapp_connections';
 
 /**
- * Facade de WhatsApp. Seleciona o provedor ativo (Z-API ou Evolution API)
- * via env.WHATSAPP_PROVIDER e expõe uma interface única de envio + um
- * parser normalizado de webhooks. O resto do sistema (dispatch, webhook
- * controller) depende apenas deste módulo, nunca dos provedores diretos.
+ * Facade de WhatsApp MULTI-TENANT. Cada empresa (tenant) tem a propria conexao
+ * (instancia Z-API/Evolution), guardada no banco com credenciais cifradas.
+ *
+ * `getTenantWhatsapp(tenantId)` resolve a conexao do tenant (com cache curto) e
+ * devolve um objeto com as funcoes de envio ja vinculadas a essa conexao. O
+ * resto do sistema (dispatch, webhook) depende apenas deste modulo.
+ *
+ * Continuidade: o tenant padrao (operacao atual) cai nas credenciais do .env
+ * quando ainda nao houver conexao cadastrada no banco.
  */
 
 export interface ProviderStatus {
@@ -16,29 +27,144 @@ export interface ProviderStatus {
   detail: string;
 }
 
-interface WhatsappProvider {
-  sendText: (phone: string, message: string) => Promise<string | null>;
-  sendAudio: (phone: string, audioUrl: string) => Promise<string | null>;
-  sendImage: (phone: string, imageUrl: string, caption?: string) => Promise<string | null>;
-  sendImages: (phone: string, imageUrls: string[], caption?: string) => Promise<Array<string | null>>;
-  markAsRead: (phone: string, messageId: string) => Promise<string | null>;
-  getConnectionStatus: () => Promise<ProviderStatus>;
-}
+const ZAPI_DEFAULT_BASE = 'https://api.z-api.io/instances';
 
-const provider: WhatsappProvider = env.WHATSAPP_PROVIDER === 'evolution' ? evolution : zapi;
-
-logger.info(`Provedor de WhatsApp ativo: ${env.WHATSAPP_PROVIDER}`);
-
-export const sendText = provider.sendText;
-export const sendAudio = provider.sendAudio;
-export const sendImage = provider.sendImage;
-export const sendImages = provider.sendImages;
-export const markAsRead = provider.markAsRead;
-/** Estado real da conexão do provedor ativo (celular pareado / instância aberta). */
-export const getConnectionStatus = provider.getConnectionStatus;
+logger.info(`Provedor de WhatsApp padrao (.env): ${env.WHATSAPP_PROVIDER}`);
 
 // ---------------------------------------------------------------------------
-// Parsing normalizado dos webhooks de entrada
+// Resolucao da conexao por tenant (DB ou .env de fallback) com cache curto
+// ---------------------------------------------------------------------------
+
+interface ResolvedConnection {
+  provider: WhatsappProviderName;
+  zapi?: zapi.ZapiConnection;
+  evolution?: evolution.EvolutionConnection;
+}
+
+function resolveFromDb(conn: WhatsappConnection): ResolvedConnection {
+  if (conn.provider === 'evolution') {
+    return {
+      provider: 'evolution',
+      evolution: {
+        apiKey: conn.secrets.apiKey ?? '',
+        instance: conn.secrets.instance ?? '',
+        baseUrl: conn.base_url ?? env.EVOLUTION_BASE_URL,
+      },
+    };
+  }
+  return {
+    provider: 'zapi',
+    zapi: {
+      instanceId: conn.secrets.instanceId ?? '',
+      token: conn.secrets.token ?? '',
+      clientToken: conn.secrets.clientToken,
+      baseUrl: conn.base_url ?? ZAPI_DEFAULT_BASE,
+    },
+  };
+}
+
+/** Conexao a partir do .env (continuidade do tenant padrao). */
+function resolveFromEnv(): ResolvedConnection | null {
+  if (env.WHATSAPP_PROVIDER === 'evolution') {
+    if (!env.EVOLUTION_API_KEY || !env.EVOLUTION_INSTANCE) return null;
+    return {
+      provider: 'evolution',
+      evolution: {
+        apiKey: env.EVOLUTION_API_KEY,
+        instance: env.EVOLUTION_INSTANCE,
+        baseUrl: env.EVOLUTION_BASE_URL,
+      },
+    };
+  }
+  if (!env.ZAPI_INSTANCE_ID || !env.ZAPI_TOKEN) return null;
+  return {
+    provider: 'zapi',
+    zapi: {
+      instanceId: env.ZAPI_INSTANCE_ID,
+      token: env.ZAPI_TOKEN,
+      clientToken: env.ZAPI_CLIENT_TOKEN,
+      baseUrl: env.ZAPI_BASE_URL,
+    },
+  };
+}
+
+const cache = new Map<string, { at: number; resolved: ResolvedConnection | null }>();
+const CACHE_TTL_MS = 30_000;
+
+/** Limpa o cache da conexao de um tenant (chamar apos salvar credenciais). */
+export function invalidateTenantWhatsapp(tenantId: string): void {
+  cache.delete(tenantId);
+}
+
+async function resolveForTenant(tenantId: string): Promise<ResolvedConnection | null> {
+  const cached = cache.get(tenantId);
+  if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.resolved;
+
+  const conn = await getConnectionByTenant(tenantId);
+  let resolved: ResolvedConnection | null = conn && conn.is_active ? resolveFromDb(conn) : null;
+  // Continuidade: tenant padrao sem conexao no banco usa as credenciais do .env.
+  if (!resolved && tenantId === DEFAULT_TENANT_ID) resolved = resolveFromEnv();
+
+  cache.set(tenantId, { at: Date.now(), resolved });
+  return resolved;
+}
+
+// ---------------------------------------------------------------------------
+// Interface de envio vinculada a uma empresa
+// ---------------------------------------------------------------------------
+
+export interface TenantWhatsapp {
+  provider: WhatsappProviderName;
+  configured: boolean;
+  sendText(phone: string, message: string): Promise<string | null>;
+  sendAudio(phone: string, audioUrl: string): Promise<string | null>;
+  sendImage(phone: string, imageUrl: string, caption?: string): Promise<string | null>;
+  sendImages(phone: string, imageUrls: string[], caption?: string): Promise<Array<string | null>>;
+  markAsRead(phone: string, messageId: string): Promise<string | null>;
+  getConnectionStatus(): Promise<ProviderStatus>;
+}
+
+function build(resolved: ResolvedConnection | null): TenantWhatsapp {
+  if (resolved?.provider === 'evolution' && resolved.evolution) {
+    const c = resolved.evolution;
+    return {
+      provider: 'evolution',
+      configured: Boolean(c.apiKey && c.instance),
+      sendText: (phone, message) => evolution.sendText(c, phone, message),
+      sendAudio: (phone, audioUrl) => evolution.sendAudio(c, phone, audioUrl),
+      sendImage: (phone, imageUrl, caption) => evolution.sendImage(c, phone, imageUrl, caption),
+      sendImages: (phone, imageUrls, caption) => evolution.sendImages(c, phone, imageUrls, caption),
+      markAsRead: (phone, messageId) => evolution.markAsRead(c, phone, messageId),
+      getConnectionStatus: () => evolution.getConnectionStatus(c),
+    };
+  }
+  // Z-API (padrao). Sem conexao resolvida, monta uma vazia: o envio cai no modo
+  // simulado e o status reporta "nao configurada".
+  const c: zapi.ZapiConnection = resolved?.zapi ?? {
+    instanceId: '',
+    token: '',
+    baseUrl: ZAPI_DEFAULT_BASE,
+  };
+  return {
+    provider: 'zapi',
+    configured: Boolean(c.instanceId && c.token),
+    sendText: (phone, message) => zapi.sendText(c, phone, message),
+    sendAudio: (phone, audioUrl) => zapi.sendAudio(c, phone, audioUrl),
+    sendImage: (phone, imageUrl, caption) => zapi.sendImage(c, phone, imageUrl, caption),
+    sendImages: (phone, imageUrls, caption) => zapi.sendImages(c, phone, imageUrls, caption),
+    markAsRead: (phone, messageId) => zapi.markAsRead(c, phone, messageId),
+    getConnectionStatus: () => zapi.getConnectionStatus(c),
+  };
+}
+
+/** Resolve o WhatsApp da empresa (DB ou .env de fallback) com cache curto. */
+export async function getTenantWhatsapp(tenantId: string): Promise<TenantWhatsapp> {
+  const resolved = await resolveForTenant(tenantId);
+  return build(resolved);
+}
+
+// ---------------------------------------------------------------------------
+// Parsing normalizado dos webhooks de entrada (por provedor)
 // ---------------------------------------------------------------------------
 
 export interface NormalizedInbound {
@@ -48,9 +174,9 @@ export interface NormalizedInbound {
   messageId: string | null;
   senderName: string | null;
   fromMe: boolean;
-  /** URL pública do áudio recebido (quando o provedor disponibiliza). */
+  /** URL publica do audio recebido (quando o provedor disponibiliza). */
   mediaUrl?: string | null;
-  /** Áudio recebido em base64 (ex.: Evolution com base64 ativo). */
+  /** Audio recebido em base64 (ex.: Evolution com base64 ativo). */
   mediaBase64?: string | null;
 }
 
@@ -63,9 +189,12 @@ function onlyDigits(value: string): string {
   return value.replace(/\D/g, '');
 }
 
-/** Extrai uma atualização de status (entrega/leitura), se houver. */
-export function parseStatusUpdate(body: Record<string, unknown>): NormalizedStatus | null {
-  if (env.WHATSAPP_PROVIDER === 'evolution') {
+/** Extrai uma atualizacao de status (entrega/leitura), se houver. */
+export function parseStatusUpdate(
+  provider: WhatsappProviderName,
+  body: Record<string, unknown>,
+): NormalizedStatus | null {
+  if (provider === 'evolution') {
     // Evolution: event "messages.update" com data.status (READ/DELIVERY_ACK...)
     const event = String(body.event ?? '');
     if (event !== 'messages.update') return null;
@@ -83,9 +212,12 @@ export function parseStatusUpdate(body: Record<string, unknown>): NormalizedStat
   return { ids, status: status.toUpperCase() === 'READ' ? 'READ' : 'DELIVERED' };
 }
 
-/** Extrai uma mensagem recebida normalizada, ou null se não for suportada. */
-export function parseInbound(body: Record<string, unknown>): NormalizedInbound | null {
-  if (env.WHATSAPP_PROVIDER === 'evolution') {
+/** Extrai uma mensagem recebida normalizada, ou null se nao for suportada. */
+export function parseInbound(
+  provider: WhatsappProviderName,
+  body: Record<string, unknown>,
+): NormalizedInbound | null {
+  if (provider === 'evolution') {
     return parseEvolutionInbound(body);
   }
   return parseZapiInbound(body);
@@ -164,8 +296,8 @@ function parseEvolutionInbound(body: Record<string, unknown>): NormalizedInbound
   } else if (message.audioMessage) {
     type = 'audio';
     content = '[áudio]';
-    // O url do WhatsApp é criptografado; só serve se a Evolution já entregar
-    // o áudio decriptado. Quando configurada com base64, usamos o base64.
+    // O url do WhatsApp e criptografado; so serve se a Evolution ja entregar
+    // o audio decriptado. Quando configurada com base64, usamos o base64.
     mediaUrl = message.audioMessage.url ?? null;
     mediaBase64 = data.base64 ?? message.base64 ?? null;
   } else {

@@ -24,6 +24,19 @@ const envSchema = z.object({
   JWT_SECRET: z.string().min(16, 'JWT_SECRET deve ter ao menos 16 caracteres'),
   JWT_EXPIRES_IN: z.string().default('7d'),
 
+  // Chave para cifrar segredos no banco (credenciais de WhatsApp de cada
+  // empresa). Aceita base64/hex de 32 bytes OU qualquer texto (derivamos 32
+  // bytes via SHA-256). Sem ela, o cadastro de conexao por empresa fica
+  // indisponivel (o tenant padrao ainda funciona via .env).
+  ENCRYPTION_KEY: z.string().optional(),
+
+  // E-mail do dono da plataforma (super-admin). No seed, este usuario e
+  // promovido a 'superadmin' (cria/gerencia as empresas). Opcional.
+  SUPERADMIN_EMAIL: z.string().email().optional(),
+  // Senha do super-admin. So e usada se o usuario SUPERADMIN_EMAIL ainda nao
+  // existir (o seed cria a conta). Se o usuario ja existe, apenas promovemos.
+  SUPERADMIN_PASSWORD: z.string().min(8).optional(),
+
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
   CLAUDE_MODEL: z.string().default('claude-sonnet-4-20250514'),
   STORE_NAME: z.string().optional(),
@@ -148,6 +161,7 @@ export const env = {
     ? data.UPLOAD_DIR
     : path.resolve(__dirname, '../../', data.UPLOAD_DIR),
   hasAnthropic: Boolean(data.ANTHROPIC_API_KEY),
+  hasEncryption: Boolean(data.ENCRYPTION_KEY),
   hasStt: data.STT_PROVIDER === 'openai' && Boolean(data.STT_API_KEY),
   hasZapi: Boolean(data.ZAPI_INSTANCE_ID && data.ZAPI_TOKEN),
   hasEvolution: Boolean(data.EVOLUTION_API_KEY && data.EVOLUTION_INSTANCE),
