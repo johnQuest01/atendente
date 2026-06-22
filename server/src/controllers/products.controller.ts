@@ -38,21 +38,21 @@ export const updateProductSchema = z.object({
   is_available: z.boolean().optional(),
 });
 
-export async function getProducts(_req: Request, res: Response): Promise<void> {
-  const products = await listProducts(false);
+export async function getProducts(req: Request, res: Response): Promise<void> {
+  const products = await listProducts(req.user!.tenant_id, false);
   res.json({ products });
 }
 
 export async function getProduct(req: Request, res: Response): Promise<void> {
   const { id } = req.params as z.infer<typeof idParamSchema>;
-  const product = await getProductById(id);
+  const product = await getProductById(req.user!.tenant_id, id);
   if (!product) throw new NotFoundError('Produto');
   res.json({ product });
 }
 
 export async function postProduct(req: Request, res: Response): Promise<void> {
   const body = req.body as z.infer<typeof createProductSchema>;
-  const product = await createProduct({
+  const product = await createProduct(req.user!.tenant_id, {
     name: body.name,
     description: body.description ?? null,
     category: body.category ?? null,
@@ -67,14 +67,14 @@ export async function postProduct(req: Request, res: Response): Promise<void> {
 
 export async function patchProduct(req: Request, res: Response): Promise<void> {
   const { id } = req.params as z.infer<typeof idParamSchema>;
-  const product = await updateProduct(id, req.body as z.infer<typeof updateProductSchema>);
+  const product = await updateProduct(req.user!.tenant_id, id, req.body as z.infer<typeof updateProductSchema>);
   if (!product) throw new NotFoundError('Produto');
   res.json({ product });
 }
 
 export async function removeProduct(req: Request, res: Response): Promise<void> {
   const { id } = req.params as z.infer<typeof idParamSchema>;
-  const ok = await deleteProduct(id);
+  const ok = await deleteProduct(req.user!.tenant_id, id);
   if (!ok) throw new NotFoundError('Produto');
   res.status(204).send();
 }
@@ -84,11 +84,12 @@ export async function uploadProductImages(req: Request, res: Response): Promise<
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
   if (files.length === 0) throw new AppError('Nenhuma imagem enviada.', 422, 'NO_FILE');
 
+  const tenantId = req.user!.tenant_id;
   const urls: string[] = [];
   try {
     for (const file of files) {
       const data = await fs.readFile(file.path);
-      const id = await insertMediaFile({
+      const id = await insertMediaFile(tenantId, {
         kind: 'image',
         mime: file.mimetype || 'image/jpeg',
         data,

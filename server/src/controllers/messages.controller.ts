@@ -25,14 +25,14 @@ export const updateScriptSchema = z.object({
   is_active: z.boolean().optional(),
 });
 
-export async function getScripts(_req: Request, res: Response): Promise<void> {
-  const scripts = await listScripts(false);
+export async function getScripts(req: Request, res: Response): Promise<void> {
+  const scripts = await listScripts(req.user!.tenant_id, false);
   res.json({ scripts });
 }
 
 export async function postScript(req: Request, res: Response): Promise<void> {
   const body = req.body as z.infer<typeof createScriptSchema>;
-  const script = await createScript({
+  const script = await createScript(req.user!.tenant_id, {
     title: body.title,
     category: body.category,
     content: body.content,
@@ -44,14 +44,14 @@ export async function postScript(req: Request, res: Response): Promise<void> {
 
 export async function patchScript(req: Request, res: Response): Promise<void> {
   const { id } = req.params as z.infer<typeof idParamSchema>;
-  const script = await updateScript(id, req.body as z.infer<typeof updateScriptSchema>);
+  const script = await updateScript(req.user!.tenant_id, id, req.body as z.infer<typeof updateScriptSchema>);
   if (!script) throw new NotFoundError('Script');
   res.json({ script });
 }
 
 export async function removeScript(req: Request, res: Response): Promise<void> {
   const { id } = req.params as z.infer<typeof idParamSchema>;
-  const ok = await deleteScript(id);
+  const ok = await deleteScript(req.user!.tenant_id, id);
   if (!ok) throw new NotFoundError('Script');
   res.status(204).send();
 }

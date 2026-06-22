@@ -11,13 +11,14 @@ export interface InsertMessageInput {
   zapiMessageId?: string | null;
 }
 
-export async function insertMessage(input: InsertMessageInput): Promise<MessageLog> {
+export async function insertMessage(tenantId: string, input: InsertMessageInput): Promise<MessageLog> {
   const { rows } = await query<MessageLog>(
     `INSERT INTO messages_log
-       (conversation_id, direction, type, content, audio_id, product_id, zapi_message_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+       (tenant_id, conversation_id, direction, type, content, audio_id, product_id, zapi_message_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING *`,
     [
+      tenantId,
       input.conversationId,
       input.direction,
       input.type,
@@ -31,45 +32,53 @@ export async function insertMessage(input: InsertMessageInput): Promise<MessageL
 }
 
 /** Indica se já existe uma mensagem RECEBIDA com este id da Z-API (evita processar 2x). */
-export async function inboundMessageExists(zapiMessageId: string): Promise<boolean> {
+export async function inboundMessageExists(tenantId: string, zapiMessageId: string): Promise<boolean> {
   const { rows } = await query<{ exists: boolean }>(
     `SELECT EXISTS(
        SELECT 1 FROM messages_log
-       WHERE zapi_message_id = $1 AND direction = 'inbound'
+       WHERE tenant_id = $1 AND zapi_message_id = $2 AND direction = 'inbound'
      ) AS exists`,
-    [zapiMessageId],
+    [tenantId, zapiMessageId],
   );
   return rows[0]?.exists ?? false;
 }
 
-export async function markDelivered(zapiMessageId: string): Promise<void> {
+export async function markDelivered(tenantId: string, zapiMessageId: string): Promise<void> {
   await query(
-    `UPDATE messages_log SET delivered_at = NOW() WHERE zapi_message_id = $1 AND delivered_at IS NULL`,
-    [zapiMessageId],
+    `UPDATE messages_log SET delivered_at = NOW()
+      WHERE tenant_id = $1 AND zapi_message_id = $2 AND delivered_at IS NULL`,
+    [tenantId, zapiMessageId],
   );
 }
 
-export async function markRead(zapiMessageId: string): Promise<void> {
+export async function markRead(tenantId: string, zapiMessageId: string): Promise<void> {
   await query(
-    `UPDATE messages_log SET read_at = NOW() WHERE zapi_message_id = $1 AND read_at IS NULL`,
-    [zapiMessageId],
+    `UPDATE messages_log SET read_at = NOW()
+      WHERE tenant_id = $1 AND zapi_message_id = $2 AND read_at IS NULL`,
+    [tenantId, zapiMessageId],
   );
 }
 
 /** Apaga mensagens específicas de uma conversa. Retorna a quantidade removida. */
-export async function deleteMessages(conversationId: string, ids: string[]): Promise<number> {
+export async function deleteMessages(
+  tenantId: string,
+  conversationId: string,
+  ids: string[],
+): Promise<number> {
   if (ids.length === 0) return 0;
   const { rowCount } = await query(
-    `DELETE FROM messages_log WHERE conversation_id = $1 AND id = ANY($2::uuid[])`,
-    [conversationId, ids],
+    `DELETE FROM messages_log
+      WHERE tenant_id = $1 AND conversation_id = $2 AND id = ANY($3::uuid[])`,
+    [tenantId, conversationId, ids],
   );
   return rowCount ?? 0;
 }
 
 /** Apaga TODO o histórico de mensagens de uma conversa. Retorna a quantidade removida. */
-export async function deleteAllMessages(conversationId: string): Promise<number> {
-  const { rowCount } = await query(`DELETE FROM messages_log WHERE conversation_id = $1`, [
-    conversationId,
-  ]);
+export async function deleteAllMessages(tenantId: string, conversationId: string): Promise<number> {
+  const { rowCount } = await query(
+    `DELETE FROM messages_log WHERE tenant_id = $1 AND conversation_id = $2`,
+    [tenantId, conversationId],
+  );
   return rowCount ?? 0;
 }

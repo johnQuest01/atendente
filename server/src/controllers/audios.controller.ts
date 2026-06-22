@@ -43,14 +43,14 @@ export const updateAudioSchema = z.object({
 
 export const idParamSchema = z.object({ id: z.string().uuid() });
 
-export async function getAudios(_req: Request, res: Response): Promise<void> {
-  const audios = await listAudios(false);
+export async function getAudios(req: Request, res: Response): Promise<void> {
+  const audios = await listAudios(req.user!.tenant_id, false);
   res.json({ audios });
 }
 
 export async function getAudio(req: Request, res: Response): Promise<void> {
   const { id } = req.params as z.infer<typeof idParamSchema>;
-  const audio = await getAudioById(id);
+  const audio = await getAudioById(req.user!.tenant_id, id);
   if (!audio) throw new NotFoundError('Áudio');
   res.json({ audio });
 }
@@ -61,6 +61,7 @@ export async function uploadAudioHandler(req: Request, res: Response): Promise<v
   try {
     const body = createAudioSchema.parse(req.body);
     const audio = await processAndStoreAudio({
+      tenantId: req.user!.tenant_id,
       tmpFilePath: req.file.path,
       title: body.title,
       category: body.category,
@@ -81,7 +82,7 @@ export async function replaceAudioFileHandler(req: Request, res: Response): Prom
   if (!req.file) throw new AppError('Nenhum arquivo de áudio enviado.', 422, 'NO_FILE');
   const { id } = req.params as z.infer<typeof idParamSchema>;
   try {
-    const audio = await replaceAudioFile(id, req.file.path);
+    const audio = await replaceAudioFile(req.user!.tenant_id, id, req.file.path);
     if (!audio) throw new NotFoundError('Áudio');
     res.json({ audio });
   } catch (err) {
@@ -93,14 +94,14 @@ export async function replaceAudioFileHandler(req: Request, res: Response): Prom
 export async function patchAudio(req: Request, res: Response): Promise<void> {
   const { id } = req.params as z.infer<typeof idParamSchema>;
   const patch = req.body as z.infer<typeof updateAudioSchema>;
-  const audio = await updateAudio(id, patch);
+  const audio = await updateAudio(req.user!.tenant_id, id, patch);
   if (!audio) throw new NotFoundError('Áudio');
   res.json({ audio });
 }
 
 export async function removeAudio(req: Request, res: Response): Promise<void> {
   const { id } = req.params as z.infer<typeof idParamSchema>;
-  const ok = await deleteAudio(id);
+  const ok = await deleteAudio(req.user!.tenant_id, id);
   if (!ok) throw new NotFoundError('Áudio');
   res.status(204).send();
 }

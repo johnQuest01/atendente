@@ -9,14 +9,14 @@ export const updateAgentSchema = z.object({
   enabled: z.boolean(),
 });
 
-export async function getAgentStatus(_req: Request, res: Response): Promise<void> {
-  const enabled = await isAgentEnabled();
+export async function getAgentStatus(req: Request, res: Response): Promise<void> {
+  const enabled = await isAgentEnabled(req.user!.tenant_id);
   res.json({ enabled });
 }
 
 export async function putAgentStatus(req: Request, res: Response): Promise<void> {
   const { enabled } = req.body as z.infer<typeof updateAgentSchema>;
-  await setAgentEnabled(enabled);
+  await setAgentEnabled(req.user!.tenant_id, enabled);
   emitAgentStatus(enabled);
   res.json({ enabled });
 }
@@ -26,14 +26,14 @@ export const updatePersonaSchema = z.object({
   prompt: z.string().max(12000, 'O texto está muito longo (máx. 12000 caracteres).'),
 });
 
-export async function getPersona(_req: Request, res: Response): Promise<void> {
-  const prompt = await getAiPersona();
+export async function getPersona(req: Request, res: Response): Promise<void> {
+  const prompt = await getAiPersona(req.user!.tenant_id);
   res.json({ prompt, default: DEFAULT_AI_PERSONA, isDefault: prompt === DEFAULT_AI_PERSONA });
 }
 
 export async function putPersona(req: Request, res: Response): Promise<void> {
   const { prompt } = req.body as z.infer<typeof updatePersonaSchema>;
-  const effective = await setAiPersona(prompt);
+  const effective = await setAiPersona(req.user!.tenant_id, prompt);
   res.json({ prompt: effective, default: DEFAULT_AI_PERSONA, isDefault: effective === DEFAULT_AI_PERSONA });
 }
 

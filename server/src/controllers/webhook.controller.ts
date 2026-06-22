@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express';
 import { env } from '../config/env';
 import { logger } from '../config/logger';
+import { DEFAULT_TENANT_ID } from '../config/tenant';
 import { findOrCreateClient, updateClient } from '../db/queries/clients';
 import {
   findOpenConversationByClient,
@@ -50,12 +51,17 @@ export async function handleWhatsappWebhook(req: Request, res: Response): Promis
 
   const body = (req.body ?? {}) as Record<string, unknown>;
 
+  // Fase 1: existe um único WhatsApp global, então todo inbound pertence ao
+  // tenant padrão. Na Fase 2 isto vira resolução por instância/token de cada
+  // empresa (cada uma com sua própria conexão de WhatsApp).
+  const tenantId = DEFAULT_TENANT_ID;
+
   // Callbacks de status de entrega/leitura.
   const statusUpdate = parseStatusUpdate(body);
   if (statusUpdate) {
     for (const id of statusUpdate.ids) {
-      if (statusUpdate.status === 'READ') await markRead(id);
-      else await markDelivered(id);
+      if (statusUpdate.status === 'READ') await markRead(tenantId, id);
+      else await markDelivered(tenantId, id);
     }
     res.status(200).json({ ok: true });
     return;
@@ -74,7 +80,7 @@ export async function handleWhatsappWebhook(req: Request, res: Response): Promis
   }
 
   // Número bloqueado: ignora totalmente (não salva, não responde, não exibe).
-  if (await isPhoneBlocked(inbound.phone)) {
+  if (await isPhoneBlocked(tenantId, inbound.phone)) {
     logger.info(`Mensagem de número bloqueado ignorada: ${inbound.phone}`);
     res.status(200).json({ ok: true, ignored: 'blocked' });
     return;
@@ -83,29 +89,29 @@ export async function handleWhatsappWebhook(req: Request, res: Response): Promis
   // Responde rápido ao provedor; processa o resto de forma assíncrona.
   res.status(200).json({ ok: true });
 
-  void processInbound(inbound).catch((err) => {
+  void processInbound(tenantId, inbound).catch((err) => {
     logger.error('Erro ao processar mensagem inbound', err);
   });
 }
 
-async function processInbound(inbound: NormalizedInbound): Promise<void> {
+async function processInbound(tenantId: string, inbound: NormalizedInbound): Promise<void> {
   // Idempotência: a Z-API pode reenviar o mesmo webhook (retries). Se já
   // registramos esta mensagem, não processamos de novo (evita resposta
   // automática duplicada e custo desnecessário de IA).
-  if (inbound.messageId && (await inboundMessageExists(inbound.messageId))) {
+  if (inbound.messageId && (await inboundMessageExists(tenantId, inbound.messageId))) {
     logger.info(`Mensagem duplicada ignorada (já processada): ${inbound.messageId}`);
     return;
   }
 
-  const client = await findOrCreateClient(inbound.phone, inbound.senderName);
+  const client = await findOrCreateClient(tenantId, inbound.phone, inbound.senderName);
 
-  const existing = await findOpenConversationByClient(client.id);
-  const conversation = existing ?? (await findOrCreateOpenConversation(client.id));
+  const existing = await findOpenConversationByClient(tenantId, client.id);
+  const conversation = existing ?? (await findOrCreateOpenConversation(tenantId, client.id));
   if (!existing) emitNewConversation(conversation);
 
   // Lê o flag global (com cache): se o atendente de IA estiver desligado, um
   // humano vai responder — então NÃO chamamos Claude/Z-API para responder.
-  const agentEnabled = await isAgentEnabled();
+  const agentEnabled = await isAgentEnabled(tenantId);
 
   // Tique azul IMEDIATO: assim que a IA "vê" a mensagem, marcamos como lida —
   // sem esperar transcrição nem geração de resposta. Best-effort, não bloqueia.
@@ -121,13 +127,13 @@ async function processInbound(inbound: NormalizedInbound): Promise<void> {
   // humano a ler o conteúdo do áudio direto no painel.
   let transcription: string | null = null;
   if (inbound.type === 'audio') {
-    transcription = await transcribeInboundAudio(inbound);
+    transcription = await transcribeInboundAudio(tenantId, inbound);
     if (transcription) {
       logger.info(`Áudio do cliente transcrito (${transcription.length} chars).`);
     }
   }
 
-  const inboundMsg = await insertMessage({
+  const inboundMsg = await insertMessage(tenantId, {
     conversationId: conversation.id,
     direction: 'inbound',
     type: inbound.type,
@@ -169,7 +175,7 @@ async function processInbound(inbound: NormalizedInbound): Promise<void> {
   // CAMINHO RÁPIDO: primeiro tentamos casar uma palavra-chave (áudio/script/
   // produto). Se casar, disparamos NA HORA — sem buscar histórico nem catálogo,
   // que só são necessários para o Claude. Isso deixa o envio de áudio bem rápido.
-  const match = await matchIntent(replyText);
+  const match = await matchIntent(tenantId, replyText);
   logger.info(
     `Classificação da mensagem "${replyText.slice(0, 60)}": tipo=${match.content_type} ` +
       `id=${match.content_id ?? 'n/d'} palavra-chave=${match.keyword ?? 'n/d'}`,
@@ -187,19 +193,19 @@ async function processInbound(inbound: NormalizedInbound): Promise<void> {
   }
 
   // Fallback: Claude precisa do histórico + catálogo de produtos disponíveis.
-  const history = await getRecentMessagesForAI(conversation.id, 20);
+  const history = await getRecentMessagesForAI(tenantId, conversation.id, 20);
 
   // Coleta de dados do cliente em segundo plano (não bloqueia a resposta).
   if (env.hasAnthropic) {
-    void enrichClientFromConversation(client, history).catch((err) =>
+    void enrichClientFromConversation(tenantId, client, history).catch((err) =>
       logger.warn('Falha ao enriquecer cliente', err),
     );
   }
 
   const [products, scripts, systemPrompt] = await Promise.all([
-    listProducts(true),
-    listScripts(true),
-    getAiPersona(),
+    listProducts(tenantId, true),
+    listScripts(tenantId, true),
+    getAiPersona(tenantId),
   ]);
   const reply = await generateReply({
     history,
@@ -221,9 +227,12 @@ async function processInbound(inbound: NormalizedInbound): Promise<void> {
  * Aceita tanto URL pública (Z-API) quanto base64 (Evolution). Retorna null se
  * a transcrição estiver desativada ou se não houver mídia utilizável.
  */
-async function transcribeInboundAudio(inbound: NormalizedInbound): Promise<string | null> {
+async function transcribeInboundAudio(
+  tenantId: string,
+  inbound: NormalizedInbound,
+): Promise<string | null> {
   if (!env.hasStt) return null;
-  const prompt = await buildTranscriptionPrompt();
+  const prompt = await buildTranscriptionPrompt(tenantId);
   if (inbound.mediaBase64) {
     const fromB64 = await transcribeAudioFromBase64(inbound.mediaBase64, prompt);
     if (fromB64) return fromB64;
@@ -238,10 +247,10 @@ async function transcribeInboundAudio(inbound: NormalizedInbound): Promise<strin
  * Monta o "prompt" de contexto para o Whisper: idioma + frases-gatilho
  * cadastradas. Isso reduz erros em áudios curtos (ex.: "não entendi").
  */
-async function buildTranscriptionPrompt(): Promise<string> {
+async function buildTranscriptionPrompt(tenantId: string): Promise<string> {
   const base = 'Mensagem de voz de um cliente no WhatsApp, em português do Brasil.';
   try {
-    const phrases = await getTriggerPhrases();
+    const phrases = await getTriggerPhrases(tenantId);
     if (phrases.length === 0) return base;
     return `${base} Frases comuns: ${phrases.join('; ')}.`;
   } catch {
@@ -254,6 +263,7 @@ async function buildTranscriptionPrompt(): Promise<string> {
  * que ainda estão vazios no cadastro (nunca sobrescreve dado existente).
  */
 async function enrichClientFromConversation(
+  tenantId: string,
   client: Client,
   history: AiHistoryMessage[],
 ): Promise<void> {
@@ -272,6 +282,6 @@ async function enrichClientFromConversation(
   if (info.notes) patch.notes = info.notes;
 
   if (Object.keys(patch).length === 0) return;
-  await updateClient(client.id, patch);
+  await updateClient(tenantId, client.id, patch);
   logger.info(`Dados do cliente ${client.id} atualizados via IA`, patch);
 }

@@ -1,7 +1,7 @@
 import { query, queryOne } from '../index';
 import type { PublicUser, User } from '../../types';
 
-const PUBLIC_COLS = 'id, name, email, role, created_at';
+const PUBLIC_COLS = 'id, name, email, role, tenant_id, created_at';
 
 export async function findUserByEmail(email: string): Promise<User | null> {
   return queryOne<User>('SELECT * FROM users WHERE email = $1', [email.toLowerCase()]);
@@ -16,12 +16,13 @@ export async function createUser(input: {
   email: string;
   passwordHash: string;
   role: 'admin' | 'operator';
+  tenantId: string;
 }): Promise<PublicUser> {
   const { rows } = await query<PublicUser>(
-    `INSERT INTO users (name, email, password_hash, role)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO users (name, email, password_hash, role, tenant_id)
+     VALUES ($1, $2, $3, $4, $5)
      RETURNING ${PUBLIC_COLS}`,
-    [input.name, input.email.toLowerCase(), input.passwordHash, input.role],
+    [input.name, input.email.toLowerCase(), input.passwordHash, input.role, input.tenantId],
   );
   return rows[0];
 }

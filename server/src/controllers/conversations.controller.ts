@@ -41,32 +41,43 @@ export const deleteMessagesSchema = z.object({
   ids: z.array(z.string().uuid()).min(1).max(500),
 });
 
+/** Busca o cliente garantindo que ele pertence ao tenant da requisição. */
+function findTenantClient(tenantId: string, clientId: string): Promise<Client | null> {
+  return queryOne<Client>('SELECT * FROM clients WHERE id = $1 AND tenant_id = $2', [
+    clientId,
+    tenantId,
+  ]);
+}
+
 export async function getConversations(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
   const { status } = req.query as z.infer<typeof listQuerySchema>;
-  const conversations = await listConversations(status);
+  const conversations = await listConversations(tenantId, status);
   res.json({ conversations });
 }
 
 export async function getConversationDetail(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
   const { id } = req.params as z.infer<typeof idParamSchema>;
-  const conversation = await getConversationById(id);
+  const conversation = await getConversationById(tenantId, id);
   if (!conversation) throw new NotFoundError('Conversa');
 
   const [messages, client] = await Promise.all([
-    getConversationMessages(id),
-    queryOne<Client>('SELECT * FROM clients WHERE id = $1', [conversation.client_id]),
+    getConversationMessages(tenantId, id),
+    findTenantClient(tenantId, conversation.client_id),
   ]);
 
-  await markInboundAsRead(id);
+  await markInboundAsRead(tenantId, id);
 
   res.json({ conversation, client, messages });
 }
 
 export async function patchConversationStatus(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
   const { id } = req.params as z.infer<typeof idParamSchema>;
   const { status } = req.body as z.infer<typeof statusBodySchema>;
 
-  const conversation = await updateConversationStatus(id, status);
+  const conversation = await updateConversationStatus(tenantId, id, status);
   if (!conversation) throw new NotFoundError('Conversa');
 
   emitConversationUpdated(conversation);
@@ -75,13 +86,14 @@ export async function patchConversationStatus(req: Request, res: Response): Prom
 
 /** Envio manual de texto pela atendente. */
 export async function sendManualMessage(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
   const { id } = req.params as z.infer<typeof idParamSchema>;
   const { text } = req.body as z.infer<typeof sendMessageSchema>;
 
-  const conversation = await getConversationById(id);
+  const conversation = await getConversationById(tenantId, id);
   if (!conversation) throw new NotFoundError('Conversa');
 
-  const client = await queryOne<Client>('SELECT * FROM clients WHERE id = $1', [conversation.client_id]);
+  const client = await findTenantClient(tenantId, conversation.client_id);
   if (!client) throw new NotFoundError('Cliente');
 
   const message = await dispatchText({ conversation, client }, text);
@@ -90,12 +102,13 @@ export async function sendManualMessage(req: Request, res: Response): Promise<vo
 
 /** Envio manual de um áudio do banco pela atendente. */
 export async function sendManualAudio(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
   const { id } = req.params as z.infer<typeof idParamSchema>;
   const { audio_id } = req.body as z.infer<typeof sendAudioSchema>;
 
-  const conversation = await getConversationById(id);
+  const conversation = await getConversationById(tenantId, id);
   if (!conversation) throw new NotFoundError('Conversa');
-  const client = await queryOne<Client>('SELECT * FROM clients WHERE id = $1', [conversation.client_id]);
+  const client = await findTenantClient(tenantId, conversation.client_id);
   if (!client) throw new NotFoundError('Cliente');
 
   const message = await dispatchAudio({ conversation, client }, audio_id);
@@ -105,43 +118,47 @@ export async function sendManualAudio(req: Request, res: Response): Promise<void
 
 /** Apaga mensagens selecionadas de uma conversa. */
 export async function removeMessages(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
   const { id } = req.params as z.infer<typeof idParamSchema>;
   const { ids } = req.body as z.infer<typeof deleteMessagesSchema>;
 
-  const conversation = await getConversationById(id);
+  const conversation = await getConversationById(tenantId, id);
   if (!conversation) throw new NotFoundError('Conversa');
 
-  const deleted = await deleteMessages(id, ids);
+  const deleted = await deleteMessages(tenantId, id, ids);
   res.json({ deleted });
 }
 
 /** Apaga a conversa inteira (some da lista) junto com suas mensagens. */
 export async function removeConversation(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
   const { id } = req.params as z.infer<typeof idParamSchema>;
-  const ok = await deleteConversation(id);
+  const ok = await deleteConversation(tenantId, id);
   if (!ok) throw new NotFoundError('Conversa');
   res.status(204).send();
 }
 
 /** Limpa todo o histórico de mensagens de uma conversa. */
 export async function clearConversation(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
   const { id } = req.params as z.infer<typeof idParamSchema>;
 
-  const conversation = await getConversationById(id);
+  const conversation = await getConversationById(tenantId, id);
   if (!conversation) throw new NotFoundError('Conversa');
 
-  const deleted = await deleteAllMessages(id);
+  const deleted = await deleteAllMessages(tenantId, id);
   res.json({ deleted });
 }
 
 /** Envio manual de um produto pela atendente. */
 export async function sendManualProduct(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
   const { id } = req.params as z.infer<typeof idParamSchema>;
   const { product_id } = req.body as z.infer<typeof sendProductSchema>;
 
-  const conversation = await getConversationById(id);
+  const conversation = await getConversationById(tenantId, id);
   if (!conversation) throw new NotFoundError('Conversa');
-  const client = await queryOne<Client>('SELECT * FROM clients WHERE id = $1', [conversation.client_id]);
+  const client = await findTenantClient(tenantId, conversation.client_id);
   if (!client) throw new NotFoundError('Cliente');
 
   const message = await dispatchProduct({ conversation, client }, product_id);

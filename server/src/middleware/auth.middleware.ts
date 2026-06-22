@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env';
+import { DEFAULT_TENANT_ID } from '../config/tenant';
 import { ForbiddenError, UnauthorizedError } from '../utils/errors';
 import type { JwtPayload, UserRole } from '../types';
 
@@ -22,6 +23,9 @@ export function authenticate(req: Request, _res: Response, next: NextFunction): 
 
   try {
     const decoded = jwt.verify(token, env.JWT_SECRET) as JwtPayload;
+    // Compatibilidade: tokens emitidos antes do multi-tenancy não têm tenant_id.
+    // Na Fase 1 existe um único tenant, então caímos no padrão sem derrubar a sessão.
+    if (!decoded.tenant_id) decoded.tenant_id = DEFAULT_TENANT_ID;
     req.user = decoded;
     next();
   } catch {

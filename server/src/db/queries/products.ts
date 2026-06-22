@@ -12,25 +12,32 @@ export interface CreateProductInput {
   keywords?: string[];
 }
 
-export async function listProducts(availableOnly = false): Promise<Product[]> {
-  const where = availableOnly ? 'WHERE is_available = true' : '';
+export async function listProducts(tenantId: string, availableOnly = false): Promise<Product[]> {
+  const availableFilter = availableOnly ? 'AND is_available = true' : '';
   const { rows } = await query<Product>(
-    `SELECT * FROM products ${where} ORDER BY created_at DESC`,
+    `SELECT * FROM products
+      WHERE tenant_id = $1 ${availableFilter}
+      ORDER BY created_at DESC`,
+    [tenantId],
   );
   return rows;
 }
 
-export async function getProductById(id: string): Promise<Product | null> {
-  return queryOne<Product>('SELECT * FROM products WHERE id = $1', [id]);
+export async function getProductById(tenantId: string, id: string): Promise<Product | null> {
+  return queryOne<Product>('SELECT * FROM products WHERE id = $1 AND tenant_id = $2', [
+    id,
+    tenantId,
+  ]);
 }
 
-export async function createProduct(input: CreateProductInput): Promise<Product> {
+export async function createProduct(tenantId: string, input: CreateProductInput): Promise<Product> {
   const { rows } = await query<Product>(
     `INSERT INTO products
-       (name, description, category, price_wholesale, min_quantity, unit, image_urls, keywords)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       (tenant_id, name, description, category, price_wholesale, min_quantity, unit, image_urls, keywords)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING *`,
     [
+      tenantId,
       input.name,
       input.description ?? null,
       input.category ?? null,
@@ -45,6 +52,7 @@ export async function createProduct(input: CreateProductInput): Promise<Product>
 }
 
 export async function updateProduct(
+  tenantId: string,
   id: string,
   patch: Partial<{
     name: string;
@@ -60,19 +68,20 @@ export async function updateProduct(
 ): Promise<Product | null> {
   const { rows } = await query<Product>(
     `UPDATE products SET
-       name = COALESCE($2, name),
-       description = COALESCE($3, description),
-       category = COALESCE($4, category),
-       price_wholesale = COALESCE($5, price_wholesale),
-       min_quantity = COALESCE($6, min_quantity),
-       unit = COALESCE($7, unit),
-       image_urls = COALESCE($8, image_urls),
-       keywords = COALESCE($9, keywords),
-       is_available = COALESCE($10, is_available)
-     WHERE id = $1
+       name = COALESCE($3, name),
+       description = COALESCE($4, description),
+       category = COALESCE($5, category),
+       price_wholesale = COALESCE($6, price_wholesale),
+       min_quantity = COALESCE($7, min_quantity),
+       unit = COALESCE($8, unit),
+       image_urls = COALESCE($9, image_urls),
+       keywords = COALESCE($10, keywords),
+       is_available = COALESCE($11, is_available)
+     WHERE id = $1 AND tenant_id = $2
      RETURNING *`,
     [
       id,
+      tenantId,
       patch.name ?? null,
       patch.description ?? null,
       patch.category ?? null,
@@ -87,7 +96,10 @@ export async function updateProduct(
   return rows[0] ?? null;
 }
 
-export async function deleteProduct(id: string): Promise<boolean> {
-  const { rowCount } = await query('DELETE FROM products WHERE id = $1', [id]);
+export async function deleteProduct(tenantId: string, id: string): Promise<boolean> {
+  const { rowCount } = await query('DELETE FROM products WHERE id = $1 AND tenant_id = $2', [
+    id,
+    tenantId,
+  ]);
   return (rowCount ?? 0) > 0;
 }

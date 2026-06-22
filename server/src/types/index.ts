@@ -6,6 +6,7 @@ export interface User {
   email: string;
   password_hash: string;
   role: UserRole;
+  tenant_id: string;
   created_at: string;
 }
 
@@ -13,6 +14,7 @@ export type PublicUser = Omit<User, 'password_hash'>;
 
 export interface Client {
   id: string;
+  tenant_id: string;
   phone: string;
   name: string | null;
   company_name: string | null;
@@ -27,6 +29,7 @@ export type ConversationStatus = 'open' | 'closed' | 'waiting';
 
 export interface Conversation {
   id: string;
+  tenant_id: string;
   client_id: string;
   status: ConversationStatus;
   assigned_to: string | null;
@@ -129,6 +132,8 @@ export interface JwtPayload {
   sub: string;
   email: string;
   role: UserRole;
+  /** Empresa (tenant) à qual o usuário pertence. */
+  tenant_id: string;
 }
 
 declare global {

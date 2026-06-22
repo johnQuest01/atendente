@@ -5,11 +5,12 @@ import {
   getTopAudios,
 } from '../db/queries/metrics';
 
-export async function getDashboard(_req: Request, res: Response): Promise<void> {
+export async function getDashboard(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
   const [metrics, topAudios, activity] = await Promise.all([
-    getDashboardMetrics(),
-    getTopAudios(5),
-    getActivityByHour(),
+    getDashboardMetrics(tenantId),
+    getTopAudios(tenantId, 5),
+    getActivityByHour(tenantId),
   ]);
   res.json({ metrics, topAudios, activity });
 }

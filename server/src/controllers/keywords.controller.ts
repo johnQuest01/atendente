@@ -27,14 +27,14 @@ export const updateKeywordSchema = z.object({
   is_active: z.boolean().optional(),
 });
 
-export async function getKeywords(_req: Request, res: Response): Promise<void> {
-  const keywords = await listKeywords(false);
+export async function getKeywords(req: Request, res: Response): Promise<void> {
+  const keywords = await listKeywords(req.user!.tenant_id, false);
   res.json({ keywords });
 }
 
 export async function postKeyword(req: Request, res: Response): Promise<void> {
   const body = req.body as z.infer<typeof createKeywordSchema>;
-  const keyword = await createKeyword({
+  const keyword = await createKeyword(req.user!.tenant_id, {
     keyword: body.keyword,
     intent: body.intent,
     contentType: body.content_type,
@@ -46,14 +46,14 @@ export async function postKeyword(req: Request, res: Response): Promise<void> {
 
 export async function patchKeyword(req: Request, res: Response): Promise<void> {
   const { id } = req.params as z.infer<typeof idParamSchema>;
-  const keyword = await updateKeyword(id, req.body as z.infer<typeof updateKeywordSchema>);
+  const keyword = await updateKeyword(req.user!.tenant_id, id, req.body as z.infer<typeof updateKeywordSchema>);
   if (!keyword) throw new NotFoundError('Keyword');
   res.json({ keyword });
 }
 
 export async function removeKeyword(req: Request, res: Response): Promise<void> {
   const { id } = req.params as z.infer<typeof idParamSchema>;
-  const ok = await deleteKeyword(id);
+  const ok = await deleteKeyword(req.user!.tenant_id, id);
   if (!ok) throw new NotFoundError('Keyword');
   res.status(204).send();
 }

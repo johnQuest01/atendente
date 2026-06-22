@@ -21,14 +21,15 @@ export interface ActivityPoint {
   outbound: number;
 }
 
-export async function getDashboardMetrics(): Promise<DashboardMetrics> {
+export async function getDashboardMetrics(tenantId: string): Promise<DashboardMetrics> {
   const row = await queryOne<DashboardMetrics>(
     `SELECT
-        (SELECT COUNT(*) FROM conversations WHERE status = 'open')::int AS open_conversations,
-        (SELECT COUNT(*) FROM conversations WHERE status = 'waiting')::int AS waiting_conversations,
-        (SELECT COUNT(*) FROM messages_log WHERE direction = 'outbound' AND sent_at >= date_trunc('day', NOW()))::int AS messages_sent_today,
-        (SELECT COUNT(*) FROM messages_log WHERE direction = 'inbound' AND sent_at >= date_trunc('day', NOW()))::int AS messages_received_today,
-        (SELECT COUNT(*) FROM clients WHERE is_active = true)::int AS active_clients`,
+        (SELECT COUNT(*) FROM conversations WHERE tenant_id = $1 AND status = 'open')::int AS open_conversations,
+        (SELECT COUNT(*) FROM conversations WHERE tenant_id = $1 AND status = 'waiting')::int AS waiting_conversations,
+        (SELECT COUNT(*) FROM messages_log WHERE tenant_id = $1 AND direction = 'outbound' AND sent_at >= date_trunc('day', NOW()))::int AS messages_sent_today,
+        (SELECT COUNT(*) FROM messages_log WHERE tenant_id = $1 AND direction = 'inbound' AND sent_at >= date_trunc('day', NOW()))::int AS messages_received_today,
+        (SELECT COUNT(*) FROM clients WHERE tenant_id = $1 AND is_active = true)::int AS active_clients`,
+    [tenantId],
   );
   return (
     row ?? {
@@ -41,28 +42,29 @@ export async function getDashboardMetrics(): Promise<DashboardMetrics> {
   );
 }
 
-export async function getTopAudios(limit = 5): Promise<TopAudio[]> {
+export async function getTopAudios(tenantId: string, limit = 5): Promise<TopAudio[]> {
   const { rows } = await query<TopAudio>(
     `SELECT id, title, category, usage_count
        FROM audios
-      WHERE usage_count > 0
+      WHERE tenant_id = $1 AND usage_count > 0
       ORDER BY usage_count DESC
-      LIMIT $1`,
-    [limit],
+      LIMIT $2`,
+    [tenantId, limit],
   );
   return rows;
 }
 
-export async function getActivityByHour(): Promise<ActivityPoint[]> {
+export async function getActivityByHour(tenantId: string): Promise<ActivityPoint[]> {
   const { rows } = await query<ActivityPoint>(
     `SELECT
         to_char(date_trunc('hour', sent_at), 'HH24:00') AS hour,
         COUNT(*) FILTER (WHERE direction = 'inbound')::int AS inbound,
         COUNT(*) FILTER (WHERE direction = 'outbound')::int AS outbound
       FROM messages_log
-      WHERE sent_at >= NOW() - INTERVAL '24 hours'
+      WHERE tenant_id = $1 AND sent_at >= NOW() - INTERVAL '24 hours'
       GROUP BY 1
       ORDER BY 1`,
+    [tenantId],
   );
   return rows;
 }

@@ -64,7 +64,8 @@ function sendAudioToProvider(phone: string, publicUrl: string): Promise<string |
 
 /** Envia um áudio do banco para o cliente e registra no log. */
 export async function dispatchAudio(ctx: DispatchContext, audioId: string): Promise<MessageLog | null> {
-  const audio = await getAudioById(audioId);
+  const tenantId = ctx.conversation.tenant_id;
+  const audio = await getAudioById(tenantId, audioId);
   if (!audio) {
     logger.warn(`Áudio ${audioId} não encontrado (a palavra-chave aponta para um áudio inexistente).`);
     return null;
@@ -87,10 +88,10 @@ export async function dispatchAudio(ctx: DispatchContext, audioId: string): Prom
     return null;
   }
 
-  await incrementAudioUsage(audio.id);
+  await incrementAudioUsage(tenantId, audio.id);
   logger.info(`Áudio "${audio.title}" enviado para ${ctx.client.phone} (zapiId=${zapiId ?? 'n/d'}).`);
 
-  const msg = await insertMessage({
+  const msg = await insertMessage(tenantId, {
     conversationId: ctx.conversation.id,
     direction: 'outbound',
     type: 'audio',
@@ -104,7 +105,8 @@ export async function dispatchAudio(ctx: DispatchContext, audioId: string): Prom
 
 /** Renderiza um script de texto (com variáveis) e envia. */
 export async function dispatchScript(ctx: DispatchContext, scriptId: string): Promise<MessageLog | null> {
-  const script = await getScriptById(scriptId);
+  const tenantId = ctx.conversation.tenant_id;
+  const script = await getScriptById(tenantId, scriptId);
   if (!script || !script.is_active) return null;
 
   const text = renderTemplate(script.content, {
@@ -113,9 +115,9 @@ export async function dispatchScript(ctx: DispatchContext, scriptId: string): Pr
   });
 
   const zapiId = await whatsapp.sendText(ctx.client.phone, text);
-  await incrementScriptUsage(script.id);
+  await incrementScriptUsage(tenantId, script.id);
 
-  const msg = await insertMessage({
+  const msg = await insertMessage(tenantId, {
     conversationId: ctx.conversation.id,
     direction: 'outbound',
     type: 'text',
@@ -128,7 +130,8 @@ export async function dispatchScript(ctx: DispatchContext, scriptId: string): Pr
 
 /** Envia as imagens de um produto + legenda formatada com preço. */
 export async function dispatchProduct(ctx: DispatchContext, productId: string): Promise<MessageLog | null> {
-  const product = await getProductById(productId);
+  const tenantId = ctx.conversation.tenant_id;
+  const product = await getProductById(tenantId, productId);
   if (!product || !product.is_available) return null;
 
   const priceLine = product.price_wholesale
@@ -146,7 +149,7 @@ export async function dispatchProduct(ctx: DispatchContext, productId: string): 
     zapiId = await whatsapp.sendText(ctx.client.phone, caption);
   }
 
-  const msg = await insertMessage({
+  const msg = await insertMessage(ctx.conversation.tenant_id, {
     conversationId: ctx.conversation.id,
     direction: 'outbound',
     type: imageUrls.length > 0 ? 'image' : 'text',
@@ -161,7 +164,7 @@ export async function dispatchProduct(ctx: DispatchContext, productId: string): 
 /** Envia um texto livre (resposta do Claude ou mensagem manual do operador). */
 export async function dispatchText(ctx: DispatchContext, text: string): Promise<MessageLog> {
   const zapiId = await whatsapp.sendText(ctx.client.phone, text);
-  const msg = await insertMessage({
+  const msg = await insertMessage(ctx.conversation.tenant_id, {
     conversationId: ctx.conversation.id,
     direction: 'outbound',
     type: 'text',

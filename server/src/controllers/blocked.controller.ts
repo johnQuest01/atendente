@@ -43,8 +43,8 @@ export const updateBlockedSchema = z.object({
   is_active: z.boolean(),
 });
 
-export async function getBlocked(_req: Request, res: Response): Promise<void> {
-  const blocked = await listBlockedNumbers();
+export async function getBlocked(req: Request, res: Response): Promise<void> {
+  const blocked = await listBlockedNumbers(req.user!.tenant_id);
   res.json({ blocked });
 }
 
@@ -54,21 +54,21 @@ export async function postBlocked(req: Request, res: Response): Promise<void> {
   if (normalized.length < 8) {
     throw new AppError('Número inválido. Informe ao menos 8 dígitos (com DDD).', 400, 'INVALID_PHONE');
   }
-  const blocked = await addBlockedNumber(normalized, body.label ?? null);
+  const blocked = await addBlockedNumber(req.user!.tenant_id, normalized, body.label ?? null);
   res.status(201).json({ blocked });
 }
 
 export async function patchBlocked(req: Request, res: Response): Promise<void> {
   const { id } = req.params as z.infer<typeof idParamSchema>;
   const { is_active } = req.body as z.infer<typeof updateBlockedSchema>;
-  const blocked = await setBlockedActive(id, is_active);
+  const blocked = await setBlockedActive(req.user!.tenant_id, id, is_active);
   if (!blocked) throw new NotFoundError('Número bloqueado');
   res.json({ blocked });
 }
 
 export async function removeBlocked(req: Request, res: Response): Promise<void> {
   const { id } = req.params as z.infer<typeof idParamSchema>;
-  const ok = await deleteBlockedNumber(id);
+  const ok = await deleteBlockedNumber(req.user!.tenant_id, id);
   if (!ok) throw new NotFoundError('Número bloqueado');
   res.status(204).send();
 }

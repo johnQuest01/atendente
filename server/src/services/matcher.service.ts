@@ -10,11 +10,11 @@ import type { MatchResult } from '../types';
  *   2. Campo `keywords` cadastrado no próprio áudio (atalho intuitivo no app)
  * Se nada bater, retorna fallback para o Claude.
  */
-export async function matchIntent(messageText: string): Promise<MatchResult> {
+export async function matchIntent(tenantId: string, messageText: string): Promise<MatchResult> {
   const haystack = normalizeForMatch(messageText);
 
   // 1) Palavras-chave explícitas (tabela keywords), já ordenadas por prioridade.
-  const keywords = await getActiveKeywords();
+  const keywords = await getActiveKeywords(tenantId);
   for (const kw of keywords) {
     const needle = normalizeForMatch(kw.keyword);
     if (needle && matchesKeyword(haystack, needle)) {
@@ -28,7 +28,7 @@ export async function matchIntent(messageText: string): Promise<MatchResult> {
   }
 
   // 2) Palavras-chave cadastradas no próprio áudio (campo "Palavras-chave").
-  const audios = await listAudios(true);
+  const audios = await listAudios(tenantId, true);
   for (const audio of audios) {
     for (const k of audio.keywords ?? []) {
       const needle = normalizeForMatch(k);
@@ -51,11 +51,11 @@ export async function matchIntent(messageText: string): Promise<MatchResult> {
  * dos áudios). Útil para dar contexto à transcrição de áudio (Whisper prompt),
  * melhorando o reconhecimento exatamente das frases que disparam respostas.
  */
-export async function getTriggerPhrases(): Promise<string[]> {
+export async function getTriggerPhrases(tenantId: string): Promise<string[]> {
   const set = new Set<string>();
-  const keywords = await getActiveKeywords();
+  const keywords = await getActiveKeywords(tenantId);
   for (const kw of keywords) if (kw.keyword) set.add(kw.keyword.trim());
-  const audios = await listAudios(true);
+  const audios = await listAudios(tenantId, true);
   for (const audio of audios) {
     for (const k of audio.keywords ?? []) if (k) set.add(k.trim());
   }

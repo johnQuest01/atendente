@@ -39,7 +39,12 @@ export async function login(req: Request, res: Response): Promise<void> {
   const valid = await bcrypt.compare(password, user.password_hash);
   if (!valid) throw new UnauthorizedError('E-mail ou senha inválidos.');
 
-  const token = signToken({ sub: user.id, email: user.email, role: user.role });
+  const token = signToken({
+    sub: user.id,
+    email: user.email,
+    role: user.role,
+    tenant_id: user.tenant_id,
+  });
 
   res.json({
     token,
@@ -48,6 +53,9 @@ export async function login(req: Request, res: Response): Promise<void> {
 }
 
 export async function register(req: Request, res: Response): Promise<void> {
+  // Rota protegida por authenticate + authorize('admin'): o novo usuário herda
+  // a empresa (tenant) do admin que o está criando.
+  if (!req.user) throw new UnauthorizedError();
   const input = req.body as z.infer<typeof registerSchema>;
 
   const existing = await findUserByEmail(input.email);
@@ -59,6 +67,7 @@ export async function register(req: Request, res: Response): Promise<void> {
     email: input.email,
     passwordHash,
     role: input.role,
+    tenantId: req.user.tenant_id,
   });
 
   res.status(201).json({ user });

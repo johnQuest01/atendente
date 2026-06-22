@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import { corsOrigin } from '../config/cors';
 import { logger } from '../config/logger';
 import { env } from '../config/env';
+import { DEFAULT_TENANT_ID } from '../config/tenant';
 import type { Conversation, JwtPayload, MessageLog } from '../types';
 
 let io: SocketIOServer | null = null;
@@ -28,7 +29,9 @@ export function initSocket(httpServer: HttpServer): SocketIOServer {
       return;
     }
     try {
-      socket.data.user = jwt.verify(token, env.JWT_SECRET) as JwtPayload;
+      const user = jwt.verify(token, env.JWT_SECRET) as JwtPayload;
+      if (!user.tenant_id) user.tenant_id = DEFAULT_TENANT_ID;
+      socket.data.user = user;
       next();
     } catch {
       next(new Error('unauthorized'));

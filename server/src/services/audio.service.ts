@@ -53,6 +53,7 @@ function parseDuration(value: string): number {
 }
 
 interface ProcessAudioInput {
+  tenantId: string;
   tmpFilePath: string;
   title: string;
   category: string;
@@ -139,10 +140,10 @@ export async function processAndStoreAudio(input: ProcessAudioInput): Promise<Au
     fileData: prepared.fileData,
     mimeType: prepared.fileData ? 'audio/ogg' : null,
   };
-  const audio = await createAudio(dbInput);
+  const audio = await createAudio(input.tenantId, dbInput);
 
   const finalUrl = publicUrlForAudio(audio.id, prepared.storedUrl);
-  await setAudioFileUrl(audio.id, finalUrl);
+  await setAudioFileUrl(input.tenantId, audio.id, finalUrl);
   audio.file_url = finalUrl;
   return audio;
 }
@@ -151,10 +152,14 @@ export async function processAndStoreAudio(input: ProcessAudioInput): Promise<Au
  * Substitui apenas o arquivo de áudio de um registro existente, mantendo
  * título, categoria, palavras-chave, etc. Retorna null se o áudio não existir.
  */
-export async function replaceAudioFile(id: string, tmpFilePath: string): Promise<Audio | null> {
+export async function replaceAudioFile(
+  tenantId: string,
+  id: string,
+  tmpFilePath: string,
+): Promise<Audio | null> {
   const prepared = await prepareAudioFromTmp(tmpFilePath);
   const finalUrl = publicUrlForAudio(id, prepared.storedUrl);
-  return updateAudioFile(id, {
+  return updateAudioFile(tenantId, id, {
     fileData: prepared.fileData,
     mimeType: prepared.fileData ? 'audio/ogg' : null,
     fileUrl: finalUrl,
