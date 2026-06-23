@@ -16,13 +16,15 @@ import { isAgentEnabled, getAiPersona } from '../db/queries/settings';
 import { isPhoneBlocked } from '../db/queries/blocked';
 import { emitNewMessage, emitNewConversation } from '../socket';
 import { matchIntent, getTriggerPhrases } from '../services/matcher.service';
-import { extractClientInfo, generateReply, isAiConfigured } from '../services/ai.service';
+import { extractClientInfo, generateReply, hasVisionProvider, isAiConfigured } from '../services/ai.service';
+import { extractVideoFrames } from '../services/ai/video-frames';
+import type { ChatImage } from '../services/ai/types';
 import {
   transcribeAudioFromBase64,
   transcribeAudioFromUrl,
 } from '../services/transcription.service';
 import { persistInboundMedia } from '../services/inbound-media.service';
-import type { AiHistoryMessage, Client } from '../types';
+import type { AiHistoryMessage, Client, Conversation } from '../types';
 import {
   dispatchAudio,
   dispatchScript,
@@ -200,6 +202,16 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
 
   const ctx = { conversation, client };
 
+  // IMAGEM/VÍDEO: rota de VISÃO. A IA "enxerga" a mídia e responde com base no
+  // catálogo (ex.: cliente manda foto de um produto perguntando se temos).
+  // Pulamos o casamento por palavra-chave — aqui a mídia é o conteúdo principal.
+  if (inbound.type === 'image' || inbound.type === 'video') {
+    await replyToVisualMedia(tenantId, ctx, inbound, mediaUrl, mediaMime).catch((err) =>
+      logger.warn('Falha ao responder mídia visual', err),
+    );
+    return;
+  }
+
   // Texto efetivo para responder: texto puro ou a transcrição do áudio.
   let replyText: string | null = null;
   if (inbound.type === 'text') replyText = inbound.text;
@@ -271,6 +283,71 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
   } else {
     logger.warn('Sem resposta automática disponível (nenhuma IA disponível e nenhum match).');
   }
+}
+
+/**
+ * Responde a uma IMAGEM/VÍDEO recebido usando VISÃO. Se houver na cadeia da
+ * empresa um modelo que enxergue, manda a foto (ou alguns quadros do vídeo) para
+ * a IA analisar e responder com base no catálogo. Sem modelo de visão, responde
+ * gentilmente pedindo uma descrição em texto (em vez de ficar mudo).
+ */
+async function replyToVisualMedia(
+  tenantId: string,
+  ctx: { conversation: Conversation; client: Client },
+  inbound: NormalizedInbound,
+  persistedUrl: string | null,
+  persistedMime: string | null,
+): Promise<void> {
+  // Sem nenhum provedor com visão na cadeia: não adianta mandar a mídia.
+  if (!(await hasVisionProvider(tenantId))) {
+    const msg =
+      inbound.type === 'video'
+        ? 'Recebi seu vídeo! 🎬 Pra eu te ajudar com precisão, me conta por mensagem o que você procura (ou manda uma foto).'
+        : 'Recebi sua imagem! 📷 Me conta em uma mensagem o que você precisa que já te ajudo.';
+    await dispatchText(ctx, msg).catch((err) => logger.warn('Falha ao responder mídia sem visão', err));
+    return;
+  }
+
+  // URL estável re-hospedada (R2) é a preferida; cai na URL temporária do provedor.
+  const source = persistedUrl ?? inbound.mediaUrl ?? null;
+
+  let images: ChatImage[] = [];
+  if (inbound.type === 'image' && source) {
+    images = [{ url: source, mime: persistedMime ?? inbound.mediaMime ?? undefined }];
+  } else if (inbound.type === 'video' && source) {
+    // Vídeo: extrai quadros e manda como imagens (funciona em qualquer IA com visão).
+    const frames = await extractVideoFrames(source).catch(() => []);
+    images = frames.map((f) => ({ base64: f.base64, mime: f.mime }));
+  }
+
+  if (images.length === 0) {
+    await dispatchText(
+      ctx,
+      'Recebi sua mídia! 📎 Me conta em texto o que você precisa que eu te ajudo.',
+    ).catch((err) => logger.warn('Falha ao responder mídia sem conteúdo visual', err));
+    return;
+  }
+
+  const history = await getRecentMessagesForAI(tenantId, ctx.conversation.id, 20);
+  const [products, scripts, systemPrompt] = await Promise.all([
+    listProducts(tenantId, true),
+    listScripts(tenantId, true),
+    getAiPersona(tenantId),
+  ]);
+  const reply = await generateReply(
+    {
+      history,
+      client: ctx.client,
+      products,
+      scripts,
+      storeName: env.STORE_NAME,
+      systemPrompt,
+      attachImages: images,
+    },
+    tenantId,
+  );
+  if (reply) await dispatchText(ctx, reply);
+  else logger.warn('Visão: nenhuma resposta disponível (provedores em falha/cooldown).');
 }
 
 /**

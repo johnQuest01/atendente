@@ -28,9 +28,19 @@ export class AiProviderError extends Error {
   }
 }
 
+export interface ChatImage {
+  /** URL pública da imagem (preferida quando acessível ao provedor externo). */
+  url?: string;
+  /** Bytes em base64 (sem o prefixo "data:"). Usado quando não há URL pública. */
+  base64?: string;
+  mime?: string;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
+  /** Imagens anexadas ao turno (somente role 'user'); provedores com visão as leem. */
+  images?: ChatImage[];
 }
 
 export interface AiCredentials {

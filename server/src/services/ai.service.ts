@@ -2,10 +2,10 @@ import { DEFAULT_AI_PERSONA } from '../config/persona';
 import { logger } from '../config/logger';
 import { formatBRL } from '../utils/text';
 import type { AiHistoryMessage, Client, Product, TextScript } from '../types';
-import { complete, isAiConfigured } from './ai/orchestrator';
-import type { ChatMessage } from './ai/types';
+import { complete, hasVisionProvider, isAiConfigured } from './ai/orchestrator';
+import type { ChatImage, ChatMessage } from './ai/types';
 
-export { isAiConfigured };
+export { isAiConfigured, hasVisionProvider };
 
 function buildClientContext(c: Client | null): string {
   if (!c) return '';
@@ -133,6 +133,33 @@ export interface GenerateReplyInput {
   storeName?: string;
   /** Persona/instruções (system prompt) editadas pelo usuário no app. */
   systemPrompt?: string;
+  /**
+   * Imagens para a IA "ver" (anexadas ao último turno do cliente). Quadros de
+   * vídeo também entram aqui. Modelos sem visão simplesmente as ignoram.
+   */
+  attachImages?: ChatImage[];
+}
+
+/**
+ * Instrução extra ligada quando há imagens: orienta a IA a usar a VISÃO + o
+ * catálogo para responder "vocês têm esse produto?" sem inventar itens.
+ */
+const VISION_INSTRUCTION =
+  '\n\nATENÇÃO — O CLIENTE ENVIOU IMAGEM(NS)/VÍDEO. Analise visualmente o que foi enviado e ' +
+  'responda com base no CATÁLOGO acima: se reconhecer um produto igual ou parecido, confirme se ' +
+  'temos, o preço de atacado e o pedido mínimo; se não tiver certeza do item, descreva o que vê e ' +
+  'pergunte os detalhes que faltam (cor, tamanho, marca, modelo). NUNCA afirme que temos um produto ' +
+  'que não está no catálogo — nesse caso, diga que vai verificar.';
+
+/** Anexa imagens ao último turno do cliente (cria um turno 'user' se necessário). */
+function attachImagesToLastUser(messages: ChatMessage[], images: ChatImage[]): void {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') {
+      messages[i] = { ...messages[i], images: [...(messages[i].images ?? []), ...images] };
+      return;
+    }
+  }
+  messages.push({ role: 'user', content: '', images });
 }
 
 /**
@@ -150,9 +177,14 @@ export async function generateReply(
     messages.push({ role: 'user', content: 'Oi' });
   }
 
-  const system = buildSystemPrompt(input);
+  const hasImages = Boolean(input.attachImages?.length);
+  if (hasImages) attachImagesToLastUser(messages, input.attachImages as ChatImage[]);
 
-  const result = await complete({ system, messages, maxTokens: 500, temperature: 0.7 }, tenantId, {
+  const system = buildSystemPrompt(input) + (hasImages ? VISION_INSTRUCTION : '');
+  // Imagens precisam de mais espaço pra IA descrever o que vê.
+  const maxTokens = hasImages ? 700 : 500;
+
+  const result = await complete({ system, messages, maxTokens, temperature: 0.7 }, tenantId, {
     meter: true,
   });
   if (!result) {

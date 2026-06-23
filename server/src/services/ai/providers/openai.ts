@@ -1,4 +1,5 @@
 import { validateKeyAndModel } from '../model-catalog';
+import { isPublicHttpUrl, modelSupportsVision, toDataUrl } from '../vision';
 import { classifyHttpError, classifyNetworkError, type AiAdapter, type ChatMessage } from '../types';
 
 /**
@@ -8,6 +9,9 @@ import { classifyHttpError, classifyNetworkError, type AiAdapter, type ChatMessa
  *   - Groq:       https://api.groq.com/openai/v1       (llama-3.3-70b-versatile, ...) — cota gratis
  *   - OpenRouter: https://openrouter.ai/api/v1         (modelos ":free", ...)
  *   - Local:      http://host:porta/v1                 (Ollama/LM Studio/...)
+ *
+ * Com VISÃO: modelos multimodais (gpt-4o/4.1/5, llava, pixtral, ...) recebem as
+ * imagens via partes `image_url`. Modelos sem visão recebem só o texto.
  */
 
 const DEFAULT_BASE = 'https://api.openai.com/v1';
@@ -16,8 +20,34 @@ interface ChatCompletionResponse {
   choices?: Array<{ message?: { content?: string } }>;
 }
 
-function toOpenAiMessages(system: string, messages: ChatMessage[]) {
-  return [{ role: 'system' as const, content: system }, ...messages];
+type OpenAiPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
+interface OpenAiMessage {
+  role: string;
+  content: string | OpenAiPart[];
+}
+
+async function buildUserContent(m: ChatMessage): Promise<string | OpenAiPart[]> {
+  if (!m.images?.length) return m.content;
+  const parts: OpenAiPart[] = [];
+  if (m.content) parts.push({ type: 'text', text: m.content });
+  for (const img of m.images) {
+    // URL pública direta quando o provedor consegue acessá-la; senão, data URL.
+    const url = isPublicHttpUrl(img.url) ? img.url : await toDataUrl(img);
+    if (url) parts.push({ type: 'image_url', image_url: { url } });
+  }
+  return parts.length ? parts : m.content;
+}
+
+async function toOpenAiMessages(system: string, messages: ChatMessage[], vision: boolean): Promise<OpenAiMessage[]> {
+  const out: OpenAiMessage[] = [{ role: 'system', content: system }];
+  for (const m of messages) {
+    if (vision && m.role === 'user' && m.images?.length) {
+      out.push({ role: 'user', content: await buildUserContent(m) });
+    } else {
+      out.push({ role: m.role, content: m.content });
+    }
+  }
+  return out;
 }
 
 export const openaiAdapter: AiAdapter = {
@@ -25,6 +55,8 @@ export const openaiAdapter: AiAdapter = {
 
   async complete(req, creds) {
     const base = (creds.baseUrl || DEFAULT_BASE).replace(/\/+$/, '');
+    const vision = modelSupportsVision('openai', creds.model, creds.baseUrl);
+    const messages = await toOpenAiMessages(req.system, req.messages, vision);
     let res: Response;
     try {
       res = await fetch(`${base}/chat/completions`, {
@@ -37,9 +69,9 @@ export const openaiAdapter: AiAdapter = {
           model: creds.model,
           max_tokens: req.maxTokens,
           temperature: req.temperature,
-          messages: toOpenAiMessages(req.system, req.messages),
+          messages,
         }),
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(45_000),
       });
     } catch (err) {
       throw classifyNetworkError(err);

@@ -60,6 +60,8 @@ interface AiModelOption {
   id: string;
   label: string;
   free?: boolean;
+  /** Modelo multimodal: "enxerga" as fotos/vídeos que o cliente enviar. */
+  vision?: boolean;
 }
 
 /**
@@ -69,33 +71,33 @@ interface AiModelOption {
  */
 const MODELS_BY_PRESET: Record<string, AiModelOption[]> = {
   claude: [
-    { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 — equilíbrio (recomendado)' },
-    { id: 'claude-opus-4-8', label: 'Claude Opus 4.8 — mais capaz' },
-    { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 — rápido e barato' },
-    { id: 'claude-fable-5', label: 'Claude Fable 5 — topo de linha' },
+    { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 — equilíbrio (recomendado)', vision: true },
+    { id: 'claude-opus-4-8', label: 'Claude Opus 4.8 — mais capaz', vision: true },
+    { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 — rápido e barato', vision: true },
+    { id: 'claude-fable-5', label: 'Claude Fable 5 — topo de linha', vision: true },
   ],
   gemini: [
-    { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash — recomendado', free: true },
-    { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite — econômico', free: true },
-    { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro (preview)' },
+    { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash — recomendado', free: true, vision: true },
+    { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite — econômico', free: true, vision: true },
+    { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro (preview)', vision: true },
   ],
   groq: [
-    { id: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B — recomendado', free: true },
-    { id: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B — mais rápido', free: true },
-    { id: 'qwen/qwen3.6-27b', label: 'Qwen 3.6 27B', free: true },
-    { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B (até ago/2026)', free: true },
-    { id: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B Instant (até ago/2026)', free: true },
+    { id: 'meta-llama/llama-4-scout-17b-16e-instruct', label: 'Llama 4 Scout — vê imagens', free: true, vision: true },
+    { id: 'meta-llama/llama-4-maverick-17b-128e-instruct', label: 'Llama 4 Maverick — vê imagens', free: true, vision: true },
+    { id: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B — recomendado (texto)', free: true },
+    { id: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B — mais rápido (texto)', free: true },
+    { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B — texto (até ago/2026)', free: true },
   ],
   openai: [
-    { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini — econômico (recomendado)' },
-    { id: 'gpt-5.4-nano', label: 'GPT-5.4 nano — mais barato' },
-    { id: 'gpt-5.5', label: 'GPT-5.5 — flagship' },
-    { id: 'gpt-5.5-pro', label: 'GPT-5.5 Pro — máximo' },
+    { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini — econômico (recomendado)', vision: true },
+    { id: 'gpt-5.4-nano', label: 'GPT-5.4 nano — mais barato', vision: true },
+    { id: 'gpt-5.5', label: 'GPT-5.5 — flagship', vision: true },
+    { id: 'gpt-5.5-pro', label: 'GPT-5.5 Pro — máximo', vision: true },
   ],
   openrouter: [
-    { id: 'meta-llama/llama-3.3-70b-instruct:free', label: 'Llama 3.3 70B — grátis', free: true },
-    { id: 'deepseek/deepseek-chat', label: 'DeepSeek Chat' },
-    { id: 'google/gemini-flash-1.5:free', label: 'Gemini Flash — grátis', free: true },
+    { id: 'meta-llama/llama-3.3-70b-instruct:free', label: 'Llama 3.3 70B — grátis (texto)', free: true },
+    { id: 'deepseek/deepseek-chat', label: 'DeepSeek Chat (texto)' },
+    { id: 'google/gemini-flash-1.5:free', label: 'Gemini Flash — grátis, vê imagens', free: true, vision: true },
   ],
   custom: [],
 };
@@ -170,6 +172,29 @@ function modelHeuristicWarning(presetId: string, kind: AiKind, model: string): s
       : 'Dica: no Groq use algo como “openai/gpt-oss-120b” ou “llama-3.3-70b-versatile”.';
   }
   return null; // OpenRouter/personalizado: formato livre (provedor/modelo).
+}
+
+/**
+ * O modelo "enxerga" imagens? Espelha a heurística do backend (services/ai/vision.ts)
+ * para indicar visão na UI sem depender de chamada de rede. Usado tanto no campo
+ * "Outro (digitar)" quanto no selo da lista de provedores.
+ */
+function modelSeesImages(kind: AiKind, model: string): boolean {
+  const m = (model || '').toLowerCase().trim();
+  if (!m) return false;
+  if (kind === 'anthropic') {
+    if (m.includes('claude-2') || m.includes('instant')) return false;
+    return m.startsWith('claude-');
+  }
+  if (kind === 'gemini') {
+    if (m === 'gemini-pro' || m.startsWith('gemini-1.0')) return false;
+    return m.startsWith('gemini') || m.startsWith('gemma-3') || m.startsWith('learnlm') || m.includes('vision');
+  }
+  if (/(gpt-4o|gpt-4\.1|gpt-4\.5|gpt-5|chatgpt-4o)/.test(m)) return true;
+  if (/^o[1-9]/.test(m)) return true;
+  return /(vision|llava|pixtral|llama-?3\.2|llama-?4|qwen.*vl|qwen2-vl|gemini|claude-3|moondream|internvl|minicpm-v|phi-3.*vision|phi-4.*vision|grok.*vision)/.test(
+    m,
+  );
 }
 
 function statusBadge(p: AiProviderDto) {
@@ -314,6 +339,7 @@ function AiProviderRow({
             <p className="truncate text-sm font-bold text-text-primary">{provider.label}</p>
             <Badge tone="primary">#{provider.priority}</Badge>
             {statusBadge(provider)}
+            {modelSeesImages(provider.kind, provider.model) && <Badge tone="success">👁 visão</Badge>}
           </div>
           <p className="mt-0.5 truncate text-xs text-text-secondary">
             {KIND_LABEL[provider.kind]} · {provider.model}
@@ -512,6 +538,7 @@ function AiProviderModal({
                 <option key={m.id} value={m.id}>
                   {m.label}
                   {m.free ? ' (cota grátis)' : ''}
+                  {m.vision ? ' · 👁 vê imagens' : ''}
                 </option>
               ))}
               <option value="__custom__">Outro (digitar)…</option>
@@ -541,6 +568,11 @@ function AiProviderModal({
             onModel={setModel}
           />
         )}
+        <p className="-mt-1 rounded-lg bg-primary-light px-3 py-2 text-xs text-text-secondary">
+          👁 Modelos com esse selo <strong>enxergam fotos e vídeos</strong> que o cliente enviar e
+          respondem com base no seu catálogo (ex.: cliente manda a foto de um produto perguntando se
+          você tem).
+        </p>
         {kind !== 'anthropic' && (
           <Input
             label="Base URL (opcional)"
@@ -672,6 +704,10 @@ function CustomModelField({
             <option key={m} value={m} />
           ))}
         </datalist>
+      )}
+
+      {modelSeesImages(kind, trimmed) && (
+        <span className="text-xs text-primary">👁 Este modelo enxerga imagens/vídeos enviados pelo cliente.</span>
       )}
 
       {list.isPending ? (

@@ -6,6 +6,7 @@ import { currentYm, getAiUsage, incrementAiUsage } from '../../db/queries/ai_usa
 import { anthropicAdapter } from './providers/anthropic';
 import { openaiAdapter } from './providers/openai';
 import { geminiAdapter } from './providers/gemini';
+import { modelSupportsVision } from './vision';
 import {
   AiProviderError,
   type AiAdapter,
@@ -153,6 +154,16 @@ export async function resolveChain(tenantId?: string | null): Promise<ResolvedCh
 /** Ha pelo menos um provedor de IA utilizavel para esta empresa? (barato — cache.) */
 export async function isAiConfigured(tenantId?: string | null): Promise<boolean> {
   return (await resolveChain(tenantId)).providers.length > 0;
+}
+
+/**
+ * Ha algum provedor ATIVO na corrente desta empresa cujo modelo "enxergue"
+ * imagens? Usado para decidir se vale a pena mandar a foto/vídeo do cliente
+ * para a IA ou se respondemos pedindo uma descrição em texto. (barato — cache.)
+ */
+export async function hasVisionProvider(tenantId?: string | null): Promise<boolean> {
+  const chain = await resolveChain(tenantId);
+  return chain.providers.some((p) => modelSupportsVision(p.kind, p.creds.model, p.creds.baseUrl));
 }
 
 function isInCooldown(id: string, now: number): boolean {
