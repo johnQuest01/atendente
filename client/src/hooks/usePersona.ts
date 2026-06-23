@@ -29,3 +29,28 @@ export function useSetPersona() {
     onSuccess: (data) => qc.setQueryData(PERSONA_QUERY_KEY, data),
   });
 }
+
+export interface PersonaPreviewInput {
+  /** Texto do prompt em edição (se ausente, o backend usa o salvo). */
+  prompt?: string;
+  message: string;
+  temperature?: number;
+  maxTokens?: number;
+  history?: { role: 'user' | 'assistant'; content: string }[];
+}
+
+export interface PersonaPreviewResult {
+  reply: string | null;
+  providerLabel: string | null;
+  detail: string | null;
+}
+
+/** Playground: gera uma resposta de exemplo no app, sem enviar WhatsApp. */
+export function usePersonaPreview() {
+  return useMutation({
+    mutationFn: async (input: PersonaPreviewInput) => {
+      const { data } = await api.post<PersonaPreviewResult>('/settings/persona/preview', input);
+      return data;
+    },
+  });
+}

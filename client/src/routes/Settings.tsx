@@ -10,7 +10,7 @@ import { Input, Select } from '@/components/ui/Input';
 import { BuildingIcon } from '@/components/ui/Icons';
 import { useAuth } from '@/hooks/useAuth';
 import { useAgentStatus, useSetAgentStatus, AGENT_QUERY_KEY } from '@/hooks/useAgent';
-import { usePersona, useSetPersona } from '@/hooks/usePersona';
+import { usePersona, useSetPersona, usePersonaPreview } from '@/hooks/usePersona';
 import { useSystemStatus, type ServiceCheck } from '@/hooks/useSystemStatus';
 import {
   useWhatsappConnection,
@@ -190,8 +190,11 @@ function AiCard() {
 function PersonaCard() {
   const { data, isLoading } = usePersona();
   const setPersona = useSetPersona();
+  const preview = usePersonaPreview();
   const [text, setText] = useState('');
   const [touched, setTouched] = useState(false);
+  const [testMsg, setTestMsg] = useState('');
+  const [temp, setTemp] = useState(0.7);
 
   // Sincroniza o textarea quando os dados chegam (sem sobrescrever a edição em andamento).
   useEffect(() => {
@@ -215,6 +218,12 @@ function PersonaCard() {
     if (!data) return;
     setText(data.default);
     setTouched(true);
+  }
+
+  function runPreview() {
+    const message = testMsg.trim();
+    if (!message) return;
+    preview.mutate({ prompt: text, message, temperature: temp });
   }
 
   return (
@@ -253,6 +262,69 @@ function PersonaCard() {
             Salvar
           </Button>
         </div>
+      </div>
+
+      <div className="mt-4 border-t border-border pt-4">
+        <h3 className="text-sm font-bold text-text-primary">Testar resposta (pré-visualização)</h3>
+        <p className="mb-2 text-xs text-text-secondary">
+          Simule uma mensagem de cliente e veja como a IA responderia com este prompt — sem enviar
+          nada no WhatsApp. Usa o texto acima (mesmo sem salvar), o seu catálogo e o provedor de IA ativo.
+        </p>
+
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+          <div className="flex-1">
+            <Input
+              label="Mensagem do cliente"
+              value={testMsg}
+              onChange={(e) => setTestMsg(e.target.value)}
+              placeholder="Ex.: Oi, vocês vendem no atacado? Qual o pedido mínimo?"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  runPreview();
+                }
+              }}
+            />
+          </div>
+          <Button size="sm" onClick={runPreview} loading={preview.isPending} disabled={!testMsg.trim()}>
+            Simular resposta
+          </Button>
+        </div>
+
+        <label className="mt-3 flex items-center gap-3 text-xs text-text-secondary">
+          <span className="whitespace-nowrap">Criatividade: {temp.toFixed(1)}</span>
+          <input
+            type="range"
+            min={0}
+            max={1.2}
+            step={0.1}
+            value={temp}
+            onChange={(e) => setTemp(Number(e.target.value))}
+            className="flex-1 accent-primary"
+          />
+        </label>
+
+        {preview.isError && <p className="mt-2 text-xs text-danger">{getErrorMessage(preview.error)}</p>}
+
+        {preview.data && (
+          <div className="mt-3 rounded-xl border border-border bg-bg p-3">
+            {preview.data.reply ? (
+              <>
+                <div className="mb-1 flex items-center gap-2">
+                  <Badge tone="success">Resposta da IA</Badge>
+                  {preview.data.providerLabel && (
+                    <span className="text-[11px] text-text-secondary">via {preview.data.providerLabel}</span>
+                  )}
+                </div>
+                <p className="whitespace-pre-wrap text-sm leading-snug text-text-primary">
+                  {preview.data.reply}
+                </p>
+              </>
+            ) : (
+              <p className="text-xs text-warning">{preview.data.detail ?? 'A IA não respondeu.'}</p>
+            )}
+          </div>
+        )}
       </div>
     </Card>
   );

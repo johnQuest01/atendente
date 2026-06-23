@@ -92,6 +92,32 @@ function toChatMessages(history: AiHistoryMessage[]): ChatMessage[] {
   return merged;
 }
 
+interface SystemPromptInput {
+  client: Client | null;
+  products?: Product[];
+  scripts?: TextScript[];
+  storeName?: string;
+  systemPrompt?: string;
+}
+
+/**
+ * Monta o system prompt completo: persona (com [NOME DA LOJA] substituído) +
+ * contexto do cliente + catálogo + scripts. Reaproveitado pelo atendimento
+ * real (generateReply) e pelo preview/playground do app (previewReply).
+ */
+function buildSystemPrompt(input: SystemPromptInput): string {
+  const basePrompt = (input.systemPrompt?.trim() || DEFAULT_AI_PERSONA).replace(
+    /\[NOME DA LOJA\]/g,
+    input.storeName ?? 'nossa loja',
+  );
+  return (
+    basePrompt +
+    buildClientContext(input.client) +
+    buildCatalog(input.products) +
+    buildScriptsReference(input.scripts)
+  );
+}
+
 export interface GenerateReplyInput {
   history: AiHistoryMessage[];
   client: Client | null;
@@ -118,15 +144,7 @@ export async function generateReply(
     messages.push({ role: 'user', content: 'Oi' });
   }
 
-  const basePrompt = (input.systemPrompt?.trim() || DEFAULT_AI_PERSONA).replace(
-    /\[NOME DA LOJA\]/g,
-    input.storeName ?? 'nossa loja',
-  );
-  const system =
-    basePrompt +
-    buildClientContext(input.client) +
-    buildCatalog(input.products) +
-    buildScriptsReference(input.scripts);
+  const system = buildSystemPrompt(input);
 
   const result = await complete({ system, messages, maxTokens: 500, temperature: 0.7 }, tenantId, {
     meter: true,
@@ -136,6 +154,53 @@ export async function generateReply(
     return null;
   }
   return result.text || null;
+}
+
+function clampNumber(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
+
+export interface PreviewReplyInput extends SystemPromptInput {
+  /** Mensagem do "cliente" digitada no teste. */
+  userMessage: string;
+  /** Turnos anteriores opcionais (role user/assistant). */
+  history?: ChatMessage[];
+  temperature?: number;
+  maxTokens?: number;
+}
+
+export interface PreviewReplyResult {
+  reply: string | null;
+  providerLabel: string | null;
+}
+
+/**
+ * Gera uma resposta de EXEMPLO usando o mesmo motor do atendimento (persona +
+ * catálogo + scripts + cadeia de provedores da empresa), porém SEM enviar
+ * WhatsApp e SEM persistir nada. Não conta no teto mensal (meter:false) — é o
+ * playground do prompt, usado pelo próprio usuário no app para testar/ajustar.
+ */
+export async function previewReply(
+  input: PreviewReplyInput,
+  tenantId: string,
+): Promise<PreviewReplyResult> {
+  const raw: ChatMessage[] = [...(input.history ?? []), { role: 'user', content: input.userMessage }];
+  while (raw.length > 0 && raw[0].role !== 'user') raw.shift();
+  const messages: ChatMessage[] = [];
+  for (const m of raw) {
+    const last = messages[messages.length - 1];
+    if (last && last.role === m.role) last.content = `${last.content}\n${m.content}`;
+    else messages.push({ role: m.role, content: m.content });
+  }
+
+  const system = buildSystemPrompt(input);
+  const temperature = clampNumber(input.temperature ?? 0.7, 0, 1.5);
+  const maxTokens = clampNumber(Math.round(input.maxTokens ?? 500), 50, 1200);
+
+  const result = await complete({ system, messages, maxTokens, temperature }, tenantId, {
+    meter: false,
+  });
+  return { reply: result?.text || null, providerLabel: result?.providerLabel ?? null };
 }
 
 export interface ExtractedClientInfo {

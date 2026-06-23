@@ -10,6 +10,8 @@ import {
   getPersona,
   putPersona,
   updatePersonaSchema,
+  previewPersona,
+  previewPersonaSchema,
   getSystemStatus,
   getWhatsappConnection,
   putWhatsappConnection,
@@ -35,6 +37,8 @@ router.put('/agent', validate({ body: updateAgentSchema }), asyncHandler(putAgen
 
 router.get('/persona', asyncHandler(getPersona));
 router.put('/persona', validate({ body: updatePersonaSchema }), asyncHandler(putPersona));
+// Playground: testa o prompt gerando uma resposta de exemplo (sem enviar WhatsApp).
+router.post('/persona/preview', validate({ body: previewPersonaSchema }), asyncHandler(previewPersona));
 
 // Status REAL das integrações (banco, Claude, WhatsApp, STT).
 router.get('/status', asyncHandler(getSystemStatus));

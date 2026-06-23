@@ -3,6 +3,9 @@ import { z } from 'zod';
 import { isAgentEnabled, setAgentEnabled, getAiPersona, setAiPersona } from '../db/queries/settings';
 import { DEFAULT_AI_PERSONA } from '../config/persona';
 import { getHealthReport } from '../services/health.service';
+import { previewReply } from '../services/ai.service';
+import { listProducts } from '../db/queries/products';
+import { listScripts } from '../db/queries/messages_scripts';
 import { getTenantWhatsapp, invalidateTenantWhatsapp } from '../services/whatsapp.service';
 import {
   getConnectionByTenant,
@@ -44,6 +47,62 @@ export async function putPersona(req: Request, res: Response): Promise<void> {
   const { prompt } = req.body as z.infer<typeof updatePersonaSchema>;
   const effective = await setAiPersona(req.user!.tenant_id, prompt);
   res.json({ prompt: effective, default: DEFAULT_AI_PERSONA, isDefault: effective === DEFAULT_AI_PERSONA });
+}
+
+export const previewPersonaSchema = z.object({
+  // Texto do prompt sendo editado (opcional: se ausente, usa o salvo).
+  prompt: z.string().max(12000).optional(),
+  message: z.string().trim().min(1, 'Digite uma mensagem de cliente para testar.').max(2000),
+  temperature: z.coerce.number().min(0).max(1.5).optional(),
+  maxTokens: z.coerce.number().int().min(50).max(1200).optional(),
+  history: z
+    .array(
+      z.object({
+        role: z.enum(['user', 'assistant']),
+        content: z.string().trim().min(1).max(4000),
+      }),
+    )
+    .max(20)
+    .optional(),
+});
+
+/**
+ * Playground do prompt: gera uma resposta de EXEMPLO com a persona (salva ou a
+ * que está sendo editada) + catálogo + scripts + a cadeia de IA da empresa, SEM
+ * enviar WhatsApp e SEM salvar nada. Permite testar/ajustar o prompt no próprio app.
+ */
+export async function previewPersona(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const body = req.body as z.infer<typeof previewPersonaSchema>;
+  const systemPrompt = body.prompt !== undefined ? body.prompt : await getAiPersona(tenantId);
+
+  const [products, scripts] = await Promise.all([
+    listProducts(tenantId, true),
+    listScripts(tenantId, true),
+  ]);
+
+  const result = await previewReply(
+    {
+      systemPrompt,
+      storeName: env.STORE_NAME,
+      products,
+      scripts,
+      client: null,
+      userMessage: body.message,
+      history: body.history,
+      temperature: body.temperature,
+      maxTokens: body.maxTokens,
+    },
+    tenantId,
+  );
+
+  res.json({
+    reply: result.reply,
+    providerLabel: result.providerLabel,
+    detail: result.reply
+      ? null
+      : 'A IA não respondeu. Confira se há um provedor ativo e com créditos em Configurações → Inteligência Artificial.',
+  });
 }
 
 /**
