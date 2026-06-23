@@ -102,6 +102,9 @@ export async function dispatchAudio(ctx: DispatchContext, audioId: string): Prom
     type: 'audio',
     content: publicUrl,
     audioId: audio.id,
+    mediaUrl: publicUrl,
+    mediaMime: audio.mime_type ?? 'audio/ogg',
+    transcription: audio.transcription ?? null,
     zapiMessageId: zapiId,
   });
   emitNewMessage(tenantId, ctx.conversation.id, msg);
@@ -162,6 +165,7 @@ export async function dispatchProduct(ctx: DispatchContext, productId: string): 
     type: imageUrls.length > 0 ? 'image' : 'text',
     content: imageUrls[0] ?? caption,
     productId: product.id,
+    mediaUrl: imageUrls.length > 0 ? imageUrls[0] : null,
     zapiMessageId: zapiId,
   });
   emitNewMessage(ctx.conversation.tenant_id, ctx.conversation.id, msg);

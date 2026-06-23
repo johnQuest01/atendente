@@ -11,7 +11,7 @@ export interface User {
 
 export type ConversationStatus = 'open' | 'closed' | 'waiting';
 export type MessageDirection = 'inbound' | 'outbound';
-export type MessageType = 'text' | 'audio' | 'image' | 'document';
+export type MessageType = 'text' | 'audio' | 'image' | 'video' | 'document';
 export type ContentType = 'audio' | 'text' | 'product' | 'claude';
 
 export interface Client {
@@ -58,6 +58,9 @@ export interface MessageLog {
   sent_at: string;
   delivered_at: string | null;
   read_at: string | null;
+  media_url: string | null;
+  media_mime: string | null;
+  transcription: string | null;
 }
 
 export interface Audio {

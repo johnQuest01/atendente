@@ -174,10 +174,14 @@ export interface NormalizedInbound {
   messageId: string | null;
   senderName: string | null;
   fromMe: boolean;
-  /** URL publica do audio recebido (quando o provedor disponibiliza). */
+  /** URL da midia recebida (imagem/video/audio/documento), quando o provedor envia. */
   mediaUrl?: string | null;
-  /** Audio recebido em base64 (ex.: Evolution com base64 ativo). */
+  /** Midia recebida em base64 (ex.: Evolution com base64 ativo). */
   mediaBase64?: string | null;
+  /** Content-type da midia recebida. */
+  mediaMime?: string | null;
+  /** Nome do arquivo (documentos). */
+  fileName?: string | null;
 }
 
 export interface NormalizedStatus {
@@ -229,22 +233,42 @@ function parseZapiInbound(body: Record<string, unknown>): NormalizedInbound | nu
 
   const fromMe = Boolean(body.fromMe);
   const text = body.text as { message?: string } | undefined;
-  const image = body.image as { caption?: string } | undefined;
-  const audio = body.audio as { audioUrl?: string; url?: string } | undefined;
+  const image = body.image as { imageUrl?: string; caption?: string; mimeType?: string } | undefined;
+  const audio = body.audio as { audioUrl?: string; url?: string; mimeType?: string } | undefined;
+  const video = body.video as { videoUrl?: string; caption?: string; mimeType?: string } | undefined;
+  const document = body.document as
+    | { documentUrl?: string; fileName?: string; title?: string; mimeType?: string; caption?: string }
+    | undefined;
 
   let type: MessageType = 'text';
   let content = '';
   let mediaUrl: string | null = null;
+  let mediaMime: string | null = null;
+  let fileName: string | null = null;
   if (text?.message) {
     type = 'text';
     content = text.message;
   } else if (image) {
     type = 'image';
-    content = image.caption ?? '[imagem]';
+    content = image.caption ?? '';
+    mediaUrl = image.imageUrl ?? null;
+    mediaMime = image.mimeType ?? null;
+  } else if (video) {
+    type = 'video';
+    content = video.caption ?? '';
+    mediaUrl = video.videoUrl ?? null;
+    mediaMime = video.mimeType ?? null;
   } else if (audio) {
     type = 'audio';
-    content = '[áudio]';
+    content = '';
     mediaUrl = audio.audioUrl ?? audio.url ?? null;
+    mediaMime = audio.mimeType ?? null;
+  } else if (document) {
+    type = 'document';
+    fileName = document.fileName ?? document.title ?? null;
+    content = document.caption ?? fileName ?? '';
+    mediaUrl = document.documentUrl ?? null;
+    mediaMime = document.mimeType ?? null;
   } else {
     return null;
   }
@@ -257,6 +281,8 @@ function parseZapiInbound(body: Record<string, unknown>): NormalizedInbound | nu
     senderName: (body.senderName as string | undefined) ?? null,
     fromMe,
     mediaUrl,
+    mediaMime,
+    fileName,
   };
 }
 
@@ -271,8 +297,10 @@ function parseEvolutionInbound(body: Record<string, unknown>): NormalizedInbound
     message?: {
       conversation?: string;
       extendedTextMessage?: { text?: string };
-      imageMessage?: { caption?: string };
-      audioMessage?: { url?: string };
+      imageMessage?: { caption?: string; mimetype?: string; url?: string };
+      videoMessage?: { caption?: string; mimetype?: string; url?: string };
+      audioMessage?: { url?: string; mimetype?: string };
+      documentMessage?: { caption?: string; mimetype?: string; fileName?: string; title?: string; url?: string };
       base64?: string;
     };
   };
@@ -283,23 +311,43 @@ function parseEvolutionInbound(body: Record<string, unknown>): NormalizedInbound
   if (remoteJid.endsWith('@g.us')) return null;
 
   const message = data.message ?? {};
+  // A Evolution entrega a midia decriptada em base64 (quando configurada assim);
+  // o url do Baileys e criptografado e em geral nao serve direto.
+  const base64 = data.base64 ?? message.base64 ?? null;
   let type: MessageType = 'text';
   let content = '';
   let mediaUrl: string | null = null;
   let mediaBase64: string | null = null;
+  let mediaMime: string | null = null;
+  let fileName: string | null = null;
   if (message.conversation || message.extendedTextMessage?.text) {
     type = 'text';
     content = message.conversation ?? message.extendedTextMessage?.text ?? '';
   } else if (message.imageMessage) {
     type = 'image';
-    content = message.imageMessage.caption ?? '[imagem]';
+    content = message.imageMessage.caption ?? '';
+    mediaUrl = message.imageMessage.url ?? null;
+    mediaBase64 = base64;
+    mediaMime = message.imageMessage.mimetype ?? null;
+  } else if (message.videoMessage) {
+    type = 'video';
+    content = message.videoMessage.caption ?? '';
+    mediaUrl = message.videoMessage.url ?? null;
+    mediaBase64 = base64;
+    mediaMime = message.videoMessage.mimetype ?? null;
   } else if (message.audioMessage) {
     type = 'audio';
-    content = '[áudio]';
-    // O url do WhatsApp e criptografado; so serve se a Evolution ja entregar
-    // o audio decriptado. Quando configurada com base64, usamos o base64.
+    content = '';
     mediaUrl = message.audioMessage.url ?? null;
-    mediaBase64 = data.base64 ?? message.base64 ?? null;
+    mediaBase64 = base64;
+    mediaMime = message.audioMessage.mimetype ?? null;
+  } else if (message.documentMessage) {
+    type = 'document';
+    fileName = message.documentMessage.fileName ?? message.documentMessage.title ?? null;
+    content = message.documentMessage.caption ?? fileName ?? '';
+    mediaUrl = message.documentMessage.url ?? null;
+    mediaBase64 = base64;
+    mediaMime = message.documentMessage.mimetype ?? null;
   } else {
     return null;
   }
@@ -313,5 +361,7 @@ function parseEvolutionInbound(body: Record<string, unknown>): NormalizedInbound
     fromMe: Boolean(data.key?.fromMe),
     mediaUrl,
     mediaBase64,
+    mediaMime,
+    fileName,
   };
 }

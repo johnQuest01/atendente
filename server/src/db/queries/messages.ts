@@ -9,13 +9,17 @@ export interface InsertMessageInput {
   audioId?: string | null;
   productId?: string | null;
   zapiMessageId?: string | null;
+  mediaUrl?: string | null;
+  mediaMime?: string | null;
+  transcription?: string | null;
 }
 
 export async function insertMessage(tenantId: string, input: InsertMessageInput): Promise<MessageLog> {
   const { rows } = await query<MessageLog>(
     `INSERT INTO messages_log
-       (tenant_id, conversation_id, direction, type, content, audio_id, product_id, zapi_message_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       (tenant_id, conversation_id, direction, type, content, audio_id, product_id,
+        zapi_message_id, media_url, media_mime, transcription)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING *`,
     [
       tenantId,
@@ -26,6 +30,9 @@ export async function insertMessage(tenantId: string, input: InsertMessageInput)
       input.audioId ?? null,
       input.productId ?? null,
       input.zapiMessageId ?? null,
+      input.mediaUrl ?? null,
+      input.mediaMime ?? null,
+      input.transcription ?? null,
     ],
   );
   return rows[0];

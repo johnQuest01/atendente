@@ -55,12 +55,18 @@ function describeMessage(msg: AiHistoryMessage): string {
     if (msg.direction === 'outbound') {
       return msg.audio_transcription ?? (msg.audio_title ? `[áudio: ${msg.audio_title}]` : '[áudio]');
     }
-    return msg.content && msg.content !== '[áudio]' ? msg.content : '[áudio sem transcrição]';
+    const said = msg.transcription ?? msg.content;
+    return said && said !== '[áudio]' ? said : '[áudio sem transcrição]';
   }
   if (msg.type === 'image') {
     return msg.direction === 'outbound'
       ? `[imagens enviadas${msg.product_name ? ` do produto: ${msg.product_name}` : ''}]`
-      : '[imagem recebida]';
+      : `[imagem recebida${msg.content ? `: ${msg.content}` : ''}]`;
+  }
+  if (msg.type === 'video') {
+    return msg.direction === 'outbound'
+      ? '[vídeo enviado]'
+      : `[vídeo recebido${msg.content ? `: ${msg.content}` : ''}]`;
   }
   return msg.content ?? '[documento]';
 }

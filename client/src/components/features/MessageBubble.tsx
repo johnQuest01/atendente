@@ -22,6 +22,15 @@ export function MessageBubble({
   onToggleSelect,
 }: MessageBubbleProps) {
   const outbound = message.direction === 'outbound';
+  // A mídia vem de media_url (re-hospedada). Para mensagens antigas, ainda
+  // aceitamos uma URL salva no próprio content. Legenda = content que não é URL.
+  const isUrl = (s: string | null): boolean => !!s && /^https?:\/\//i.test(s);
+  const mediaSrc: string | undefined =
+    message.media_url ?? (isUrl(message.content) ? (message.content as string) : undefined);
+  const caption =
+    message.content && message.content !== message.media_url && !isUrl(message.content)
+      ? message.content
+      : null;
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressedRef = useRef(false);
 
@@ -80,21 +89,62 @@ export function MessageBubble({
           selected && 'ring-2 ring-primary',
         )}
       >
-        {message.type === 'audio' && message.content && (
-          <AudioPlayer src={message.content} variant={outbound ? 'dark' : 'light'} className="w-56" />
+        {message.type === 'audio' &&
+          (mediaSrc ? (
+            <AudioPlayer src={mediaSrc} variant={outbound ? 'dark' : 'light'} className="w-56" />
+          ) : (
+            <p className="text-[13px] italic opacity-80">🎙️ Áudio</p>
+          ))}
+        {message.type === 'audio' && message.transcription && (
+          <p
+            className={cn(
+              'mt-1 whitespace-pre-wrap break-words text-[13px] leading-snug',
+              outbound ? 'text-white/80' : 'text-text-secondary',
+            )}
+          >
+            {message.transcription}
+          </p>
         )}
 
-        {message.type === 'image' && message.content && (
+        {message.type === 'image' && mediaSrc && (
           <img
-            src={message.content}
-            alt="Imagem enviada"
+            src={mediaSrc}
+            alt={caption ?? 'Imagem'}
             className="max-h-64 w-full rounded-xl object-cover"
             loading="lazy"
             draggable={false}
           />
         )}
 
-        {(message.type === 'text' || message.type === 'document') && (
+        {message.type === 'video' && mediaSrc && (
+          <video src={mediaSrc} controls preload="metadata" className="max-h-72 w-full rounded-xl" />
+        )}
+
+        {message.type === 'document' &&
+          (mediaSrc ? (
+            <a
+              href={mediaSrc}
+              target="_blank"
+              rel="noreferrer"
+              className={cn(
+                'flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-medium underline-offset-2 hover:underline',
+                outbound ? 'bg-white/15 text-white' : 'bg-primary-light text-primary',
+              )}
+            >
+              <span aria-hidden>📎</span>
+              <span className="max-w-[12rem] truncate">{caption ?? 'Abrir documento'}</span>
+            </a>
+          ) : (
+            <p className="whitespace-pre-wrap break-words text-[15px] leading-snug">
+              {message.content ?? '📎 Documento'}
+            </p>
+          ))}
+
+        {(message.type === 'image' || message.type === 'video') && caption && (
+          <p className="mt-1 whitespace-pre-wrap break-words text-[15px] leading-snug">{caption}</p>
+        )}
+
+        {message.type === 'text' && (
           <p className="whitespace-pre-wrap break-words text-[15px] leading-snug">{message.content}</p>
         )}
 

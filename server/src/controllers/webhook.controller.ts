@@ -21,6 +21,7 @@ import {
   transcribeAudioFromBase64,
   transcribeAudioFromUrl,
 } from '../services/transcription.service';
+import { persistInboundMedia } from '../services/inbound-media.service';
 import type { AiHistoryMessage, Client } from '../types';
 import {
   dispatchAudio,
@@ -154,12 +155,38 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
     }
   }
 
+  // Re-hospeda a mídia recebida (imagem/vídeo/áudio/documento) numa URL pública
+  // ESTÁVEL, para que apareça/toque no painel mesmo após a URL temporária da
+  // Z-API expirar. Best-effort: nunca derruba o fluxo se a cópia falhar.
+  let mediaUrl: string | null = null;
+  let mediaMime: string | null = inbound.mediaMime ?? null;
+  if (inbound.type !== 'text' && (inbound.mediaUrl || inbound.mediaBase64)) {
+    const stored = await persistInboundMedia(tenantId, {
+      type: inbound.type,
+      url: inbound.mediaUrl,
+      base64: inbound.mediaBase64,
+      mime: inbound.mediaMime,
+    }).catch((err) => {
+      logger.warn('Falha ao re-hospedar mídia recebida', err);
+      return null;
+    });
+    if (stored) {
+      mediaUrl = stored.url;
+      mediaMime = stored.mime;
+    }
+  }
+
+  const isAudio = inbound.type === 'audio';
   const inboundMsg = await insertMessage(tenantId, {
     conversationId: conversation.id,
     direction: 'inbound',
     type: inbound.type,
-    // Para áudio, guardamos a transcrição como conteúdo (cai no histórico da IA).
-    content: transcription ?? inbound.text,
+    // Áudio: a transcrição vira o "texto" (cai no histórico da IA). Demais
+    // mídias: a legenda (se houver). Texto puro: a própria mensagem.
+    content: isAudio ? transcription : inbound.text || null,
+    mediaUrl,
+    mediaMime,
+    transcription: isAudio ? transcription : null,
     zapiMessageId: inbound.messageId,
   });
   emitNewMessage(tenantId, conversation.id, inboundMsg);

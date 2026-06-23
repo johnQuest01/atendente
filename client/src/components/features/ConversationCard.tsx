@@ -7,6 +7,7 @@ import { cn } from '@/utils/cn';
 const previewByType: Record<string, string> = {
   audio: '🎙️ Áudio',
   image: '🖼️ Imagem',
+  video: '🎬 Vídeo',
   document: '📎 Documento',
 };
 

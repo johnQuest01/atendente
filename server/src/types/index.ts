@@ -39,7 +39,7 @@ export interface Conversation {
 }
 
 export type MessageDirection = 'inbound' | 'outbound';
-export type MessageType = 'text' | 'audio' | 'image' | 'document';
+export type MessageType = 'text' | 'audio' | 'image' | 'video' | 'document';
 
 export interface MessageLog {
   id: string;
@@ -53,6 +53,12 @@ export interface MessageLog {
   sent_at: string;
   delivered_at: string | null;
   read_at: string | null;
+  /** URL pública estável da mídia re-hospedada (imagem/vídeo/áudio/documento). */
+  media_url: string | null;
+  /** Content-type da mídia (define como o painel renderiza/baixa). */
+  media_mime: string | null;
+  /** Transcrição do áudio (quando houver), separada do "content". */
+  transcription: string | null;
 }
 
 /** Mensagem do histórico enriquecida com dados para o contexto da IA. */
