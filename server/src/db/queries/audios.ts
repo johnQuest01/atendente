@@ -45,13 +45,11 @@ export async function getAudioById(tenantId: string, id: string): Promise<Audio 
 
 /**
  * Retorna os bytes do áudio (para servir em /media/audios/:id).
- * Quando `tenantId` é informado (token assinado na URL), filtra por empresa —
- * impedindo que um id de outra empresa seja buscado. Sem tenant (URL legada
- * sem token), mantém o comportamento antigo por compatibilidade.
+ * Com tenant (token): filtra por empresa. Sem tenant: só no fallback legado.
  */
 export async function getAudioBinary(
   id: string,
-  tenantId?: string | null,
+  tenantId: string | null,
 ): Promise<{ data: Buffer; mime: string } | null> {
   const row = tenantId
     ? await queryOne<{ file_data: Buffer | null; mime_type: string | null }>(

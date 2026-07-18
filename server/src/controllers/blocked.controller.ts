@@ -25,6 +25,13 @@ export const unlockSchema = z.object({
  */
 export async function unlockBlocked(req: Request, res: Response): Promise<void> {
   const { email, password } = req.body as z.infer<typeof unlockSchema>;
+  if (!env.BLOCK_ADMIN_EMAIL || !env.BLOCK_ADMIN_PASSWORD_HASH) {
+    throw new AppError(
+      'Cadeado não configurado no servidor (BLOCK_ADMIN_EMAIL / BLOCK_ADMIN_PASSWORD_HASH).',
+      503,
+      'MISCONFIGURED',
+    );
+  }
   const emailOk = email.trim().toLowerCase() === env.BLOCK_ADMIN_EMAIL.toLowerCase();
   const passOk = emailOk && (await verifyPassword(password, env.BLOCK_ADMIN_PASSWORD_HASH));
   if (!emailOk || !passOk) {

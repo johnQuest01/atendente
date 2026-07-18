@@ -11,6 +11,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "migrate": "tsx src/db/migrate.ts",
     "seed": "tsx src/db/seed.ts",
+    "hash-password": "tsx scripts/hash-password.ts",
+    "backfill-media-tokens": "tsx scripts/backfill-media-tokens.ts",
     "test:ia": "powershell -ExecutionPolicy Bypass -File scripts/test-ia.ps1",
     "test:audio": "powershell -ExecutionPolicy Bypass -File scripts/test-audio-e2e.ps1",
     "test:audio-in": "powershell -ExecutionPolicy Bypass -File scripts/test-audio-inbound.ps1",

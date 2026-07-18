@@ -20,13 +20,11 @@ export async function insertMediaFile(tenantId: string, input: InsertMediaFileIn
 
 /**
  * Lê os bytes de um arquivo de mídia (para servir em /media/files/:id).
- * Quando `tenantId` é informado (token assinado na URL), filtra por empresa —
- * impedindo acesso cruzado entre empresas por um id conhecido. Sem tenant (URL
- * legada sem token), mantém o comportamento antigo por compatibilidade.
+ * Com tenant (token): filtra por empresa. Sem tenant: só no fallback legado.
  */
 export async function getMediaFile(
   id: string,
-  tenantId?: string | null,
+  tenantId: string | null,
 ): Promise<{ data: Buffer; mime: string } | null> {
   const row = tenantId
     ? await queryOne<{ data: Buffer | null; mime: string | null }>(

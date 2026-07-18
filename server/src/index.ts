@@ -91,20 +91,26 @@ async function start(): Promise<void> {
   });
 }
 
-// Hash bcrypt da senha PADRÃO do cadeado que vem no repo (default do env).
-const DEFAULT_BLOCK_HASH = '$2a$10$X/0XnEKy4lQJcXLekNfKkerJ/4JRV270j9o29pbCelukNE8751U2i';
-
 /** Avisa (sem derrubar) sobre configurações inseguras em produção. */
 function warnInsecureProductionConfig(): void {
   if (!env.isProd) return;
   if (env.SEED_ADMIN_PASSWORD === 'mudar123') {
     logger.warn('SEGURANÇA: SEED_ADMIN_PASSWORD está no padrão "mudar123". Defina uma senha forte no Render.');
   }
-  if (env.BLOCK_ADMIN_PASSWORD_HASH === DEFAULT_BLOCK_HASH) {
-    logger.warn('SEGURANÇA: senha do cadeado no padrão do repositório. Gere um novo hash (BLOCK_ADMIN_PASSWORD_HASH).');
+  if (!env.BLOCK_ADMIN_EMAIL || !env.BLOCK_ADMIN_PASSWORD_HASH) {
+    logger.warn(
+      'SEGURANÇA: BLOCK_ADMIN_EMAIL / BLOCK_ADMIN_PASSWORD_HASH não configurados. /blocked/unlock retornará 503.',
+    );
   }
   if (!env.WEBHOOK_VERIFY_TOKEN) {
-    logger.warn('SEGURANÇA: WEBHOOK_VERIFY_TOKEN ausente. Defina um token e configure a mesma URL com ?token= na Z-API.');
+    logger.warn(
+      'SEGURANÇA: WEBHOOK_VERIFY_TOKEN ausente. Em produção a rota legada /webhook/whatsapp será recusada — use /webhook/whatsapp/:webhookToken.',
+    );
+  }
+  if (env.MEDIA_LEGACY_FALLBACK) {
+    logger.warn(
+      'SEGURANÇA: MEDIA_LEGACY_FALLBACK=true. Após npm run backfill-media-tokens, defina MEDIA_LEGACY_FALLBACK=false.',
+    );
   }
 }
 

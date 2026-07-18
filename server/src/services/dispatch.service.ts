@@ -6,6 +6,7 @@ import { getProductById } from '../db/queries/products';
 import { insertMessage } from '../db/queries/messages';
 import { emitNewMessage } from '../socket';
 import { renderTemplate, formatBRL } from '../utils/text';
+import { signMediaToken } from '../utils/media-token';
 import * as whatsapp from './whatsapp.service';
 import type { Audio, Client, Conversation, MessageLog } from '../types';
 
@@ -42,9 +43,12 @@ function toCurrentPublicUrl(fileUrl: string): string {
 }
 
 /** URL pública estável usada para enviar/tocar o áudio. */
-function audioPublicUrl(audio: Audio): string {
-  // 1) Blob no banco (dev/legado): rota estável /media servida do banco.
-  if (audio.has_file_data) return `${env.PUBLIC_BASE_URL}/media/audios/${audio.id}.ogg`;
+function audioPublicUrl(audio: Audio, tenantId: string): string {
+  // 1) Blob no banco (dev/legado): rota estável /media com token de tenant.
+  if (audio.has_file_data) {
+    const token = signMediaToken(tenantId, audio.id);
+    return `${env.PUBLIC_BASE_URL}/media/audios/${audio.id}.ogg?t=${token}`;
+  }
   // 2) URL externa (R2/CDN): permanente, independe do backend — usa direto.
   if (isExternalUrl(audio.file_url)) return audio.file_url;
   // 3) Legado servido pelo backend: corrige o host atual.
@@ -79,7 +83,7 @@ export async function dispatchAudio(ctx: DispatchContext, audioId: string): Prom
     return null;
   }
 
-  const publicUrl = audioPublicUrl(audio);
+  const publicUrl = audioPublicUrl(audio, tenantId);
 
   const wa = await whatsapp.getTenantWhatsapp(tenantId);
   let zapiId: string | null;

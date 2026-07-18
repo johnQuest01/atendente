@@ -26,7 +26,7 @@ export function signMediaToken(tenantId: string, id: string): string {
 
 /**
  * Verifica o token para um `id`. Retorna o tenant_id assinado (para filtrar a
- * consulta) ou null se ausente/ inválido (caller decide o fallback legado).
+ * consulta) ou null se ausente/inválido — sem fallback sem tenant.
  */
 export function verifyMediaToken(id: string, token: string | undefined | null): string | null {
   if (!token) return null;

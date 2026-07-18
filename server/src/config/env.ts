@@ -90,12 +90,21 @@ const envSchema = z.object({
   SEED_ADMIN_EMAIL: z.string().email().default('mayra@loja.com'),
   SEED_ADMIN_PASSWORD: z.string().min(6).default('mudar123'),
 
-  // Acesso restrito à área de "Números bloqueados". A senha NUNCA é guardada em
-  // texto puro: comparamos com um hash bcrypt (seguro mesmo em repo público).
-  BLOCK_ADMIN_EMAIL: z.string().default('bruno@adminalfa.com'),
-  BLOCK_ADMIN_PASSWORD_HASH: z
-    .string()
-    .default('$2a$10$X/0XnEKy4lQJcXLekNfKkerJ/4JRV270j9o29pbCelukNE8751U2i'),
+  // Acesso restrito à área de "Números bloqueados". Sem default no código —
+  // se ausentes, /blocked/unlock responde 503 (o boot do servidor segue).
+  BLOCK_ADMIN_EMAIL: z.string().email().optional(),
+  BLOCK_ADMIN_PASSWORD_HASH: z.string().min(20).optional(),
+
+  // SSRF: sufixos de host permitidos no download de mídia inbound (vírgula).
+  // Vazio/ausente → só as regras de IP privado valem.
+  MEDIA_FETCH_ALLOWLIST: z.string().optional(),
+
+  // /media sem ?t= válido: true = fallback legado (compat); false = 404.
+  // Desligar só depois do backfill (npm run backfill-media-tokens).
+  MEDIA_LEGACY_FALLBACK: booleanish(true),
+
+  // Pausa da IA após intervenção humana (fromMe genuíno), em minutos.
+  HUMAN_TAKEOVER_MINUTES: z.coerce.number().int().positive().default(30),
 
   DB_POOL_MAX: z.coerce.number().int().positive().default(10),
   DB_SSL: booleanish(true),

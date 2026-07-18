@@ -1,4 +1,6 @@
 import type { Request, Response } from 'express';
+import { env } from '../config/env';
+import { runWithTenant } from '../db';
 import { getAudioBinary } from '../db/queries/audios';
 import { getMediaFile } from '../db/queries/media_files';
 import { verifyMediaToken } from '../utils/media-token';
@@ -13,16 +15,20 @@ function tokenFromReq(req: Request): string | undefined {
 
 /**
  * Serve o áudio guardado no banco (Neon) como arquivo binário.
- * Rota PÚBLICA (sem auth) porque a Z-API precisa baixar a mídia para enviar
- * ao cliente no WhatsApp. Aceita o id com ou sem extensão (ex.: ".ogg").
- * Com token assinado (?t=), a busca é escopada por empresa (BUG 2).
+ * Rota pública (Z-API precisa baixar). Com ?t= válido, escopa por tenant + RLS.
+ * Sem token: só se MEDIA_LEGACY_FALLBACK=true (compat até o backfill).
  */
 export async function getAudioMedia(req: Request, res: Response): Promise<void> {
   const id = (req.params.id ?? '').replace(/\.[a-zA-Z0-9]+$/, '');
   if (!UUID_RE.test(id)) throw new NotFoundError('Áudio');
 
   const tenantId = verifyMediaToken(id, tokenFromReq(req));
-  const bin = await getAudioBinary(id, tenantId);
+  if (!tenantId && !env.MEDIA_LEGACY_FALLBACK) throw new NotFoundError('Áudio');
+
+  const bin = tenantId
+    ? await runWithTenant(tenantId, () => getAudioBinary(id, tenantId))
+    : await getAudioBinary(id, null);
+
   if (!bin) throw new NotFoundError('Áudio');
 
   res.setHeader('Content-Type', bin.mime || 'audio/ogg');
@@ -32,16 +38,19 @@ export async function getAudioMedia(req: Request, res: Response): Promise<void> 
 }
 
 /**
- * Serve um arquivo de mídia genérico (ex.: imagens de produto) guardado no
- * banco. Rota PÚBLICA porque a Z-API precisa baixar a imagem para enviar.
- * Com token assinado (?t=), a busca é escopada por empresa (BUG 2).
+ * Serve arquivo de mídia genérico. Mesma regra de token / fallback legado.
  */
 export async function getFileMedia(req: Request, res: Response): Promise<void> {
   const id = (req.params.id ?? '').replace(/\.[a-zA-Z0-9]+$/, '');
   if (!UUID_RE.test(id)) throw new NotFoundError('Arquivo');
 
   const tenantId = verifyMediaToken(id, tokenFromReq(req));
-  const file = await getMediaFile(id, tenantId);
+  if (!tenantId && !env.MEDIA_LEGACY_FALLBACK) throw new NotFoundError('Arquivo');
+
+  const file = tenantId
+    ? await runWithTenant(tenantId, () => getMediaFile(id, tenantId))
+    : await getMediaFile(id, null);
+
   if (!file) throw new NotFoundError('Arquivo');
 
   res.setHeader('Content-Type', file.mime || 'application/octet-stream');

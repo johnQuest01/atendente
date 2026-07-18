@@ -7,14 +7,37 @@ const SOCKET_URL = import.meta.env.VITE_API_URL ?? '';
 let sharedSocket: Socket | null = null;
 
 function getSocket(): Socket {
+  const token = getToken() ?? undefined;
   if (!sharedSocket) {
     sharedSocket = io(SOCKET_URL, {
-      autoConnect: true,
-      auth: { token: getToken() ?? undefined },
+      autoConnect: Boolean(token),
+      auth: { token },
       transports: ['websocket', 'polling'],
     });
+  } else {
+    sharedSocket.auth = { token };
+    if (token && !sharedSocket.connected) sharedSocket.connect();
   }
   return sharedSocket;
+}
+
+/**
+ * Após login/logout: reautentica o handshake. Desconecta e reconecta com o
+ * token atual — evita socket anônimo ou com JWT antigo.
+ */
+export function reauthSocket(): void {
+  const token = getToken() ?? undefined;
+  if (!sharedSocket) {
+    if (token) getSocket();
+    return;
+  }
+  sharedSocket.auth = { token };
+  if (sharedSocket.connected) {
+    sharedSocket.disconnect();
+  }
+  if (token) {
+    sharedSocket.connect();
+  }
 }
 
 /**
@@ -24,12 +47,14 @@ function getSocket(): Socket {
 type SocketHandler = (...args: unknown[]) => void;
 
 export function useSocket(handlers: Record<string, SocketHandler>): Socket {
-  const socketRef = useRef<Socket>(getSocket());
+  const socketRef = useRef(getSocket());
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
 
   useEffect(() => {
     const socket = socketRef.current;
+    // Garante token atual (ex.: página aberta após login em outra aba).
+    reauthSocket();
     const entries = Object.keys(handlersRef.current);
 
     const wrapped: Record<string, SocketHandler> = {};

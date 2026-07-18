@@ -8,13 +8,21 @@ import {
   findOpenConversationByClient,
   findOrCreateOpenConversation,
   getRecentMessagesForAI,
+  isHumanPaused,
+  setHumanPausedUntil,
 } from '../db/queries/conversations';
 import { listProducts } from '../db/queries/products';
 import { listScripts } from '../db/queries/messages_scripts';
-import { insertMessage, markDelivered, markRead, inboundMessageExists } from '../db/queries/messages';
+import {
+  insertMessage,
+  markDelivered,
+  markRead,
+  inboundMessageExists,
+  providerMessageExists,
+} from '../db/queries/messages';
 import { isAgentEnabled, getAiPersona } from '../db/queries/settings';
 import { isPhoneBlocked } from '../db/queries/blocked';
-import { emitNewMessage, emitNewConversation } from '../socket';
+import { emitNewMessage, emitNewConversation, emitConversationUpdated } from '../socket';
 import { matchIntent, getTriggerPhrases } from '../services/matcher.service';
 import { extractClientInfo, generateReply, hasVisionProvider, isAiConfigured } from '../services/ai.service';
 import { extractVideoFrames } from '../services/ai/video-frames';
@@ -65,8 +73,21 @@ export async function handleWhatsappWebhook(req: Request, res: Response): Promis
     tenantId = conn.tenant_id;
     provider = conn.provider;
   } else {
-    // Rota legada (sem token): tenant padrão + provedor do .env, protegida pelo
-    // WEBHOOK_VERIFY_TOKEN se configurado.
+    // Rota legada (sem :webhookToken): tenant padrão + provedor do .env.
+    // Em produção: WEBHOOK_VERIFY_TOKEN obrigatório. Prefira /webhook/whatsapp/:webhookToken.
+    if (env.isProd && !env.WEBHOOK_VERIFY_TOKEN) {
+      logger.warn(
+        'Rota legada /webhook/whatsapp recusada: WEBHOOK_VERIFY_TOKEN ausente. Migre para /webhook/whatsapp/:webhookToken.',
+      );
+      res.status(403).json({
+        error: {
+          code: 'FORBIDDEN',
+          message:
+            'Webhook legado sem WEBHOOK_VERIFY_TOKEN. Configure a env ou use /webhook/whatsapp/:webhookToken.',
+        },
+      });
+      return;
+    }
     if (env.WEBHOOK_VERIFY_TOKEN) {
       const token = (req.query.token as string) ?? req.headers['x-webhook-token'];
       if (token !== env.WEBHOOK_VERIFY_TOKEN) {
@@ -95,12 +116,6 @@ export async function handleWhatsappWebhook(req: Request, res: Response): Promis
     return;
   }
 
-  // Ignora mensagens enviadas pela própria conta.
-  if (inbound.fromMe) {
-    res.status(200).json({ ok: true, ignored: 'fromMe' });
-    return;
-  }
-
   // Número bloqueado: ignora totalmente (não salva, não responde, não exibe).
   if (await isPhoneBlocked(tenantId, inbound.phone)) {
     logger.info(`Mensagem de número bloqueado ignorada: ${inbound.phone}`);
@@ -111,18 +126,68 @@ export async function handleWhatsappWebhook(req: Request, res: Response): Promis
   // Responde rápido ao provedor; processa o resto de forma assíncrona.
   res.status(200).json({ ok: true });
 
+  // fromMe: eco do bot (já temos o id) vs digitação humana no celular.
+  if (inbound.fromMe) {
+    void runWithTenant(tenantId, () => processFromMe(tenantId, inbound)).catch((err) => {
+      logger.error('Erro ao processar mensagem fromMe', err);
+    });
+    return;
+  }
+
   // Processamento no escopo do tenant resolvido (ativa o RLS — BUG 1).
   void runWithTenant(tenantId, () => processInbound(tenantId, inbound)).catch((err) => {
     logger.error('Erro ao processar mensagem inbound', err);
   });
 }
 
+/**
+ * Mensagem enviada pelo próprio número (fromMe).
+ * - Se o id já está em messages_log (outbound da automação), ignora o eco.
+ * - Caso contrário, é operador humano no celular: persiste e pausa a IA
+ *   nesta conversa (status waiting) para não atropelar o atendimento.
+ */
+async function processFromMe(tenantId: string, inbound: NormalizedInbound): Promise<void> {
+  if (inbound.providerMessageId && (await providerMessageExists(tenantId, inbound.providerMessageId))) {
+    logger.info(`fromMe ignorado (já registrado pela automação): ${inbound.providerMessageId}`);
+    return;
+  }
+
+  const client = await findOrCreateClient(tenantId, inbound.phone, inbound.senderName);
+  const existing = await findOpenConversationByClient(tenantId, client.id);
+  const conversation = existing ?? (await findOrCreateOpenConversation(tenantId, client.id));
+  if (!existing) emitNewConversation(tenantId, conversation);
+
+  const content =
+    inbound.type === 'text'
+      ? inbound.text || null
+      : inbound.text || `[${inbound.type} enviado pelo operador]`;
+
+  const outboundMsg = await insertMessage(tenantId, {
+    conversationId: conversation.id,
+    direction: 'outbound',
+    type: inbound.type,
+    content,
+    mediaUrl: inbound.mediaUrl ?? null,
+    mediaMime: inbound.mediaMime ?? null,
+    zapiMessageId: inbound.providerMessageId,
+    origin: 'human',
+  });
+  emitNewMessage(tenantId, conversation.id, outboundMsg);
+
+  const until = new Date(Date.now() + env.HUMAN_TAKEOVER_MINUTES * 60_000);
+  const updated = await setHumanPausedUntil(tenantId, conversation.id, until);
+  if (updated) emitConversationUpdated(tenantId, updated);
+  logger.info(
+    `fromMe humano registrado — IA pausada ${env.HUMAN_TAKEOVER_MINUTES}min na conversa ${conversation.id}`,
+  );
+}
+
 async function processInbound(tenantId: string, inbound: NormalizedInbound): Promise<void> {
   // Idempotência: a Z-API pode reenviar o mesmo webhook (retries). Se já
   // registramos esta mensagem, não processamos de novo (evita resposta
   // automática duplicada e custo desnecessário de IA).
-  if (inbound.messageId && (await inboundMessageExists(tenantId, inbound.messageId))) {
-    logger.info(`Mensagem duplicada ignorada (já processada): ${inbound.messageId}`);
+  if (inbound.providerMessageId && (await inboundMessageExists(tenantId, inbound.providerMessageId))) {
+    logger.info(`Mensagem duplicada ignorada (já processada): ${inbound.providerMessageId}`);
     return;
   }
 
@@ -132,16 +197,17 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
   const conversation = existing ?? (await findOrCreateOpenConversation(tenantId, client.id));
   if (!existing) emitNewConversation(tenantId, conversation);
 
-  // Lê o flag global (com cache): se o atendente de IA estiver desligado, um
-  // humano vai responder — então NÃO chamamos Claude/Z-API para responder.
+  // Flag global + pausa por intervenção humana (janela human_paused_until).
   const agentEnabled = await isAgentEnabled(tenantId);
+  const humanTakeover = isHumanPaused(conversation);
+  const autoReply = agentEnabled && !humanTakeover;
 
   // Tique azul IMEDIATO: assim que a IA "vê" a mensagem, marcamos como lida —
   // sem esperar transcrição nem geração de resposta. Best-effort, não bloqueia.
   // (Só quando o agente está ligado; desligado, quem "lê" é o humano.)
-  if (agentEnabled && inbound.messageId) {
+  if (autoReply && inbound.providerMessageId) {
     const wa = await getTenantWhatsapp(tenantId);
-    void wa.markAsRead(inbound.phone, inbound.messageId).catch((err) =>
+    void wa.markAsRead(inbound.phone, inbound.providerMessageId).catch((err) =>
       logger.warn('Falha ao marcar mensagem como lida (tique azul)', err),
     );
   }
@@ -189,14 +255,18 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
     mediaUrl,
     mediaMime,
     transcription: isAudio ? transcription : null,
-    zapiMessageId: inbound.messageId,
+    zapiMessageId: inbound.providerMessageId,
+    origin: 'client',
   });
   emitNewMessage(tenantId, conversation.id, inboundMsg);
 
-  // Agente desligado: mensagem registrada e exibida no painel, sem resposta
-  // automática e sem tique azul (o humano decide quando ler/responder).
-  if (!agentEnabled) {
-    logger.info('Atendente de IA desligado — mensagem registrada, sem resposta automática.');
+  // Agente desligado ou conversa assumida por humano: registra sem auto-resposta.
+  if (!autoReply) {
+    logger.info(
+      humanTakeover
+        ? 'Conversa em waiting (humano) — mensagem registrada, sem resposta automática.'
+        : 'Atendente de IA desligado — mensagem registrada, sem resposta automática.',
+    );
     return;
   }
 

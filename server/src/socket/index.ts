@@ -27,11 +27,11 @@ export function initSocket(httpServer: HttpServer): SocketIOServer {
     cors: { origin: corsOrigin, credentials: true },
   });
 
-  // Autenticação opcional via token no handshake.
+  // Autenticação OBRIGATÓRIA via token no handshake.
   io.use((socket, next) => {
     const token = socket.handshake.auth?.token as string | undefined;
     if (!token) {
-      next();
+      next(new Error('unauthorized'));
       return;
     }
     try {
@@ -48,20 +48,17 @@ export function initSocket(httpServer: HttpServer): SocketIOServer {
     logger.debug(`Socket conectado: ${socket.id}`);
 
     // Isolamento por empresa: o painel só recebe eventos do PRÓPRIO tenant.
-    const user = socket.data.user as JwtPayload | undefined;
-    if (user?.tenant_id) socket.join(tenantRoom(user.tenant_id));
+    const user = socket.data.user as JwtPayload;
+    socket.join(tenantRoom(user.tenant_id));
 
     socket.on('conversation:join', async (conversationId: string) => {
       if (typeof conversationId !== 'string') return;
-      // Só entra na sala da conversa se ela pertencer ao tenant do usuário
-      // (impede um painel de "escutar" conversas de outra empresa).
-      if (user?.tenant_id) {
-        const owns = await queryOne<{ id: string }>(
-          'SELECT id FROM conversations WHERE id = $1 AND tenant_id = $2',
-          [conversationId, user.tenant_id],
-        ).catch(() => null);
-        if (!owns) return;
-      }
+      // Sempre exige posse: conversa tem que pertencer ao tenant do usuário.
+      const owns = await queryOne<{ id: string }>(
+        'SELECT id FROM conversations WHERE id = $1 AND tenant_id = $2',
+        [conversationId, user.tenant_id],
+      ).catch(() => null);
+      if (!owns) return;
       socket.join(`conversation:${conversationId}`);
     });
     socket.on('conversation:leave', (conversationId: string) => {

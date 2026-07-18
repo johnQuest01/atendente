@@ -71,9 +71,23 @@ services:
         sync: false
       - key: ZAPI_CLIENT_TOKEN
         sync: false
-      # Token opcional para validar o webhook (defina o mesmo no painel do Z-API).
+      # Token para validar o webhook legado (obrigatório em produção na rota sem :token).
       - key: WEBHOOK_VERIFY_TOKEN
         sync: false
+      # Cadeado da área "Números bloqueados" (e-mail + hash bcrypt — sem default no código).
+      - key: BLOCK_ADMIN_EMAIL
+        sync: false
+      - key: BLOCK_ADMIN_PASSWORD_HASH
+        sync: false
+      # /media sem ?t=: true até rodar backfill-media-tokens; depois false.
+      - key: MEDIA_LEGACY_FALLBACK
+        value: "true"
+      # Allowlist opcional de hosts no download de mídia inbound.
+      - key: MEDIA_FETCH_ALLOWLIST
+        sync: false
+      # Minutos de pausa da IA após intervenção humana no celular.
+      - key: HUMAN_TAKEOVER_MINUTES
+        value: "30"
       # Transcrição de áudio (Groq Whisper, compatível com OpenAI)
       - key: STT_PROVIDER
         value: openai

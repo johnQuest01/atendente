@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { api, getErrorMessage, getToken, setToken } from '@/services/api';
 import { useAuthStore } from '@/store/authStore';
 import { toast } from '@/store/appStore';
+import { reauthSocket } from '@/hooks/useSocket';
 import type { User } from '@/types';
 
 interface LoginResponse {
@@ -16,11 +17,17 @@ export function useAuth() {
     try {
       const { data } = await api.post<LoginResponse>('/auth/login', { email, password });
       setAuth(data.user, data.token);
+      reauthSocket();
       return true;
     } catch (err) {
       toast(getErrorMessage(err, 'Não foi possível entrar.'), 'error');
       return false;
     }
+  }
+
+  function logoutAndDisconnect(): void {
+    logout();
+    reauthSocket();
   }
 
   return {
@@ -29,7 +36,7 @@ export function useAuth() {
     isInitialized,
     isAuthenticated: Boolean(token),
     login,
-    logout,
+    logout: logoutAndDisconnect,
     setUser,
     setInitialized,
   };
