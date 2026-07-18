@@ -7,6 +7,8 @@ export interface PersonaData {
   prompt: string;
   default: string;
   isDefault: boolean;
+  temperature: number;
+  maxTokens: number;
 }
 
 export function usePersona() {
@@ -22,8 +24,8 @@ export function usePersona() {
 export function useSetPersona() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (prompt: string) => {
-      const { data } = await api.put<PersonaData>('/settings/persona', { prompt });
+    mutationFn: async (input: { prompt: string; temperature: number; maxTokens?: number }) => {
+      const { data } = await api.put<PersonaData>('/settings/persona', input);
       return data;
     },
     onSuccess: (data) => qc.setQueryData(PERSONA_QUERY_KEY, data),

@@ -1,6 +1,12 @@
 import { validateKeyAndModel } from '../model-catalog';
 import { fetchImageBase64, modelSupportsVision } from '../vision';
-import { classifyHttpError, classifyNetworkError, type AiAdapter, type ChatMessage } from '../types';
+import {
+  classifyHttpError,
+  classifyNetworkError,
+  isTruncatedFinishReason,
+  type AiAdapter,
+  type ChatMessage,
+} from '../types';
 
 /**
  * Adaptador do Google Gemini (Generative Language API). Tem cota gratuita
@@ -11,7 +17,10 @@ import { classifyHttpError, classifyNetworkError, type AiAdapter, type ChatMessa
 const DEFAULT_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 interface GeminiResponse {
-  candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  candidates?: Array<{
+    content?: { parts?: Array<{ text?: string }> };
+    finishReason?: string;
+  }>;
 }
 
 type GeminiPart = { text: string } | { inline_data: { mime_type: string; data: string } };
@@ -61,11 +70,17 @@ export const geminiAdapter: AiAdapter = {
       throw classifyHttpError(res.status, body);
     }
     const data = (await res.json()) as GeminiResponse;
-    const text = (data.candidates?.[0]?.content?.parts ?? [])
+    const candidate = data.candidates?.[0];
+    const text = (candidate?.content?.parts ?? [])
       .map((p) => p.text ?? '')
       .join('')
       .trim();
-    return text;
+    const finishReason = candidate?.finishReason ?? null;
+    return {
+      text,
+      finishReason,
+      truncated: isTruncatedFinishReason(finishReason),
+    };
   },
 
   // Valida a chave E confere se o modelo existe (via catalogo /models).

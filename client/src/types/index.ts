@@ -34,6 +34,8 @@ export interface Conversation {
   started_at: string;
   closed_at: string | null;
   metadata: Record<string, unknown>;
+  /** Até quando a IA fica pausada após o operador responder no celular. */
+  human_paused_until?: string | null;
 }
 
 export interface ConversationListItem extends Conversation {
@@ -61,6 +63,7 @@ export interface MessageLog {
   media_url: string | null;
   media_mime: string | null;
   transcription: string | null;
+  origin?: 'client' | 'ai' | 'human' | 'system';
 }
 
 export interface Audio {

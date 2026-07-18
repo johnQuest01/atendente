@@ -1,6 +1,12 @@
 import { validateKeyAndModel } from '../model-catalog';
 import { isPublicHttpUrl, modelSupportsVision, toDataUrl } from '../vision';
-import { classifyHttpError, classifyNetworkError, type AiAdapter, type ChatMessage } from '../types';
+import {
+  classifyHttpError,
+  classifyNetworkError,
+  isTruncatedFinishReason,
+  type AiAdapter,
+  type ChatMessage,
+} from '../types';
 
 /**
  * Adaptador "OpenAI Chat Completions". Cobre OpenAI/ChatGPT e qualquer API
@@ -17,7 +23,7 @@ import { classifyHttpError, classifyNetworkError, type AiAdapter, type ChatMessa
 const DEFAULT_BASE = 'https://api.openai.com/v1';
 
 interface ChatCompletionResponse {
-  choices?: Array<{ message?: { content?: string } }>;
+  choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
 }
 
 type OpenAiPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
@@ -81,7 +87,14 @@ export const openaiAdapter: AiAdapter = {
       throw classifyHttpError(res.status, body);
     }
     const data = (await res.json()) as ChatCompletionResponse;
-    return (data.choices?.[0]?.message?.content ?? '').trim();
+    const choice = data.choices?.[0];
+    const text = (choice?.message?.content ?? '').trim();
+    const finishReason = choice?.finish_reason ?? null;
+    return {
+      text,
+      finishReason,
+      truncated: isTruncatedFinishReason(finishReason),
+    };
   },
 
   // Valida a chave E confere se o modelo existe (via catalogo /models).

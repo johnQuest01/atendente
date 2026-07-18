@@ -59,6 +59,15 @@ export interface AiCompletionRequest {
   temperature: number;
 }
 
+/** Resultado de uma completion, com motivo de parada (truncamento). */
+export interface AiCompletionResult {
+  text: string;
+  /** finish_reason / stop_reason bruto do provedor. */
+  finishReason?: string | null;
+  /** True se a resposta foi cortada por limite de tokens. */
+  truncated?: boolean;
+}
+
 export interface AiKeyCheck {
   ok: boolean;
   detail: string;
@@ -68,9 +77,16 @@ export interface AiKeyCheck {
 export interface AiAdapter {
   kind: AiKind;
   /** Gera a resposta. Em falha, lanca AiProviderError classificado. */
-  complete(req: AiCompletionRequest, creds: AiCredentials): Promise<string>;
+  complete(req: AiCompletionRequest, creds: AiCredentials): Promise<AiCompletionResult>;
   /** Valida a chave/credenciais (para o painel e o health-check), sem gastar tokens quando possivel. */
   validateKey(creds: AiCredentials): Promise<AiKeyCheck>;
+}
+
+/** Interpreta finish_reason comum entre provedores. */
+export function isTruncatedFinishReason(reason: string | null | undefined): boolean {
+  if (!reason) return false;
+  const r = reason.toLowerCase();
+  return r === 'max_tokens' || r === 'length' || r === 'max_output_tokens';
 }
 
 /** Converte uma resposta HTTP de erro num AiProviderError classificado. */

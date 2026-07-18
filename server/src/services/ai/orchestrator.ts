@@ -193,10 +193,13 @@ function clearCooldown(provider: ResolvedProvider): void {
 async function tryProvider(
   provider: ResolvedProvider,
   req: AiCompletionRequest,
-): Promise<{ ok: true; text: string } | { ok: false; err: AiProviderError }> {
+): Promise<
+  | { ok: true; text: string; truncated: boolean }
+  | { ok: false; err: AiProviderError }
+> {
   try {
-    const text = await adapters[provider.kind].complete(req, provider.creds);
-    return { ok: true, text };
+    const result = await adapters[provider.kind].complete(req, provider.creds);
+    return { ok: true, text: result.text, truncated: Boolean(result.truncated) };
   } catch (err) {
     const e =
       err instanceof AiProviderError
@@ -204,6 +207,36 @@ async function tryProvider(
         : new AiProviderError('transient', err instanceof Error ? err.message : String(err));
     return { ok: false, err: e };
   }
+}
+
+const ABSOLUTE_MAX_TOKENS = 1200;
+
+/** Uma retentativa com o dobro do limite se truncou; nunca devolve texto cortado. */
+async function completeAvoidingTruncation(
+  provider: ResolvedProvider,
+  req: AiCompletionRequest,
+): Promise<{ ok: true; text: string } | { ok: false; err: AiProviderError } | { ok: false; truncated: true }> {
+  let current = { ...req };
+  const first = await tryProvider(provider, current);
+  if (!first.ok) return first;
+  if (!first.truncated) return { ok: true, text: first.text };
+
+  const doubled = Math.min(Math.max(current.maxTokens * 2, current.maxTokens + 1), ABSOLUTE_MAX_TOKENS);
+  if (doubled <= current.maxTokens) {
+    logger.warn(`IA "${provider.label}": resposta truncada e já no teto ${ABSOLUTE_MAX_TOKENS} — descartada.`);
+    return { ok: false, truncated: true };
+  }
+  logger.warn(
+    `IA "${provider.label}": resposta truncada (maxTokens=${current.maxTokens}). Retentando com ${doubled}.`,
+  );
+  current = { ...current, maxTokens: doubled };
+  const second = await tryProvider(provider, current);
+  if (!second.ok) return second;
+  if (second.truncated) {
+    logger.warn(`IA "${provider.label}": ainda truncada após retentativa — não enviando ao cliente.`);
+    return { ok: false, truncated: true };
+  }
+  return { ok: true, text: second.text };
 }
 
 export interface CompleteOptions {
@@ -250,7 +283,7 @@ export async function complete(
       continue;
     }
     attempted = true;
-    const r = await tryProvider(provider, req);
+    const r = await completeAvoidingTruncation(provider, req);
     if (r.ok && r.text) {
       clearCooldown(provider);
       if (triedLabels.length > 0) {
@@ -259,7 +292,7 @@ export async function complete(
       result = { text: r.text, providerId: provider.id, providerLabel: provider.label };
       break;
     }
-    if (!r.ok) {
+    if (!r.ok && 'err' in r) {
       setCooldown(provider, r.err.kind, r.err.message, now);
       logger.warn(`IA "${provider.label}" falhou (${r.err.kind}): ${r.err.message}. Tentando próximo...`);
     }
@@ -269,11 +302,11 @@ export async function complete(
   // Todos em cooldown: tenta o de maior prioridade mesmo assim.
   if (!result && !attempted && skipped.length > 0) {
     const provider = skipped[0];
-    const r = await tryProvider(provider, req);
+    const r = await completeAvoidingTruncation(provider, req);
     if (r.ok && r.text) {
       clearCooldown(provider);
       result = { text: r.text, providerId: provider.id, providerLabel: provider.label };
-    } else if (!r.ok) {
+    } else if (!r.ok && 'err' in r) {
       setCooldown(provider, r.err.kind, r.err.message, now);
     }
   }

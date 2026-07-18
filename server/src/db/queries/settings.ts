@@ -3,6 +3,8 @@ import { DEFAULT_AI_PERSONA } from '../../config/persona';
 
 const AGENT_KEY = 'agent_enabled';
 const PERSONA_KEY = 'ai_persona';
+const TEMPERATURE_KEY = 'ai_temperature';
+const MAX_TOKENS_KEY = 'ai_max_tokens';
 
 /**
  * Caches em memória, POR tenant, para evitar uma consulta ao banco a cada
@@ -11,7 +13,12 @@ const PERSONA_KEY = 'ai_persona';
  */
 const agentCache = new Map<string, { enabled: boolean; at: number }>();
 const personaCache = new Map<string, { prompt: string; at: number }>();
+const temperatureCache = new Map<string, { value: number; at: number }>();
+const maxTokensCache = new Map<string, { value: number; at: number }>();
 const CACHE_TTL_MS = 5_000;
+
+const DEFAULT_AI_TEMPERATURE = 0.7;
+const DEFAULT_AI_MAX_TOKENS = 500;
 
 async function readSetting(tenantId: string, key: string): Promise<string | null> {
   const row = await queryOne<{ value: string }>(
@@ -78,4 +85,57 @@ export async function setAiPersona(tenantId: string, prompt: string): Promise<st
   const effective = clean ? clean : DEFAULT_AI_PERSONA;
   personaCache.set(tenantId, { prompt: effective, at: Date.now() });
   return effective;
+}
+
+// ---------------------------------------------------------------------------
+// Temperatura da IA (criatividade) — mesma tabela chave-valor das settings
+// ---------------------------------------------------------------------------
+
+function clampTemperature(n: number): number {
+  return Math.min(1.5, Math.max(0, n));
+}
+
+/** Temperatura usada no atendimento real (generateReply). Default 0.7. */
+export async function getAiTemperature(tenantId: string): Promise<number> {
+  const cached = temperatureCache.get(tenantId);
+  if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+    return cached.value;
+  }
+  const value = await readSetting(tenantId, TEMPERATURE_KEY);
+  const parsed = value !== null ? Number(value) : DEFAULT_AI_TEMPERATURE;
+  const temp = Number.isFinite(parsed) ? clampTemperature(parsed) : DEFAULT_AI_TEMPERATURE;
+  temperatureCache.set(tenantId, { value: temp, at: Date.now() });
+  return temp;
+}
+
+/** Persiste a temperatura da IA no atendimento real. */
+export async function setAiTemperature(tenantId: string, temperature: number): Promise<number> {
+  const temp = clampTemperature(temperature);
+  await writeSetting(tenantId, TEMPERATURE_KEY, String(temp));
+  temperatureCache.set(tenantId, { value: temp, at: Date.now() });
+  return temp;
+}
+
+function clampMaxTokens(n: number): number {
+  return Math.min(1200, Math.max(50, Math.round(n)));
+}
+
+/** maxTokens do atendimento real. Default 500. */
+export async function getAiMaxTokens(tenantId: string): Promise<number> {
+  const cached = maxTokensCache.get(tenantId);
+  if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+    return cached.value;
+  }
+  const value = await readSetting(tenantId, MAX_TOKENS_KEY);
+  const parsed = value !== null ? Number(value) : DEFAULT_AI_MAX_TOKENS;
+  const tokens = Number.isFinite(parsed) ? clampMaxTokens(parsed) : DEFAULT_AI_MAX_TOKENS;
+  maxTokensCache.set(tenantId, { value: tokens, at: Date.now() });
+  return tokens;
+}
+
+export async function setAiMaxTokens(tenantId: string, maxTokens: number): Promise<number> {
+  const tokens = clampMaxTokens(maxTokens);
+  await writeSetting(tenantId, MAX_TOKENS_KEY, String(tokens));
+  maxTokensCache.set(tenantId, { value: tokens, at: Date.now() });
+  return tokens;
 }

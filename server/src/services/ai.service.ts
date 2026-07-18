@@ -1,6 +1,7 @@
 import { DEFAULT_AI_PERSONA } from '../config/persona';
 import { logger } from '../config/logger';
 import { formatBRL } from '../utils/text';
+import { getAiMaxTokens, getAiTemperature } from '../db/queries/settings';
 import type { AiHistoryMessage, Client, Product, TextScript } from '../types';
 import { complete, hasVisionProvider, isAiConfigured } from './ai/orchestrator';
 import type { ChatImage, ChatMessage } from './ai/types';
@@ -181,10 +182,14 @@ export async function generateReply(
   if (hasImages) attachImagesToLastUser(messages, input.attachImages as ChatImage[]);
 
   const system = buildSystemPrompt(input) + (hasImages ? VISION_INSTRUCTION : '');
-  // Imagens precisam de mais espaço pra IA descrever o que vê.
-  const maxTokens = hasImages ? 700 : 500;
+  const [temperature, configuredMax] = await Promise.all([
+    getAiTemperature(tenantId),
+    getAiMaxTokens(tenantId),
+  ]);
+  // Visão: um pouco mais de espaço, sem passar do teto absoluto (1200).
+  const maxTokens = hasImages ? Math.min(1200, Math.max(configuredMax, 700)) : configuredMax;
 
-  const result = await complete({ system, messages, maxTokens, temperature: 0.7 }, tenantId, {
+  const result = await complete({ system, messages, maxTokens, temperature }, tenantId, {
     meter: true,
   });
   if (!result) {

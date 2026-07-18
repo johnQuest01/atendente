@@ -5,6 +5,7 @@ import {
   AiProviderError,
   classifyHttpError,
   classifyNetworkError,
+  isTruncatedFinishReason,
   type AiAdapter,
   type ChatMessage,
 } from '../types';
@@ -70,11 +71,17 @@ export const anthropicAdapter: AiAdapter = {
         system: req.system,
         messages: await toAnthropicMessages(req.messages, vision),
       });
-      return response.content
+      const text = response.content
         .filter((b): b is Anthropic.TextBlock => b.type === 'text')
         .map((b) => b.text)
         .join('\n')
         .trim();
+      const finishReason = response.stop_reason ?? null;
+      return {
+        text,
+        finishReason,
+        truncated: isTruncatedFinishReason(finishReason),
+      };
     } catch (err) {
       throw classifySdkError(err);
     }

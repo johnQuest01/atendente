@@ -196,22 +196,31 @@ function PersonaCard() {
   const [testMsg, setTestMsg] = useState('');
   const [temp, setTemp] = useState(0.7);
 
-  // Sincroniza o textarea quando os dados chegam (sem sobrescrever a edição em andamento).
+  // Sincroniza textarea/temperatura quando os dados chegam (sem sobrescrever edição).
   useEffect(() => {
-    if (data && !touched) setText(data.prompt);
+    if (data && !touched) {
+      setText(data.prompt);
+      setTemp(data.temperature ?? 0.7);
+    }
   }, [data, touched]);
 
   const isDefault = data?.isDefault ?? true;
-  const dirty = touched && data ? text !== data.prompt : false;
+  const dirty =
+    touched && data
+      ? text !== data.prompt || Math.abs(temp - (data.temperature ?? 0.7)) > 0.001
+      : false;
 
   function save() {
-    setPersona.mutate(text, {
-      onSuccess: () => {
-        setTouched(false);
-        toast('Personalidade da IA salva! O agente já segue as novas instruções.', 'success');
+    setPersona.mutate(
+      { prompt: text, temperature: temp },
+      {
+        onSuccess: () => {
+          setTouched(false);
+          toast('Personalidade da IA salva! O agente já segue as novas instruções.', 'success');
+        },
+        onError: (err) => toast(getErrorMessage(err), 'error'),
       },
-      onError: (err) => toast(getErrorMessage(err), 'error'),
-    });
+    );
   }
 
   function restoreDefault() {
@@ -299,10 +308,16 @@ function PersonaCard() {
             max={1.2}
             step={0.1}
             value={temp}
-            onChange={(e) => setTemp(Number(e.target.value))}
+            onChange={(e) => {
+              setTemp(Number(e.target.value));
+              setTouched(true);
+            }}
             className="flex-1 accent-primary"
           />
         </label>
+        <p className="mt-1 text-[11px] text-text-secondary">
+          Este valor é salvo com a personalidade e vale também para o atendimento real no WhatsApp.
+        </p>
 
         {preview.isError && <p className="mt-2 text-xs text-danger">{getErrorMessage(preview.error)}</p>}
 

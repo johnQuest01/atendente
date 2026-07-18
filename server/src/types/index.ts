@@ -36,10 +36,14 @@ export interface Conversation {
   started_at: string;
   closed_at: string | null;
   metadata: Record<string, unknown>;
+  /** Até quando a IA fica pausada após intervenção humana (null = sem pausa). */
+  human_paused_until: string | null;
 }
 
 export type MessageDirection = 'inbound' | 'outbound';
 export type MessageType = 'text' | 'audio' | 'image' | 'video' | 'document';
+/** Quem originou a mensagem no histórico. */
+export type MessageOrigin = 'client' | 'ai' | 'human' | 'system';
 
 export interface MessageLog {
   id: string;
@@ -59,6 +63,7 @@ export interface MessageLog {
   media_mime: string | null;
   /** Transcrição do áudio (quando houver), separada do "content". */
   transcription: string | null;
+  origin: MessageOrigin;
 }
 
 /** Mensagem do histórico enriquecida com dados para o contexto da IA. */

@@ -1,5 +1,5 @@
 import { query } from '../index';
-import type { MessageDirection, MessageLog, MessageType } from '../../types';
+import type { MessageDirection, MessageLog, MessageOrigin, MessageType } from '../../types';
 
 export interface InsertMessageInput {
   conversationId: string;
@@ -12,14 +12,17 @@ export interface InsertMessageInput {
   mediaUrl?: string | null;
   mediaMime?: string | null;
   transcription?: string | null;
+  origin?: MessageOrigin;
 }
 
 export async function insertMessage(tenantId: string, input: InsertMessageInput): Promise<MessageLog> {
+  const origin: MessageOrigin =
+    input.origin ?? (input.direction === 'inbound' ? 'client' : 'ai');
   const { rows } = await query<MessageLog>(
     `INSERT INTO messages_log
        (tenant_id, conversation_id, direction, type, content, audio_id, product_id,
-        zapi_message_id, media_url, media_mime, transcription)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        zapi_message_id, media_url, media_mime, transcription, origin)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      RETURNING *`,
     [
       tenantId,
@@ -33,6 +36,7 @@ export async function insertMessage(tenantId: string, input: InsertMessageInput)
       input.mediaUrl ?? null,
       input.mediaMime ?? null,
       input.transcription ?? null,
+      origin,
     ],
   );
   return rows[0];
@@ -44,6 +48,18 @@ export async function inboundMessageExists(tenantId: string, zapiMessageId: stri
     `SELECT EXISTS(
        SELECT 1 FROM messages_log
        WHERE tenant_id = $1 AND zapi_message_id = $2 AND direction = 'inbound'
+     ) AS exists`,
+    [tenantId, zapiMessageId],
+  );
+  return rows[0]?.exists ?? false;
+}
+
+/** Qualquer direção — usado para distinguir eco do bot vs digitação humana (fromMe). */
+export async function providerMessageExists(tenantId: string, zapiMessageId: string): Promise<boolean> {
+  const { rows } = await query<{ exists: boolean }>(
+    `SELECT EXISTS(
+       SELECT 1 FROM messages_log
+       WHERE tenant_id = $1 AND zapi_message_id = $2
      ) AS exists`,
     [tenantId, zapiMessageId],
   );

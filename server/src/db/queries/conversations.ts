@@ -178,6 +178,30 @@ export async function updateConversationStatus(
   return rows[0] ?? null;
 }
 
+/** Marca pausa da IA após intervenção humana (fromMe genuíno). */
+export async function setHumanPausedUntil(
+  tenantId: string,
+  id: string,
+  until: Date,
+): Promise<Conversation | null> {
+  const { rows } = await query<Conversation>(
+    `UPDATE conversations
+        SET human_paused_until = $3,
+            status = CASE WHEN status = 'closed' THEN status ELSE 'waiting' END
+      WHERE id = $1 AND tenant_id = $2
+      RETURNING *`,
+    [id, tenantId, until.toISOString()],
+  );
+  return rows[0] ?? null;
+}
+
+/** True se a conversa ainda está na janela de pausa por humano. */
+export function isHumanPaused(conversation: Conversation): boolean {
+  if (!conversation.human_paused_until) return false;
+  const until = Date.parse(conversation.human_paused_until);
+  return !Number.isNaN(until) && until > Date.now();
+}
+
 /** Apaga a conversa inteira (mensagens caem junto por ON DELETE CASCADE). */
 export async function deleteConversation(tenantId: string, id: string): Promise<boolean> {
   const { rowCount } = await query('DELETE FROM conversations WHERE id = $1 AND tenant_id = $2', [
