@@ -1,6 +1,15 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import { isAgentEnabled, setAgentEnabled, getAiPersona, setAiPersona } from '../db/queries/settings';
+import {
+  isAgentEnabled,
+  setAgentEnabled,
+  getAiPersona,
+  setAiPersona,
+  getAiTemperature,
+  setAiTemperature,
+  getAiMaxTokens,
+  setAiMaxTokens,
+} from '../db/queries/settings';
 import { DEFAULT_AI_PERSONA } from '../config/persona';
 import { getHealthReport } from '../services/health.service';
 import { previewReply } from '../services/ai.service';
@@ -36,17 +45,41 @@ export async function putAgentStatus(req: Request, res: Response): Promise<void>
 export const updatePersonaSchema = z.object({
   // Vazio é permitido: limpa a personalização e volta ao padrão.
   prompt: z.string().max(12000, 'O texto está muito longo (máx. 12000 caracteres).'),
+  temperature: z.coerce.number().min(0).max(1.5).optional(),
+  maxTokens: z.coerce.number().int().min(50).max(1200).optional(),
 });
 
 export async function getPersona(req: Request, res: Response): Promise<void> {
-  const prompt = await getAiPersona(req.user!.tenant_id);
-  res.json({ prompt, default: DEFAULT_AI_PERSONA, isDefault: prompt === DEFAULT_AI_PERSONA });
+  const tenantId = req.user!.tenant_id;
+  const [prompt, temperature, maxTokens] = await Promise.all([
+    getAiPersona(tenantId),
+    getAiTemperature(tenantId),
+    getAiMaxTokens(tenantId),
+  ]);
+  res.json({
+    prompt,
+    default: DEFAULT_AI_PERSONA,
+    isDefault: prompt === DEFAULT_AI_PERSONA,
+    temperature,
+    maxTokens,
+  });
 }
 
 export async function putPersona(req: Request, res: Response): Promise<void> {
-  const { prompt } = req.body as z.infer<typeof updatePersonaSchema>;
-  const effective = await setAiPersona(req.user!.tenant_id, prompt);
-  res.json({ prompt: effective, default: DEFAULT_AI_PERSONA, isDefault: effective === DEFAULT_AI_PERSONA });
+  const tenantId = req.user!.tenant_id;
+  const { prompt, temperature, maxTokens } = req.body as z.infer<typeof updatePersonaSchema>;
+  const effective = await setAiPersona(tenantId, prompt);
+  const temp =
+    temperature !== undefined ? await setAiTemperature(tenantId, temperature) : await getAiTemperature(tenantId);
+  const tokens =
+    maxTokens !== undefined ? await setAiMaxTokens(tenantId, maxTokens) : await getAiMaxTokens(tenantId);
+  res.json({
+    prompt: effective,
+    default: DEFAULT_AI_PERSONA,
+    isDefault: effective === DEFAULT_AI_PERSONA,
+    temperature: temp,
+    maxTokens: tokens,
+  });
 }
 
 export const previewPersonaSchema = z.object({
@@ -156,7 +189,7 @@ export async function getWhatsappConnection(req: Request, res: Response): Promis
 }
 
 export const updateWhatsappSchema = z.object({
-  provider: z.enum(['zapi', 'evolution']).default('zapi'),
+  provider: z.enum(['zapi', 'evolution', 'metacloud']).default('zapi'),
   instanceId: z.string().trim().max(200).optional(),
   token: z.string().trim().max(400).optional(),
   clientToken: z.string().trim().max(400).optional(),

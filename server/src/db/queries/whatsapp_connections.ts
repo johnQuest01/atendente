@@ -8,7 +8,7 @@ import { encryptSecret, decryptSecret } from '../../utils/crypto';
  * `secrets_encrypted` (AES-256-GCM) e o webhook e roteado por `webhook_token`.
  */
 
-export type WhatsappProviderName = 'zapi' | 'evolution';
+export type WhatsappProviderName = 'zapi' | 'evolution' | 'metacloud';
 
 export interface WhatsappSecrets {
   // Z-API
@@ -18,6 +18,9 @@ export interface WhatsappSecrets {
   // Evolution API
   apiKey?: string;
   instance?: string;
+  // Meta Cloud API
+  accessToken?: string;
+  phoneNumberId?: string;
 }
 
 export interface WhatsappConnection {

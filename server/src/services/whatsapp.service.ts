@@ -4,11 +4,20 @@ import { DEFAULT_TENANT_ID } from '../config/tenant';
 import type { MessageType } from '../types';
 import * as zapi from './zapi.service';
 import * as evolution from './evolution.service';
+import { createMetaCloudProvider, type MetaCloudConnection } from './whatsapp/metacloud.service';
+import type {
+  NormalizedInbound,
+  NormalizedStatus,
+  ProviderStatus,
+  WhatsAppProvider,
+} from './whatsapp/types';
 import {
   getConnectionByTenant,
   type WhatsappConnection,
   type WhatsappProviderName,
 } from '../db/queries/whatsapp_connections';
+
+export type { NormalizedInbound, NormalizedStatus, ProviderStatus, WhatsAppProvider };
 
 /**
  * Facade de WhatsApp MULTI-TENANT. Cada empresa (tenant) tem a propria conexao
@@ -22,11 +31,6 @@ import {
  * quando ainda nao houver conexao cadastrada no banco.
  */
 
-export interface ProviderStatus {
-  ok: boolean;
-  detail: string;
-}
-
 const ZAPI_DEFAULT_BASE = 'https://api.z-api.io/instances';
 
 logger.info(`Provedor de WhatsApp padrao (.env): ${env.WHATSAPP_PROVIDER}`);
@@ -39,6 +43,7 @@ interface ResolvedConnection {
   provider: WhatsappProviderName;
   zapi?: zapi.ZapiConnection;
   evolution?: evolution.EvolutionConnection;
+  metacloud?: MetaCloudConnection;
 }
 
 function resolveFromDb(conn: WhatsappConnection): ResolvedConnection {
@@ -49,6 +54,16 @@ function resolveFromDb(conn: WhatsappConnection): ResolvedConnection {
         apiKey: conn.secrets.apiKey ?? '',
         instance: conn.secrets.instance ?? '',
         baseUrl: conn.base_url ?? env.EVOLUTION_BASE_URL,
+      },
+    };
+  }
+  if (conn.provider === 'metacloud') {
+    return {
+      provider: 'metacloud',
+      metacloud: {
+        accessToken: conn.secrets.accessToken ?? '',
+        phoneNumberId: conn.secrets.phoneNumberId ?? '',
+        graphBaseUrl: conn.base_url ?? undefined,
       },
     };
   }
@@ -113,18 +128,22 @@ async function resolveForTenant(tenantId: string): Promise<ResolvedConnection | 
 // Interface de envio vinculada a uma empresa
 // ---------------------------------------------------------------------------
 
-export interface TenantWhatsapp {
+/** Facade por tenant: WhatsAppProvider + metadados de configuração. */
+export interface TenantWhatsapp extends WhatsAppProvider {
   provider: WhatsappProviderName;
   configured: boolean;
-  sendText(phone: string, message: string): Promise<string | null>;
-  sendAudio(phone: string, audioUrl: string): Promise<string | null>;
-  sendImage(phone: string, imageUrl: string, caption?: string): Promise<string | null>;
-  sendImages(phone: string, imageUrls: string[], caption?: string): Promise<Array<string | null>>;
-  markAsRead(phone: string, messageId: string): Promise<string | null>;
-  getConnectionStatus(): Promise<ProviderStatus>;
 }
 
 function build(resolved: ResolvedConnection | null): TenantWhatsapp {
+  if (resolved?.provider === 'metacloud' && resolved.metacloud) {
+    const c = resolved.metacloud;
+    const provider = createMetaCloudProvider(c);
+    return {
+      provider: 'metacloud',
+      configured: Boolean(c.accessToken && c.phoneNumberId),
+      ...provider,
+    };
+  }
   if (resolved?.provider === 'evolution' && resolved.evolution) {
     const c = resolved.evolution;
     return {
@@ -166,28 +185,6 @@ export async function getTenantWhatsapp(tenantId: string): Promise<TenantWhatsap
 // ---------------------------------------------------------------------------
 // Parsing normalizado dos webhooks de entrada (por provedor)
 // ---------------------------------------------------------------------------
-
-export interface NormalizedInbound {
-  phone: string;
-  text: string;
-  type: MessageType;
-  messageId: string | null;
-  senderName: string | null;
-  fromMe: boolean;
-  /** URL da midia recebida (imagem/video/audio/documento), quando o provedor envia. */
-  mediaUrl?: string | null;
-  /** Midia recebida em base64 (ex.: Evolution com base64 ativo). */
-  mediaBase64?: string | null;
-  /** Content-type da midia recebida. */
-  mediaMime?: string | null;
-  /** Nome do arquivo (documentos). */
-  fileName?: string | null;
-}
-
-export interface NormalizedStatus {
-  ids: string[];
-  status: 'READ' | 'DELIVERED';
-}
 
 function onlyDigits(value: string): string {
   return value.replace(/\D/g, '');
@@ -277,12 +274,14 @@ function parseZapiInbound(body: Record<string, unknown>): NormalizedInbound | nu
     phone: onlyDigits(phone),
     text: content,
     type,
-    messageId: (body.messageId as string | undefined) ?? null,
+    providerMessageId: (body.messageId as string | undefined) ?? null,
     senderName: (body.senderName as string | undefined) ?? null,
     fromMe,
     mediaUrl,
     mediaMime,
     fileName,
+    caption: content || null,
+    raw: body,
   };
 }
 
@@ -356,12 +355,14 @@ function parseEvolutionInbound(body: Record<string, unknown>): NormalizedInbound
     phone: onlyDigits(remoteJid.split('@')[0]),
     text: content,
     type,
-    messageId: data.key?.id ?? null,
+    providerMessageId: data.key?.id ?? null,
     senderName: data.pushName ?? null,
     fromMe: Boolean(data.key?.fromMe),
     mediaUrl,
     mediaBase64,
     mediaMime,
     fileName,
+    caption: content || null,
+    raw: body,
   };
 }
