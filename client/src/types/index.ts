@@ -12,7 +12,7 @@ export interface User {
 export type ConversationStatus = 'open' | 'closed' | 'waiting';
 export type MessageDirection = 'inbound' | 'outbound';
 export type MessageType = 'text' | 'audio' | 'image' | 'video' | 'document';
-export type ContentType = 'audio' | 'text' | 'product' | 'claude';
+export type ContentType = 'audio' | 'text' | 'product' | 'claude' | 'reminders_today';
 
 export interface Client {
   id: string;

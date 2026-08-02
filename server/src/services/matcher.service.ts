@@ -16,6 +16,9 @@ export async function matchIntent(tenantId: string, messageText: string): Promis
   // 1) Palavras-chave explícitas (tabela keywords), já ordenadas por prioridade.
   const keywords = await getActiveKeywords(tenantId);
   for (const kw of keywords) {
+    // 'reminders_today' é ação exclusiva do DONO (disparo de lembretes). No fluxo
+    // do cliente ela é ignorada — cliente nunca aciona nem recebe lembrete.
+    if (kw.content_type === 'reminders_today') continue;
     const needle = normalizeForMatch(kw.keyword);
     if (needle && matchesKeyword(haystack, needle)) {
       return {
@@ -60,6 +63,16 @@ export async function getTriggerPhrases(tenantId: string): Promise<string[]> {
     for (const k of audio.keywords ?? []) if (k) set.add(k.trim());
   }
   return Array.from(set).filter(Boolean);
+}
+
+/**
+ * Casa uma frase-gatilho contra um texto livre (ambos normalizados por dentro).
+ * Reusado pelo assistente do dono para o disparo de lembretes por palavra-chave.
+ */
+export function keywordMatches(text: string, keyword: string): boolean {
+  const needle = normalizeForMatch(keyword);
+  if (!needle) return false;
+  return matchesKeyword(normalizeForMatch(text), needle);
 }
 
 /**

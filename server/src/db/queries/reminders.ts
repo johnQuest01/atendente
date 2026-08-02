@@ -146,6 +146,23 @@ export async function getReminderById(tenantId: string, id: string): Promise<Rem
 }
 
 /**
+ * Lembretes pendentes de HOJE do dono (no fuso de cada lembrete). SQL puro —
+ * zero IA. Usado pelo disparo por palavra-chave (Parte 2). A comparação usa a
+ * timezone gravada na linha, então funciona mesmo com donos em fusos distintos.
+ */
+export async function getTodayReminders(tenantId: string, ownerPhone: string): Promise<Reminder[]> {
+  assertTenantMatchesScope(tenantId);
+  const { rows } = await query<Reminder>(
+    `SELECT * FROM reminders
+      WHERE tenant_id = $1 AND owner_phone = $2 AND status = 'pendente'
+        AND (next_fire_at AT TIME ZONE timezone)::date = (NOW() AT TIME ZONE timezone)::date
+      ORDER BY next_fire_at ASC`,
+    [tenantId, ownerPhone],
+  );
+  return rows;
+}
+
+/**
  * Lembretes vencidos, de TODAS as empresas — é o agendador rodando como tarefa
  * de sistema (a policy da 019 é permissiva quando `app.tenant_id` está vazio).
  */

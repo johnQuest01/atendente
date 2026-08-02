@@ -124,7 +124,7 @@ export interface Product {
   created_at: string;
 }
 
-export type ContentType = 'audio' | 'text' | 'product' | 'claude';
+export type ContentType = 'audio' | 'text' | 'product' | 'claude' | 'reminders_today';
 
 /** Lembretes pessoais do dono (assistente por WhatsApp). */
 export type ReminderCategory = 'importante' | 'rotina' | 'data_especifica';

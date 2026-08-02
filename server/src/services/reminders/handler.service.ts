@@ -3,9 +3,13 @@ import {
   cancelReminder,
   completeReminder,
   createReminder,
+  getTodayReminders,
+  isReminderOwner,
   listReminders,
   type ListRemindersFilter,
 } from '../../db/queries/reminders';
+import { getActiveKeywords } from '../../db/queries/keywords';
+import { keywordMatches } from '../matcher.service';
 import { env } from '../../config/env';
 import { getTenantWhatsapp } from '../whatsapp.service';
 import { transcribeAudioFromBase64, transcribeAudioFromUrl } from '../transcription.service';
@@ -256,6 +260,18 @@ function renderList(reminders: Reminder[], title: string, tz: string): string {
 const CREATE_TRIGGERS = /\b(lembr|anota|agenda|marca|avisa|nao me deixa esquecer|não me deixa esquecer)/i;
 
 /**
+ * A empresa cadastrou uma keyword de disparo (content_type='reminders_today') e
+ * a mensagem do dono casa com ela? Zero IA — só leitura das keywords + match
+ * normalizado. As de outros tipos são ignoradas aqui (são do fluxo de vendas).
+ */
+async function matchesReminderKeyword(tenantId: string, text: string): Promise<boolean> {
+  const keywords = await getActiveKeywords(tenantId);
+  return keywords.some(
+    (k) => k.content_type === 'reminders_today' && keywordMatches(text, k.keyword),
+  );
+}
+
+/**
  * Trata a mensagem de um número da whitelist.
  * Retorna true quando assumiu a mensagem (o webhook então PARA e não cria
  * cliente/conversa nem aciona a IA de vendas).
@@ -334,6 +350,18 @@ export async function handleOwnerMessage(
       await reply(tenantId, phone, renderList(reminders, QUERY_TITLE[queryKey] ?? queryKey.toUpperCase(), tz));
       return true;
     }
+  }
+
+  // 2.5. Disparo por palavra-chave CADASTRADA (content_type='reminders_today').
+  // Zero IA: casa a frase que o dono cadastrou no painel e responde a lista de
+  // hoje. Vive aqui de propósito — só roda para a whitelist —, com re-checagem
+  // defensiva para o cliente jamais receber lembrete (isolamento máximo).
+  if (await matchesReminderKeyword(tenantId, text)) {
+    if (!(await isReminderOwner(tenantId, phone))) return true;
+    const todays = await getTodayReminders(tenantId, phone);
+    setState(tenantId, phone, { lastList: todays.map((r) => r.id) });
+    await reply(tenantId, phone, renderList(todays, QUERY_TITLE.hoje, tz));
+    return true;
   }
 
   // 3. Gestão por índice da última lista.

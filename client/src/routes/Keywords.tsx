@@ -20,6 +20,7 @@ const TYPE_LABELS: Record<ContentType, string> = {
   text: 'Script',
   product: 'Produto',
   claude: 'IA (automática)',
+  reminders_today: 'Lembretes do dia',
 };
 
 const TYPE_TONE: Record<ContentType, 'primary' | 'success' | 'warning' | 'neutral'> = {
@@ -27,6 +28,7 @@ const TYPE_TONE: Record<ContentType, 'primary' | 'success' | 'warning' | 'neutra
   text: 'success',
   product: 'warning',
   claude: 'neutral',
+  reminders_today: 'primary',
 };
 
 export default function Keywords() {
@@ -105,6 +107,10 @@ function CreateKeywordModal({ open, onClose }: { open: boolean; onClose: () => v
   const [contentId, setContentId] = useState('');
   const [priority, setPriority] = useState('1');
 
+  // 'claude' e 'reminders_today' são ações que não apontam para um conteúdo.
+  const needsContent =
+    contentType === 'audio' || contentType === 'text' || contentType === 'product';
+
   const options =
     contentType === 'audio'
       ? (audios ?? []).map((a) => ({ id: a.id, label: a.title }))
@@ -116,13 +122,13 @@ function CreateKeywordModal({ open, onClose }: { open: boolean; onClose: () => v
 
   async function handleSubmit() {
     if (!keyword.trim() || !intent.trim()) return toast('Preencha keyword e intenção.', 'error');
-    if (contentType !== 'claude' && !contentId) return toast('Selecione o conteúdo de destino.', 'error');
+    if (needsContent && !contentId) return toast('Selecione o conteúdo de destino.', 'error');
     try {
       await create.mutateAsync({
         keyword: keyword.trim(),
         intent: intent.trim(),
         content_type: contentType,
-        content_id: contentType === 'claude' ? null : contentId,
+        content_id: needsContent ? contentId : null,
         priority: Number(priority) || 1,
       });
       toast('Mapeamento criado!', 'success');
@@ -162,8 +168,15 @@ function CreateKeywordModal({ open, onClose }: { open: boolean; onClose: () => v
           <option value="text">Script de texto</option>
           <option value="product">Produto</option>
           <option value="claude">IA (resposta automática)</option>
+          <option value="reminders_today">Disparar lembretes do dia</option>
         </Select>
-        {contentType !== 'claude' && (
+        {contentType === 'reminders_today' && (
+          <p className="rounded-lg bg-primary/10 px-3 py-2 text-xs text-text-secondary">
+            Esta palavra <strong>só responde ao número do dono</strong> (os autorizados em Lembretes
+            pessoais). Ao recebê-la, o sistema manda a lista de compromissos de hoje — sem gastar IA.
+          </p>
+        )}
+        {needsContent && (
           <Select label="Conteúdo de destino" value={contentId} onChange={(e) => setContentId(e.target.value)}>
             <option value="">Selecione...</option>
             {options.map((o) => (
