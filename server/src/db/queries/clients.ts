@@ -40,7 +40,9 @@ export async function listClients(tenantId: string): Promise<Client[]> {
 export async function updateClient(
   tenantId: string,
   id: string,
-  patch: Partial<Pick<Client, 'name' | 'company_name' | 'segment' | 'notes' | 'is_active'>>,
+  patch: Partial<
+    Pick<Client, 'name' | 'company_name' | 'segment' | 'notes' | 'is_active' | 'ai_enabled' | 'ai_prompt'>
+  >,
 ): Promise<Client | null> {
   const { rows } = await query<Client>(
     `UPDATE clients SET
@@ -48,10 +50,25 @@ export async function updateClient(
        company_name = COALESCE($4, company_name),
        segment = COALESCE($5, segment),
        notes = COALESCE($6, notes),
-       is_active = COALESCE($7, is_active)
+       is_active = COALESCE($7, is_active),
+       ai_enabled = COALESCE($8, ai_enabled),
+       -- string vazia limpa o prompt; undefined mantém o que já existe.
+       ai_prompt = CASE WHEN $9::text IS NULL THEN ai_prompt
+                        WHEN $9 = '' THEN NULL
+                        ELSE $9 END
      WHERE id = $1 AND tenant_id = $2
      RETURNING *`,
-    [id, tenantId, patch.name ?? null, patch.company_name ?? null, patch.segment ?? null, patch.notes ?? null, patch.is_active ?? null],
+    [
+      id,
+      tenantId,
+      patch.name ?? null,
+      patch.company_name ?? null,
+      patch.segment ?? null,
+      patch.notes ?? null,
+      patch.is_active ?? null,
+      patch.ai_enabled ?? null,
+      patch.ai_prompt ?? null,
+    ],
   );
   return rows[0] ?? null;
 }

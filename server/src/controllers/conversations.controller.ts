@@ -9,6 +9,7 @@ import {
   updateConversationStatus,
 } from '../db/queries/conversations';
 import { deleteAllMessages, deleteMessages } from '../db/queries/messages';
+import { updateClient } from '../db/queries/clients';
 import { queryOne } from '../db/index';
 import { dispatchAudio, dispatchProduct, dispatchText } from '../services/dispatch.service';
 import { emitConversationUpdated } from '../socket';
@@ -70,6 +71,34 @@ export async function getConversationDetail(req: Request, res: Response): Promis
   await markInboundAsRead(tenantId, id);
 
   res.json({ conversation, client, messages });
+}
+
+export const clientAiSchema = z
+  .object({
+    ai_enabled: z.boolean().optional(),
+    // String vazia limpa o prompt; ausente mantém o atual.
+    ai_prompt: z.string().trim().max(2000).optional(),
+  })
+  .refine((d) => d.ai_enabled !== undefined || d.ai_prompt !== undefined, {
+    message: 'Informe ao menos um campo para atualizar.',
+  });
+
+/**
+ * Ajusta o comportamento da IA para o contato DESTA conversa: desligar a
+ * resposta automática só para ele, e/ou dar instruções específicas.
+ */
+export async function patchConversationClient(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const { id } = req.params as z.infer<typeof idParamSchema>;
+  const patch = req.body as z.infer<typeof clientAiSchema>;
+
+  const conversation = await getConversationById(tenantId, id);
+  if (!conversation) throw new NotFoundError('Conversa');
+
+  const client = await updateClient(tenantId, conversation.client_id, patch);
+  if (!client) throw new NotFoundError('Contato');
+
+  res.json({ client });
 }
 
 export async function patchConversationStatus(req: Request, res: Response): Promise<void> {

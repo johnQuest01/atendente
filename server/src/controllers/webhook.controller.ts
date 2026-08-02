@@ -268,12 +268,13 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
   const conversation = existing ?? (await findOrCreateOpenConversation(tenantId, client.id));
   if (!existing) emitNewConversation(tenantId, conversation);
 
-  // Flag global + pausa por intervenção humana (janela human_paused_until) +
-  // acesso da empresa (teste vencido / conta desativada).
+  // Quatro travas, da mais ampla para a mais específica: acesso da empresa,
+  // chave geral do agente, pausa por intervenção humana e o ajuste por contato.
   const agentEnabled = await isAgentEnabled(tenantId);
   const humanTakeover = isHumanPaused(conversation);
   const tenantBlocked = await isTenantBlocked(tenantId);
-  const autoReply = agentEnabled && !humanTakeover && !tenantBlocked;
+  const clientAiOff = client.ai_enabled === false;
+  const autoReply = agentEnabled && !humanTakeover && !tenantBlocked && !clientAiOff;
 
   // Tique azul IMEDIATO: assim que a IA "vê" a mensagem, marcamos como lida —
   // sem esperar transcrição nem geração de resposta. Best-effort, não bloqueia.
@@ -339,9 +340,11 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
     logger.info(
       tenantBlocked
         ? 'Empresa sem acesso ativo (teste vencido/desativada) — mensagem registrada, sem resposta automática.'
-        : humanTakeover
-          ? 'Conversa em waiting (humano) — mensagem registrada, sem resposta automática.'
-          : 'Atendente de IA desligado — mensagem registrada, sem resposta automática.',
+        : clientAiOff
+          ? `IA desligada para este contato (${inbound.phone}) — mensagem registrada, sem resposta automática.`
+          : humanTakeover
+            ? 'Conversa em waiting (humano) — mensagem registrada, sem resposta automática.'
+            : 'Atendente de IA desligado — mensagem registrada, sem resposta automática.',
     );
     return;
   }

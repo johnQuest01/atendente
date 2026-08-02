@@ -11,7 +11,7 @@ import { getTenantWhatsapp } from '../whatsapp.service';
 import { transcribeAudioFromBase64, transcribeAudioFromUrl } from '../transcription.service';
 import type { NormalizedInbound } from '../whatsapp/types';
 import type { Reminder } from '../../types';
-import { describeRecurrence, parseReminder } from './parse.service';
+import { describeLead, describeRecurrence, parseReminder } from './parse.service';
 import { DEFAULT_TZ, formatForOwner, fromWallClock, toWallClock } from './time';
 
 /**
@@ -37,6 +37,7 @@ interface OwnerState {
     category: Reminder['category'];
     recurrence: string | null;
     nextFireAt: Date;
+    leadMinutes: number | null;
     /** Texto original, para o dono poder corrigir sem repetir tudo. */
     source: string;
   };
@@ -116,8 +117,11 @@ const HELP_TEXT = [
   'Para criar, é só falar naturalmente (texto ou áudio):',
   '_"me lembra amanhã às 9h de pagar o fornecedor"_',
   '_"toda sexta cobrar os inadimplentes"_',
+  '_"reunião quinta às 15h, me avise 1 hora antes"_',
   '',
-  'Para consultar: *HOJE*, *AMANHÃ*, *SEMANA*, *MÊS*, *ROTINA*, *IMPORTANTES*, *TODOS*',
+  'Para consultar, pergunte à vontade:',
+  '_"o que temos para hoje?"_ · _"meus compromissos da semana"_',
+  'Ou mande a palavra: *HOJE*, *AMANHÃ*, *SEMANA*, *MÊS*, *ROTINA*, *IMPORTANTES*, *TODOS*',
   'Para fechar: *CONCLUIR 2* · Para remover: *CANCELAR 2*',
   '(o número é o da última lista que eu te mandei)',
 ].join('\n');
@@ -169,6 +173,71 @@ const QUERY_WORDS: Record<string, string> = {
   todos: 'todos',
   tudo: 'todos',
   lista: 'todos',
+  agenda: 'todos',
+  compromissos: 'todos',
+  lembretes: 'todos',
+};
+
+/**
+ * Reconhece PERGUNTA sobre a agenda em linguagem natural — "o que temos para
+ * hoje?", "quais meus compromissos da semana", "me mostra a agenda".
+ *
+ * Sem isto, só a palavra solta ("HOJE") funcionava, e o jeito como uma pessoa
+ * realmente fala caía no cadastro: a IA tentava criar um lembrete chamado
+ * "o que temos para hoje".
+ */
+const ASK_OPENERS =
+  /\b(o ?que|oque|quais|qual|quantos|quantas|tem algo|tenho algo|tenho alguma|ha algo|me (mostra|mostre|lista|liste|diga|fala|fale|passa)|como (esta|ta|fica))\b/;
+const AGENDA_NOUNS = /\b(agenda|compromissos?|lembretes?|tarefas?|programacao|rolando|marcado)\b/;
+const SCOPE_WORDS: Array<[RegExp, string]> = [
+  [/\bhoje\b/, 'hoje'],
+  [/\b(amanha|amanhã)\b/, 'amanha'],
+  [/\bsemana\b/, 'semana'],
+  [/\b(mes|mês)\b/, 'mes'],
+  [/\brotinas?\b/, 'rotina'],
+  [/\bimportantes?\b/, 'importantes'],
+  [/\b(tudo|todos|todas)\b/, 'todos'],
+];
+
+/**
+ * Verbos que só aparecem em CADASTRO. "agenda" ficou de fora de propósito: é
+ * verbo em "agenda uma reunião" e substantivo em "minha agenda de hoje".
+ */
+const STRONG_CREATE = /\b(lembr|anota|marca|avisa|nao me deixa esquecer)/;
+
+function detectQuery(normalized: string): string | null {
+  // 1) Palavra solta, como sempre funcionou.
+  const exact = QUERY_WORDS[normalized];
+  if (exact) return exact;
+
+  const asks = ASK_OPENERS.test(normalized);
+  const isQuestion = normalized.trim().endsWith('?');
+  const mentionsAgenda = AGENDA_NOUNS.test(normalized);
+  const words = normalized.split(/\s+/).filter(Boolean).length;
+  const scope = SCOPE_WORDS.find(([re]) => re.test(normalized))?.[1] ?? null;
+
+  // "me lembra de pagar amanhã" é cadastro, mesmo citando um dia — a menos que
+  // a frase seja explicitamente uma pergunta ("o que você tem pra me lembrar?").
+  if (STRONG_CREATE.test(normalized) && !asks) return null;
+
+  // Pergunta explícita, ou frase curta girando em torno da agenda
+  // ("agenda hoje", "meus compromissos"). O limite de 3 palavras evita
+  // confundir com "agenda uma reunião amanhã", que é cadastro.
+  const looksLikeQuery =
+    asks || (isQuestion && (mentionsAgenda || scope !== null)) || (mentionsAgenda && words <= 3);
+  if (!looksLikeQuery) return null;
+
+  return scope ?? 'todos';
+}
+
+const QUERY_TITLE: Record<string, string> = {
+  hoje: 'HOJE',
+  amanha: 'AMANHÃ',
+  semana: 'ESTA SEMANA',
+  mes: 'ESTE MÊS',
+  rotina: 'ROTINAS',
+  importantes: 'IMPORTANTES',
+  todos: 'TODOS OS LEMBRETES',
 };
 
 function renderList(reminders: Reminder[], title: string, tz: string): string {
@@ -176,8 +245,9 @@ function renderList(reminders: Reminder[], title: string, tz: string): string {
   const lines = reminders.map((r, i) => {
     const when = formatForOwner(new Date(r.next_fire_at), tz);
     const repeat = r.recurrence ? ` 🔁 ${describeRecurrence(r.recurrence)}` : '';
+    const lead = r.lead_minutes ? ` 🔔 ${describeLead(r.lead_minutes)}` : '';
     const flag = r.category === 'importante' ? '⚠️ ' : '';
-    return `${i + 1}. ${flag}${r.task}\n   ${when}${repeat}`;
+    return `${i + 1}. ${flag}${r.task}\n   ${when}${repeat}${lead}`;
   });
   return [`🗒️ *${title}*`, '', ...lines, '', '_CONCLUIR N_ ou _CANCELAR N_ para fechar um item._'].join('\n');
 }
@@ -234,6 +304,7 @@ export async function handleOwnerMessage(
         category: p.category,
         recurrence: p.recurrence,
         nextFireAt: p.nextFireAt,
+        leadMinutes: p.leadMinutes,
         timezone: tz,
       });
       setState(tenantId, phone, { pending: undefined });
@@ -252,14 +323,14 @@ export async function handleOwnerMessage(
     return handleCreate(tenantId, phone, corrected, tz, text);
   }
 
-  // 2. Consulta por palavra-chave — sem IA, resposta imediata.
-  const queryKey = QUERY_WORDS[normalized];
+  // 2. Consulta — palavra solta ou pergunta em linguagem natural. Sem IA.
+  const queryKey = detectQuery(normalized);
   if (queryKey) {
     const filter = rangeFor(queryKey, tz);
     if (filter) {
       const reminders = await listReminders(tenantId, phone, filter);
       setState(tenantId, phone, { lastList: reminders.map((r) => r.id) });
-      await reply(tenantId, phone, renderList(reminders, normalized.toUpperCase(), tz));
+      await reply(tenantId, phone, renderList(reminders, QUERY_TITLE[queryKey] ?? queryKey.toUpperCase(), tz));
       return true;
     }
   }
@@ -327,6 +398,7 @@ async function handleCreate(
       category: parsed.category,
       recurrence: parsed.recurrence,
       nextFireAt: parsed.nextFireAt,
+      leadMinutes: parsed.leadMinutes,
       source: originalText,
     },
   });

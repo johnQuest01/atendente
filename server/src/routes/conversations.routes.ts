@@ -5,6 +5,8 @@ import { requireActiveTenant } from '../middleware/tenantAccess.middleware';
 import { authenticate } from '../middleware/auth.middleware';
 import {
   clearConversation,
+  clientAiSchema,
+  patchConversationClient,
   deleteMessagesSchema,
   getConversations,
   getConversationDetail,
@@ -32,6 +34,12 @@ router.patch(
   '/:id/status',
   validate({ params: idParamSchema, body: statusBodySchema }),
   asyncHandler(patchConversationStatus),
+);
+// Ajuste da IA para o contato desta conversa (desligar / prompt próprio).
+router.patch(
+  '/:id/client',
+  validate({ params: idParamSchema, body: clientAiSchema }),
+  asyncHandler(patchConversationClient),
 );
 router.post(
   '/:id/messages',

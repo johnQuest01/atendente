@@ -123,8 +123,23 @@ function buildSystemPrompt(input: SystemPromptInput): string {
   return (
     basePrompt +
     buildClientContext(input.client) +
+    buildClientInstruction(input.client) +
     buildCatalog(input.products) +
     buildScriptsReference(input.scripts)
+  );
+}
+
+/**
+ * Instruções específicas DESTE contato, definidas pelo operador no painel.
+ * Entram depois da persona da empresa e antes do catálogo, e por isso mandam
+ * mais que a persona quando as duas discordam.
+ */
+function buildClientInstruction(c: Client | null): string {
+  const prompt = c?.ai_prompt?.trim();
+  if (!prompt) return '';
+  return (
+    '\n\nINSTRUÇÕES ESPECÍFICAS PARA ESTE CLIENTE (têm prioridade sobre as ' +
+    `instruções gerais acima em caso de conflito):\n${prompt}`
   );
 }
 

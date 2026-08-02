@@ -1,6 +1,8 @@
 import { logger } from '../../config/logger';
 import {
+  claimLeadReminder,
   claimReminder,
+  getDueLeadReminders,
   getDueReminders,
   markReminderFired,
   rescheduleReminder,
@@ -8,8 +10,8 @@ import {
 import { isTenantBlocked } from '../../middleware/tenantAccess.middleware';
 import { getTenantWhatsapp } from '../whatsapp.service';
 import type { Reminder } from '../../types';
-import { describeRecurrence } from './parse.service';
-import { nextOccurrence } from './time';
+import { describeLead, describeRecurrence } from './parse.service';
+import { formatForOwner, nextOccurrence } from './time';
 
 /**
  * Agendador dos lembretes: a cada minuto varre os vencidos e dispara no
@@ -72,11 +74,42 @@ async function fire(reminder: Reminder): Promise<void> {
   await rescheduleReminder(reminder.id, next);
 }
 
+/**
+ * Toque ANTECIPADO ("me avise 1h antes"). Não mexe no status nem no
+ * next_fire_at: o lembrete continua pendente e dispara de novo na hora certa.
+ */
+async function fireLead(reminder: Reminder): Promise<void> {
+  const claimed = await claimLeadReminder(reminder.id);
+  if (!claimed) return;
+
+  if (await isTenantBlocked(reminder.tenant_id)) return;
+
+  const quando = formatForOwner(new Date(reminder.next_fire_at), reminder.timezone);
+  const antes = reminder.lead_minutes ? describeLead(reminder.lead_minutes) : 'em breve';
+  const text = `🔔 *Lembrete antecipado* (${antes})\n${reminder.task}\n🕒 ${quando}`;
+
+  try {
+    const wa = await getTenantWhatsapp(reminder.tenant_id);
+    await wa.sendText(reminder.owner_phone, text);
+    logger.info(`Aviso antecipado enviado (${reminder.id}).`);
+  } catch (err) {
+    logger.warn(`Falha no aviso antecipado ${reminder.id}`, err);
+  }
+}
+
 async function tick(): Promise<void> {
   // Um tick por vez: um envio lento não pode empilhar varreduras.
   if (running) return;
   running = true;
   try {
+    // Avisos antecipados primeiro: são sensíveis ao horário e baratos.
+    const leads = await getDueLeadReminders(BATCH);
+    for (const reminder of leads) {
+      await fireLead(reminder).catch((err) =>
+        logger.warn(`Erro no aviso antecipado ${reminder.id}`, err),
+      );
+    }
+
     const due = await getDueReminders(BATCH);
     for (const reminder of due) {
       await fire(reminder).catch((err) =>

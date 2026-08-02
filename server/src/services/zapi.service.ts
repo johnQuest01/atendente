@@ -108,9 +108,26 @@ export async function getConnectionStatus(conn: ZapiConnection): Promise<Provide
   }
 }
 
-/** Envia mensagem de texto. */
+/**
+ * Segundos de "digitando..." antes da mensagem aparecer.
+ *
+ * Uma resposta que chega instantaneamente denuncia o robô. Aqui o tempo é
+ * proporcional ao tamanho do texto (~25 caracteres por segundo, ritmo de quem
+ * digita rápido no celular), com piso de 1s para frases curtas não travarem o
+ * atendimento e teto de 8s para ninguém achar que a conversa morreu.
+ */
+export function typingSecondsFor(message: string): number {
+  const seconds = Math.round(message.length / 25);
+  return Math.min(8, Math.max(1, seconds));
+}
+
+/** Envia mensagem de texto, com o "digitando..." antes. */
 export function sendText(conn: ZapiConnection, phone: string, message: string): Promise<string | null> {
-  return post(conn, 'send-text', { phone, message });
+  return post(conn, 'send-text', {
+    phone,
+    message,
+    delayTyping: typingSecondsFor(message),
+  });
 }
 
 /** Envia audio (URL .ogg). `audio` pode ser URL publica ou base64. */

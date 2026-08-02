@@ -22,6 +22,10 @@ export interface Client {
   segment: string | null;
   notes: string | null;
   is_active: boolean;
+  /** false = a IA não responde este contato; o humano assume. */
+  ai_enabled: boolean;
+  /** Instruções da IA só para este contato. */
+  ai_prompt: string | null;
   first_contact_at: string;
   last_contact_at: string;
 }

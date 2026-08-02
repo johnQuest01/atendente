@@ -6,11 +6,13 @@ import { MessageBubble } from '@/components/features/MessageBubble';
 import { Spinner, ErrorState } from '@/components/ui/States';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
+import { Toggle } from '@/components/ui/Toggle';
 import { AudioPlayer } from '@/components/ui/AudioPlayer';
 import { BackIcon, SendIcon, AudioIcon, ProductIcon, TrashIcon, BlockIcon } from '@/components/ui/Icons';
 import {
   useClearConversation,
   useConversationDetail,
+  useSetClientAi,
   useDeleteMessages,
   useSendAudioToConversation,
   useSendMessage,
@@ -40,8 +42,12 @@ export default function ConversationDetail() {
   const addBlocked = useAddBlocked();
   const blockToken = useBlockAccess((s) => s.token);
 
+  const setClientAi = useSetClientAi(id ?? '');
+
   const [text, setText] = useState('');
   const [sheet, setSheet] = useState<'audio' | 'product' | null>(null);
+  const [aiPromptOpen, setAiPromptOpen] = useState(false);
+  const [aiPromptDraft, setAiPromptDraft] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectionMode, setSelectionMode] = useState(false);
   const [confirm, setConfirm] = useState<'selected' | 'all' | 'block' | null>(null);
@@ -215,6 +221,43 @@ export default function ConversationDetail() {
         />
       )}
 
+      {/* Controle da IA para ESTE contato: desligar sem bloquear o número, e
+          dar instruções que valem só para ele. */}
+      {!selectionMode && data.client && (
+        <div className="flex items-center gap-2 border-b border-border bg-surface px-3 py-2">
+          <span className="text-xs text-text-secondary">IA neste contato</span>
+          <Toggle
+            checked={data.client.ai_enabled !== false}
+            disabled={setClientAi.isPending}
+            onChange={(next) =>
+              setClientAi.mutate(
+                { ai_enabled: next },
+                {
+                  onSuccess: () =>
+                    toast(
+                      next
+                        ? 'IA reativada para este contato.'
+                        : 'IA desligada aqui — as mensagens chegam, mas quem responde é você.',
+                      'success',
+                    ),
+                  onError: (err) => toast(getErrorMessage(err), 'error'),
+                },
+              )
+            }
+            label="Ligar ou desligar a IA para este contato"
+          />
+          <button
+            onClick={() => {
+              setAiPromptDraft(data.client?.ai_prompt ?? '');
+              setAiPromptOpen(true);
+            }}
+            className="ml-auto rounded-lg border border-border px-2.5 py-1 text-xs font-semibold text-text-secondary transition hover:text-text-primary"
+          >
+            {data.client.ai_prompt ? 'Instruções ✓' : 'Instruções'}
+          </button>
+        </div>
+      )}
+
       <div className="no-scrollbar flex-1 space-y-2 overflow-y-auto bg-bg px-3 py-4">
         {data.messages.map((m) => (
           <MessageBubble
@@ -258,6 +301,57 @@ export default function ConversationDetail() {
           </button>
         </form>
       </div>
+
+      <Modal
+        open={aiPromptOpen}
+        onClose={() => setAiPromptOpen(false)}
+        title={`Instruções da IA — ${clientName}`}
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setAiPromptOpen(false)} disabled={setClientAi.isPending}>
+              Cancelar
+            </Button>
+            <Button
+              loading={setClientAi.isPending}
+              onClick={() =>
+                setClientAi.mutate(
+                  { ai_prompt: aiPromptDraft.trim() },
+                  {
+                    onSuccess: () => {
+                      setAiPromptOpen(false);
+                      toast(
+                        aiPromptDraft.trim()
+                          ? 'Instruções salvas para este contato.'
+                          : 'Instruções removidas — volta a valer só a personalidade geral.',
+                        'success',
+                      );
+                    },
+                    onError: (err) => toast(getErrorMessage(err), 'error'),
+                  },
+                )
+              }
+            >
+              Salvar
+            </Button>
+          </div>
+        }
+      >
+        <div className="flex flex-col gap-2">
+          <p className="text-xs text-text-secondary">
+            Valem só para <strong>{clientName}</strong> e têm prioridade sobre a personalidade geral
+            da IA quando as duas discordarem. Deixe vazio para remover.
+          </p>
+          <textarea
+            value={aiPromptDraft}
+            onChange={(e) => setAiPromptDraft(e.target.value)}
+            rows={6}
+            maxLength={2000}
+            placeholder={'Ex.: cliente antigo, tratar por "seu João". Só trabalha com pagamento a prazo — nunca oferecer PIX à vista.'}
+            className="no-scrollbar w-full resize-none rounded-xl border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-primary"
+          />
+          <span className="self-end text-[10px] text-text-secondary">{aiPromptDraft.length}/2000</span>
+        </div>
+      </Modal>
 
       <AudioPickerSheet
         open={sheet === 'audio'}

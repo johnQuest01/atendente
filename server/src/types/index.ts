@@ -21,6 +21,10 @@ export interface Client {
   segment: string | null;
   notes: string | null;
   is_active: boolean;
+  /** false = a IA não responde ESTE contato; a mensagem chega e o humano trata. */
+  ai_enabled: boolean;
+  /** Instruções extras da IA só para este contato (somam-se à persona). */
+  ai_prompt: string | null;
   first_contact_at: string;
   last_contact_at: string;
 }
@@ -139,6 +143,10 @@ export interface Reminder {
   timezone: string;
   notes: string | null;
   last_fired_at: string | null;
+  /** Minutos de antecedência do aviso prévio (null = só o toque na hora). */
+  lead_minutes: number | null;
+  /** Quando o aviso prévio deste ciclo foi enviado (null = ainda não). */
+  lead_fired_at: string | null;
   created_at: string;
 }
 

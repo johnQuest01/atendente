@@ -57,6 +57,8 @@ export interface CreateReminderInput {
   nextFireAt: Date;
   timezone?: string;
   notes?: string | null;
+  /** Minutos de aviso prévio ("me avise 1h antes" = 60). */
+  leadMinutes?: number | null;
 }
 
 export async function createReminder(
@@ -65,8 +67,8 @@ export async function createReminder(
 ): Promise<Reminder> {
   const { rows } = await query<Reminder>(
     `INSERT INTO reminders
-       (tenant_id, owner_phone, task, category, recurrence, next_fire_at, timezone, notes)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       (tenant_id, owner_phone, task, category, recurrence, next_fire_at, timezone, notes, lead_minutes)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING *`,
     [
       tenantId,
@@ -77,6 +79,7 @@ export async function createReminder(
       input.nextFireAt.toISOString(),
       input.timezone ?? 'America/Sao_Paulo',
       input.notes ?? null,
+      input.leadMinutes ?? null,
     ],
   );
   return rows[0];
@@ -181,12 +184,46 @@ export async function claimReminder(id: string): Promise<boolean> {
   return (rowCount ?? 0) > 0;
 }
 
-/** Reagenda uma recorrência já reservada (volta para 'pendente'). */
+/**
+ * Reagenda uma recorrência já reservada (volta para 'pendente').
+ * Zera `lead_fired_at`: o aviso prévio do próximo ciclo ainda não aconteceu.
+ */
 export async function rescheduleReminder(id: string, nextFireAt: Date): Promise<void> {
-  await query(`UPDATE reminders SET status = 'pendente', next_fire_at = $2 WHERE id = $1`, [
-    id,
-    nextFireAt.toISOString(),
-  ]);
+  await query(
+    `UPDATE reminders
+        SET status = 'pendente', next_fire_at = $2, lead_fired_at = NULL
+      WHERE id = $1`,
+    [id, nextFireAt.toISOString()],
+  );
+}
+
+/**
+ * Lembretes cujo AVISO PRÉVIO venceu — passou do (horário − antecedência) e o
+ * horário principal ainda não chegou. Tarefa de sistema, varre todos os tenants.
+ */
+export async function getDueLeadReminders(limit = 50): Promise<Reminder[]> {
+  const { rows } = await query<Reminder>(
+    `SELECT * FROM reminders
+      WHERE status = 'pendente'
+        AND lead_minutes IS NOT NULL
+        AND lead_fired_at IS NULL
+        AND next_fire_at > NOW()
+        AND next_fire_at - (lead_minutes || ' minutes')::interval <= NOW()
+      ORDER BY next_fire_at ASC
+      LIMIT $1`,
+    [limit],
+  );
+  return rows;
+}
+
+/** Reserva o aviso prévio, para dois ticks não mandarem o mesmo alerta duas vezes. */
+export async function claimLeadReminder(id: string): Promise<boolean> {
+  const { rowCount } = await query(
+    `UPDATE reminders SET lead_fired_at = NOW()
+      WHERE id = $1 AND lead_fired_at IS NULL`,
+    [id],
+  );
+  return (rowCount ?? 0) > 0;
 }
 
 export async function completeReminder(

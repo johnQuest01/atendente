@@ -18,6 +18,7 @@ const parsedSchema = z.object({
   type: z.enum(['unico', 'recorrente']),
   due_at: z.string().nullable().optional(),
   recurrence: z.string().nullable().optional(),
+  remind_before_minutes: z.coerce.number().int().nullable().optional(),
   category: z.enum(['importante', 'rotina', 'data_especifica']),
   confirmation_text: z.string().trim().min(1).max(400),
 });
@@ -27,7 +28,24 @@ export interface ParsedReminder {
   category: ReminderCategory;
   recurrence: string | null;
   nextFireAt: Date;
+  /** Minutos de aviso prévio, quando o dono pediu ("1h antes" = 60). */
+  leadMinutes: number | null;
   confirmationText: string;
+}
+
+/** Teto de 7 dias — bate com o CHECK da migration 025. */
+const MAX_LEAD_MINUTES = 7 * 24 * 60;
+
+export function describeLead(minutes: number): string {
+  if (minutes % 1440 === 0) {
+    const d = minutes / 1440;
+    return d === 1 ? '1 dia antes' : `${d} dias antes`;
+  }
+  if (minutes % 60 === 0) {
+    const h = minutes / 60;
+    return h === 1 ? '1 hora antes' : `${h} horas antes`;
+  }
+  return `${minutes} min antes`;
 }
 
 function buildSystemPrompt(now: Date, tz: string): string {
@@ -42,6 +60,7 @@ function buildSystemPrompt(now: Date, tz: string): string {
     '  "type": "unico" | "recorrente",',
     '  "due_at": "YYYY-MM-DDTHH:mm do PRIMEIRO disparo (sempre preencha, inclusive se for recorrente)",',
     '  "recurrence": "daily | weekly:MON..SUN | monthly:N — apenas se recorrente, senão null",',
+    '  "remind_before_minutes": "minutos de aviso ANTECIPADO se o usuário pediu, senão null",',
     '  "category": "importante" | "rotina" | "data_especifica",',
     '  "confirmation_text": "uma frase curta em pt-BR confirmando o que você entendeu"',
     '}',
@@ -55,6 +74,11 @@ function buildSystemPrompt(now: Date, tz: string): string {
     '- Sem horário explícito, use 09:00 e diga isso no confirmation_text.',
     '- NUNCA use fuso ou "Z" no due_at: escreva a hora como o usuário leria no relógio dele.',
     '- Se a mensagem for ambígua, escolha a interpretação mais provável e explique-a no confirmation_text.',
+    '',
+    'Aviso antecipado (remind_before_minutes): só preencha se o usuário pedir explicitamente.',
+    '- "me avise 1 hora antes" = 60; "meia hora antes" = 30; "avise na véspera" ou "um dia antes" = 1440.',
+    '- O due_at continua sendo o horário DO COMPROMISSO, nunca o do aviso antecipado.',
+    '- Sem pedido de aviso prévio, use null.',
     '',
     'Categorias: "importante" para pagamentos/prazos críticos; "rotina" para hábitos repetidos;',
     '"data_especifica" para compromissos pontuais.',
@@ -135,16 +159,30 @@ export async function parseReminder(
     else logger.warn(`Lembretes: recorrência não reconhecida — "${data.recurrence}" (salvando como único).`);
   }
 
+  // Antecedência: descartada se não couber antes do próprio compromisso — avisar
+  // "1 dia antes" de algo que é daqui a 2h não faz sentido e o toque prévio
+  // nunca dispararia.
+  let leadMinutes: number | null = null;
+  const rawLead = data.remind_before_minutes ?? null;
+  if (rawLead && rawLead > 0) {
+    const clamped = Math.min(rawLead, MAX_LEAD_MINUTES);
+    const fitsBeforeNow = nextFireAt.getTime() - clamped * 60_000 > Date.now();
+    if (fitsBeforeNow) leadMinutes = clamped;
+    else logger.warn(`Lembretes: aviso de ${clamped}min antes não cabe até o compromisso — ignorado.`);
+  }
+
   return {
     task: data.task,
     category: data.category,
     recurrence,
     nextFireAt,
+    leadMinutes,
     // Anexamos a data resolvida: é a checagem que o dono realmente precisa ver
     // antes de confirmar, e não dá para confiar que o modelo a escreveu certo.
-    confirmationText: `${data.confirmation_text}\n📅 ${formatForOwner(nextFireAt, tz)}${
-      recurrence ? ` · repete: ${describeRecurrence(recurrence)}` : ''
-    }`,
+    confirmationText:
+      `${data.confirmation_text}\n📅 ${formatForOwner(nextFireAt, tz)}` +
+      `${recurrence ? ` · repete: ${describeRecurrence(recurrence)}` : ''}` +
+      `${leadMinutes ? `\n🔔 Aviso extra ${describeLead(leadMinutes)}` : ''}`,
   };
 }
 

@@ -38,6 +38,23 @@ export function useConversationDetail(id: string | undefined) {
   });
 }
 
+/** Liga/desliga a IA para o contato desta conversa e edita o prompt dele. */
+export function useSetClientAi(conversationId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (patch: { ai_enabled?: boolean; ai_prompt?: string }) => {
+      const { data } = await api.patch<{ client: Client }>(
+        `/conversations/${conversationId}/client`,
+        patch,
+      );
+      return data.client;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['conversation', conversationId] });
+    },
+  });
+}
+
 export function useSendMessage(conversationId: string) {
   const qc = useQueryClient();
   return useMutation({
