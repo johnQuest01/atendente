@@ -112,6 +112,21 @@ export async function handleWhatsappWebhook(req: Request, res: Response): Promis
     provider = conn.provider;
   } else {
     // Rota legada (sem :webhookToken): tenant padrão + provedor do .env.
+    // Isolamento máximo (Camada 5): fechada por padrão. Em multi-tenant, resolver
+    // por default significa entregar a mensagem de uma empresa para outra.
+    if (!env.ALLOW_LEGACY_WEBHOOK) {
+      logger.warn(
+        'Rota legada /webhook/whatsapp recusada (ALLOW_LEGACY_WEBHOOK=false). ' +
+          'Use /webhook/whatsapp/:webhookToken — cada empresa tem seu token.',
+      );
+      res.status(410).json({
+        error: {
+          code: 'LEGACY_WEBHOOK_DISABLED',
+          message: 'Rota de webhook legada desativada. Configure a URL com o token da empresa.',
+        },
+      });
+      return;
+    }
     // Em produção: WEBHOOK_VERIFY_TOKEN obrigatório. Prefira /webhook/whatsapp/:webhookToken.
     if (env.isProd && !env.WEBHOOK_VERIFY_TOKEN) {
       logger.warn(

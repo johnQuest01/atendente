@@ -1,4 +1,4 @@
-import { query, queryOne } from '../index';
+import { assertTenantMatchesScope, query, queryOne } from '../index';
 import type { Reminder, ReminderCategory, ReminderStatus } from '../../types';
 
 /**
@@ -11,6 +11,7 @@ import type { Reminder, ReminderCategory, ReminderStatus } from '../../types';
  */
 
 export async function isReminderOwner(tenantId: string, phone: string): Promise<boolean> {
+  assertTenantMatchesScope(tenantId);
   const row = await queryOne<{ phone: string }>(
     'SELECT phone FROM reminder_owners WHERE tenant_id = $1 AND phone = $2',
     [tenantId, phone],
@@ -21,6 +22,7 @@ export async function isReminderOwner(tenantId: string, phone: string): Promise<
 export async function listReminderOwners(
   tenantId: string,
 ): Promise<Array<{ phone: string; label: string | null }>> {
+  assertTenantMatchesScope(tenantId);
   const { rows } = await query<{ phone: string; label: string | null }>(
     'SELECT phone, label FROM reminder_owners WHERE tenant_id = $1 ORDER BY created_at ASC',
     [tenantId],
@@ -33,6 +35,7 @@ export async function addReminderOwner(
   phone: string,
   label?: string | null,
 ): Promise<void> {
+  assertTenantMatchesScope(tenantId);
   await query(
     `INSERT INTO reminder_owners (tenant_id, phone, label)
      VALUES ($1, $2, $3)
@@ -42,6 +45,7 @@ export async function addReminderOwner(
 }
 
 export async function removeReminderOwner(tenantId: string, phone: string): Promise<boolean> {
+  assertTenantMatchesScope(tenantId);
   const { rowCount } = await query(
     'DELETE FROM reminder_owners WHERE tenant_id = $1 AND phone = $2',
     [tenantId, phone],
@@ -65,6 +69,7 @@ export async function createReminder(
   tenantId: string,
   input: CreateReminderInput,
 ): Promise<Reminder> {
+  assertTenantMatchesScope(tenantId);
   const { rows } = await query<Reminder>(
     `INSERT INTO reminders
        (tenant_id, owner_phone, task, category, recurrence, next_fire_at, timezone, notes, lead_minutes)
@@ -100,6 +105,7 @@ export async function listReminders(
   ownerPhone: string,
   filter: ListRemindersFilter = {},
 ): Promise<Reminder[]> {
+  assertTenantMatchesScope(tenantId);
   const params: unknown[] = [tenantId, ownerPhone];
   const where: string[] = ['tenant_id = $1', 'owner_phone = $2'];
 
@@ -132,6 +138,7 @@ export async function listReminders(
 }
 
 export async function getReminderById(tenantId: string, id: string): Promise<Reminder | null> {
+  assertTenantMatchesScope(tenantId);
   return queryOne<Reminder>('SELECT * FROM reminders WHERE id = $1 AND tenant_id = $2', [
     id,
     tenantId,
@@ -231,6 +238,7 @@ export async function completeReminder(
   ownerPhone: string,
   id: string,
 ): Promise<boolean> {
+  assertTenantMatchesScope(tenantId);
   const { rowCount } = await query(
     `UPDATE reminders SET status = 'concluido'
       WHERE id = $1 AND tenant_id = $2 AND owner_phone = $3`,
@@ -244,6 +252,7 @@ export async function cancelReminder(
   ownerPhone: string,
   id: string,
 ): Promise<boolean> {
+  assertTenantMatchesScope(tenantId);
   const { rowCount } = await query(
     `UPDATE reminders SET status = 'cancelado'
       WHERE id = $1 AND tenant_id = $2 AND owner_phone = $3`,

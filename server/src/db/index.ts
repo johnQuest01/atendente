@@ -50,6 +50,24 @@ export function currentTenantId(): string | undefined {
   return tenantStorage.getStore();
 }
 
+/**
+ * Guard de aplicação (defesa em profundidade SOBRE o RLS). Se há um tenant no
+ * escopo da requisição e ele NÃO bate com o `tenantId` que a query vai usar,
+ * aborta: um bug que passe o tenant errado dentro de um `runWithTenant` de outra
+ * empresa falha alto, em vez de vazar silenciosamente. Tarefas de sistema (sem
+ * escopo — agendador, seed) passam livremente, que é onde varremos todas as
+ * empresas de propósito.
+ */
+export function assertTenantMatchesScope(tenantId: string): void {
+  const scoped = tenantStorage.getStore();
+  if (scoped && tenantId && scoped !== tenantId) {
+    throw new Error(
+      `Guard de tenant: consulta para "${tenantId}" dentro do escopo "${scoped}". ` +
+        'Operação cross-tenant abortada.',
+    );
+  }
+}
+
 /** Roda uma operação numa transação curta com `app.tenant_id` setado (RLS). */
 async function runScoped<T>(
   tenantId: string,

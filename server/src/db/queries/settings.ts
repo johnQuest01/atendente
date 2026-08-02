@@ -1,10 +1,11 @@
 import { query, queryOne } from '../index';
-import { DEFAULT_AI_PERSONA } from '../../config/persona';
+import { DEFAULT_AI_PERSONA, DEFAULT_REMINDER_PERSONA } from '../../config/persona';
 
 const AGENT_KEY = 'agent_enabled';
 const PERSONA_KEY = 'ai_persona';
 const TEMPERATURE_KEY = 'ai_temperature';
 const MAX_TOKENS_KEY = 'ai_max_tokens';
+const REMINDER_PERSONA_KEY = 'reminder_assistant_persona';
 
 /**
  * Caches em memória, POR tenant, para evitar uma consulta ao banco a cada
@@ -15,12 +16,18 @@ const agentCache = new Map<string, { enabled: boolean; at: number }>();
 const personaCache = new Map<string, { prompt: string; at: number }>();
 const temperatureCache = new Map<string, { value: number; at: number }>();
 const maxTokensCache = new Map<string, { value: number; at: number }>();
+const reminderPersonaCache = new Map<string, { prompt: string; at: number }>();
 const CACHE_TTL_MS = 5_000;
 
 const DEFAULT_AI_TEMPERATURE = 0.7;
 const DEFAULT_AI_MAX_TOKENS = 500;
 
-async function readSetting(tenantId: string, key: string): Promise<string | null> {
+/**
+ * Leitura/escrita genérica de uma setting por tenant. Exportadas para o registro
+ * de comportamento (behavior-settings) poder ler/gravar qualquer chave sem um
+ * getter dedicado. NUNCA concatene SQL — sempre via parâmetros.
+ */
+export async function readSetting(tenantId: string, key: string): Promise<string | null> {
   const row = await queryOne<{ value: string }>(
     'SELECT value FROM settings WHERE tenant_id = $1 AND key = $2',
     [tenantId, key],
@@ -28,12 +35,24 @@ async function readSetting(tenantId: string, key: string): Promise<string | null
   return row?.value ?? null;
 }
 
-async function writeSetting(tenantId: string, key: string, value: string): Promise<void> {
+export async function writeSetting(tenantId: string, key: string, value: string): Promise<void> {
   await query(
     `INSERT INTO settings (tenant_id, key, value) VALUES ($1, $2, $3)
      ON CONFLICT (tenant_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
     [tenantId, key, value],
   );
+  // Uma escrita genérica pode ter mexido numa chave que tem cache dedicado
+  // (temperatura, persona…). Limpa para o próximo read buscar o valor fresco.
+  bustSettingCache(tenantId, key);
+}
+
+/** Remove do cache em memória a entrada da chave escrita fora dos setters typed. */
+export function bustSettingCache(tenantId: string, key: string): void {
+  if (key === AGENT_KEY) agentCache.delete(tenantId);
+  else if (key === PERSONA_KEY) personaCache.delete(tenantId);
+  else if (key === TEMPERATURE_KEY) temperatureCache.delete(tenantId);
+  else if (key === MAX_TOKENS_KEY) maxTokensCache.delete(tenantId);
+  else if (key === REMINDER_PERSONA_KEY) reminderPersonaCache.delete(tenantId);
 }
 
 /** Indica se o atendente de IA deve responder automaticamente. Default: true. */
@@ -84,6 +103,32 @@ export async function setAiPersona(tenantId: string, prompt: string): Promise<st
   await writeSetting(tenantId, PERSONA_KEY, clean);
   const effective = clean ? clean : DEFAULT_AI_PERSONA;
   personaCache.set(tenantId, { prompt: effective, at: Date.now() });
+  return effective;
+}
+
+// ---------------------------------------------------------------------------
+// Persona do assistente de lembretes (como a "secretária" fala com o dono)
+// ---------------------------------------------------------------------------
+
+/**
+ * Persona do assistente pessoal de lembretes. Molda o TOM das confirmações e
+ * disparos ao dono. Cache curto: é lida no parse de cada lembrete.
+ */
+export async function getReminderPersona(tenantId: string): Promise<string> {
+  const cached = reminderPersonaCache.get(tenantId);
+  if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.prompt;
+  const value = await readSetting(tenantId, REMINDER_PERSONA_KEY);
+  const prompt = value && value.trim() ? value : DEFAULT_REMINDER_PERSONA;
+  reminderPersonaCache.set(tenantId, { prompt, at: Date.now() });
+  return prompt;
+}
+
+/** Salva a persona do assistente de lembretes. Vazio volta ao padrão. */
+export async function setReminderPersona(tenantId: string, prompt: string): Promise<string> {
+  const clean = prompt.trim();
+  await writeSetting(tenantId, REMINDER_PERSONA_KEY, clean);
+  const effective = clean ? clean : DEFAULT_REMINDER_PERSONA;
+  reminderPersonaCache.set(tenantId, { prompt: effective, at: Date.now() });
   return effective;
 }
 

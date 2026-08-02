@@ -9,10 +9,20 @@ import {
   setAiTemperature,
   getAiMaxTokens,
   setAiMaxTokens,
+  getReminderPersona,
+  setReminderPersona,
+  readSetting,
+  writeSetting,
 } from '../db/queries/settings';
-import { DEFAULT_AI_PERSONA } from '../config/persona';
+import { DEFAULT_AI_PERSONA, DEFAULT_REMINDER_PERSONA } from '../config/persona';
+import {
+  BEHAVIOR_SETTINGS,
+  coerceBehaviorValue,
+  findBehaviorSetting,
+} from '../config/behavior-settings';
 import { getHealthReport } from '../services/health.service';
 import { previewReply } from '../services/ai.service';
+import { parseReminder } from '../services/reminders/parse.service';
 import { listProducts } from '../db/queries/products';
 import { listScripts } from '../db/queries/messages_scripts';
 import { getTenantWhatsapp, invalidateTenantWhatsapp } from '../services/whatsapp.service';
@@ -25,7 +35,7 @@ import {
 } from '../db/queries/whatsapp_connections';
 import { hasEncryptionKey } from '../utils/crypto';
 import { env } from '../config/env';
-import { AppError } from '../utils/errors';
+import { AppError, NotFoundError } from '../utils/errors';
 import { emitAgentStatus } from '../socket';
 
 export const updateAgentSchema = z.object({
@@ -87,9 +97,11 @@ export async function putPersona(req: Request, res: Response): Promise<void> {
 export const previewPersonaSchema = z.object({
   // Texto do prompt sendo editado (opcional: se ausente, usa o salvo).
   prompt: z.string().max(12000).optional(),
-  message: z.string().trim().min(1, 'Digite uma mensagem de cliente para testar.').max(2000),
+  message: z.string().trim().min(1, 'Digite uma mensagem para testar.').max(2000),
   temperature: z.coerce.number().min(0).max(1.5).optional(),
   maxTokens: z.coerce.number().int().min(50).max(1200).optional(),
+  // Qual persona testar: a de vendas (padrão) ou a do assistente de lembretes.
+  target: z.enum(['sales', 'reminder']).default('sales'),
   history: z
     .array(
       z.object({
@@ -102,15 +114,32 @@ export const previewPersonaSchema = z.object({
 });
 
 /**
- * Playground do prompt: gera uma resposta de EXEMPLO com a persona (salva ou a
- * que está sendo editada) + catálogo + scripts + a cadeia de IA da empresa, SEM
- * enviar WhatsApp e SEM salvar nada. Permite testar/ajustar o prompt no próprio app.
+ * Playground do prompt. `target='sales'` gera uma resposta de exemplo do
+ * atendente (catálogo + scripts + cadeia de IA). `target='reminder'` interpreta
+ * a frase como o dono a diria e devolve o texto de confirmação do lembrete, com
+ * o TOM da persona sendo editada. Nada é enviado no WhatsApp nem salvo.
  */
 export async function previewPersona(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenant_id;
   const body = req.body as z.infer<typeof previewPersonaSchema>;
-  const systemPrompt = body.prompt !== undefined ? body.prompt : await getAiPersona(tenantId);
 
+  if (body.target === 'reminder') {
+    // Usa a persona sendo editada (mesmo sem salvar); string vazia = padrão.
+    const parsed = await parseReminder(tenantId, body.message, undefined, {
+      personaOverride: body.prompt !== undefined ? body.prompt : undefined,
+    });
+    res.json({
+      reply: parsed?.confirmationText ?? null,
+      providerLabel: null,
+      detail: parsed
+        ? null
+        : 'Não consegui interpretar um lembrete nessa frase (ou não há IA ativa). ' +
+          'Tente algo como "me lembra amanhã às 9h de pagar o fornecedor".',
+    });
+    return;
+  }
+
+  const systemPrompt = body.prompt !== undefined ? body.prompt : await getAiPersona(tenantId);
   const [products, scripts] = await Promise.all([
     listProducts(tenantId, true),
     listScripts(tenantId, true),
@@ -138,6 +167,66 @@ export async function previewPersona(req: Request, res: Response): Promise<void>
       ? null
       : 'A IA não respondeu. Confira se há um provedor ativo e com créditos em Configurações → Inteligência Artificial.',
   });
+}
+
+// ---------------------------------------------------------------------------
+// Persona do assistente de lembretes (como a "secretária" fala com o dono)
+// ---------------------------------------------------------------------------
+
+export const updateReminderPersonaSchema = z.object({
+  prompt: z.string().max(12000, 'O texto está muito longo (máx. 12000 caracteres).'),
+});
+
+export async function getReminderPersonaHandler(req: Request, res: Response): Promise<void> {
+  const prompt = await getReminderPersona(req.user!.tenant_id);
+  res.json({
+    prompt,
+    default: DEFAULT_REMINDER_PERSONA,
+    isDefault: prompt === DEFAULT_REMINDER_PERSONA,
+  });
+}
+
+export async function putReminderPersona(req: Request, res: Response): Promise<void> {
+  const { prompt } = req.body as z.infer<typeof updateReminderPersonaSchema>;
+  const effective = await setReminderPersona(req.user!.tenant_id, prompt);
+  res.json({
+    prompt: effective,
+    default: DEFAULT_REMINDER_PERSONA,
+    isDefault: effective === DEFAULT_REMINDER_PERSONA,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Registro de comportamento (config-driven): adicionar 1 linha em
+// behavior-settings.ts expõe um novo ajuste editável, sem recodificar a UI.
+// ---------------------------------------------------------------------------
+
+export async function getBehaviorSettings(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const settings = await Promise.all(
+    BEHAVIOR_SETTINGS.map(async (s) => {
+      const value = await readSetting(tenantId, s.key);
+      return { ...s, value: value ?? s.default };
+    }),
+  );
+  res.json({ settings });
+}
+
+export const behaviorKeyParamSchema = z.object({ key: z.string().trim().min(1).max(64) });
+export const updateBehaviorSchema = z.object({
+  value: z.union([z.string(), z.number(), z.boolean()]),
+});
+
+export async function putBehaviorSetting(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const { key } = req.params as z.infer<typeof behaviorKeyParamSchema>;
+  const setting = findBehaviorSetting(key);
+  if (!setting) throw new NotFoundError('Configuração');
+
+  const { value } = req.body as z.infer<typeof updateBehaviorSchema>;
+  const normalized = coerceBehaviorValue(setting, value); // valida (400 se torto)
+  await writeSetting(tenantId, key, normalized);
+  res.json({ key, value: normalized });
 }
 
 /**

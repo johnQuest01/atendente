@@ -57,6 +57,12 @@ const envSchema = z.object({
 
   WEBHOOK_VERIFY_TOKEN: z.string().optional(),
 
+  // Rota LEGADA /webhook/whatsapp (sem token) cai no tenant padrão + provedor do
+  // .env. Em multi-tenant isso é vazamento (mensagem de uma empresa cairia na
+  // errada). Desligada por padrão; só ligue se ainda existir uma instância antiga
+  // postando nela — e migre a URL para /webhook/whatsapp/:webhookToken antes.
+  ALLOW_LEGACY_WEBHOOK: booleanish(false),
+
   // Transcrição de áudio (speech-to-text) — usada para "entender" os áudios
   // que o cliente envia. Compatível com a API da OpenAI (também funciona com
   // Groq, que tem cota gratuita). "none" desativa a transcrição.

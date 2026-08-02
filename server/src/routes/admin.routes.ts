@@ -18,6 +18,14 @@ import {
   inviteIdParamSchema,
 } from '../controllers/invites.controller';
 import {
+  postAccessToken,
+  generateTokenSchema,
+  getAccessTokens,
+  deleteAccessToken,
+  tenantIdParamSchema as accessTokenTenantParamSchema,
+  accessTokenIdParamSchema,
+} from '../controllers/access-tokens.controller';
+import {
   adminAiProviders,
   createAiProviderSchema,
   updateAiProviderSchema,
@@ -47,6 +55,24 @@ router.delete(
   '/invites/:id',
   validate({ params: inviteIdParamSchema }),
   asyncHandler(deleteInvite),
+);
+
+// Token de acesso por empresa (credencial do SaaS). Só o superadmin gera/revoga;
+// a empresa vê o próprio token no Settings. Gera em claro UMA vez.
+router.post(
+  '/tenants/:tenantId/access-token',
+  validate({ params: accessTokenTenantParamSchema, body: generateTokenSchema }),
+  asyncHandler(postAccessToken),
+);
+router.get(
+  '/tenants/:tenantId/access-tokens',
+  validate({ params: accessTokenTenantParamSchema }),
+  asyncHandler(getAccessTokens),
+);
+router.delete(
+  '/access-tokens/:id',
+  validate({ params: accessTokenIdParamSchema }),
+  asyncHandler(deleteAccessToken),
 );
 
 // Provedores de IA GLOBAIS da plataforma (trocar de agente + cadeia de failover).

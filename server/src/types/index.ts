@@ -160,6 +160,29 @@ export interface Keyword {
   is_active: boolean;
 }
 
+/**
+ * Token de acesso por empresa (tenant), emitido pelo dono da plataforma
+ * (superadmin). Guardado cifrado + hash + prefixo; nunca em texto puro. É a
+ * credencial/prova de acesso da empresa ao SaaS.
+ */
+export interface AccessToken {
+  id: string;
+  tenant_id: string;
+  token_prefix: string;
+  label: string | null;
+  created_by: string | null;
+  is_active: boolean;
+  last_used_at: string | null;
+  expires_at: string | null;
+  created_at: string;
+  revoked_at: string | null;
+}
+
+/** Token de acesso com o valor em claro decifrado — só para viewers autorizados. */
+export interface AccessTokenReveal extends AccessToken {
+  token: string;
+}
+
 export interface MatchResult {
   content_type: ContentType;
   content_id: string | null;

@@ -13,6 +13,13 @@ import {
   updatePersonaSchema,
   previewPersona,
   previewPersonaSchema,
+  getReminderPersonaHandler,
+  putReminderPersona,
+  updateReminderPersonaSchema,
+  getBehaviorSettings,
+  putBehaviorSetting,
+  behaviorKeyParamSchema,
+  updateBehaviorSchema,
   getSystemStatus,
   getWhatsappConnection,
   configureWhatsappWebhook,
@@ -36,6 +43,7 @@ import {
   getReminders,
   listRemindersQuerySchema,
 } from '../controllers/reminders.controller';
+import { getMyAccessToken } from '../controllers/access-tokens.controller';
 
 const router = Router();
 
@@ -49,10 +57,33 @@ router.put('/agent', validate({ body: updateAgentSchema }), asyncHandler(putAgen
 router.get('/persona', asyncHandler(getPersona));
 router.put('/persona', validate({ body: updatePersonaSchema }), asyncHandler(putPersona));
 // Playground: testa o prompt gerando uma resposta de exemplo (sem enviar WhatsApp).
+// Aceita target: 'sales' (padrão) ou 'reminder' (persona do assistente de lembretes).
 router.post('/persona/preview', validate({ body: previewPersonaSchema }), asyncHandler(previewPersona));
+
+// Persona do assistente de lembretes (como a "secretária" fala com o dono).
+router.get('/reminder-persona', adminOnly, asyncHandler(getReminderPersonaHandler));
+router.put(
+  '/reminder-persona',
+  adminOnly,
+  validate({ body: updateReminderPersonaSchema }),
+  asyncHandler(putReminderPersona),
+);
+
+// Registro de comportamento (config-driven): ajustes simples, editáveis no painel.
+router.get('/behavior', adminOnly, asyncHandler(getBehaviorSettings));
+router.put(
+  '/behavior/:key',
+  adminOnly,
+  validate({ params: behaviorKeyParamSchema, body: updateBehaviorSchema }),
+  asyncHandler(putBehaviorSetting),
+);
 
 // Status REAL das integrações (banco, Claude, WhatsApp, STT).
 router.get('/status', asyncHandler(getSystemStatus));
+
+// Token de acesso da empresa do usuário logado (só-leitura, escopado por tenant).
+// Visível a qualquer papel DAQUELA empresa — é o "exposto pra ele e pra quem loga".
+router.get('/access-token', asyncHandler(getMyAccessToken));
 
 // Conexão de WhatsApp da empresa (cadastro de credenciais). Só admin edita.
 router.get('/whatsapp', asyncHandler(getWhatsappConnection));

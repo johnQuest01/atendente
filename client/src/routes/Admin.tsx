@@ -7,7 +7,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Modal } from '@/components/ui/Modal';
 import { Input } from '@/components/ui/Input';
 import { Spinner, EmptyState, ErrorState } from '@/components/ui/States';
-import { BuildingIcon, PlusIcon, EditIcon } from '@/components/ui/Icons';
+import { BuildingIcon, PlusIcon, EditIcon, KeyIcon, CopyIcon } from '@/components/ui/Icons';
 import { useAuth } from '@/hooks/useAuth';
 import {
   useTenants,
@@ -16,6 +16,12 @@ import {
   type TenantSummary,
 } from '@/hooks/useTenants';
 import { useInvites, useCreateInvite, useRevokeInvite, inviteStatus } from '@/hooks/useInvites';
+import {
+  useTenantTokens,
+  useGenerateToken,
+  useRevokeToken,
+  type AccessTokenReveal,
+} from '@/hooks/useAccessTokens';
 import { AiProvidersManager } from '@/components/ai/AiProvidersManager';
 import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
@@ -298,12 +304,150 @@ function TenantRow({ tenant }: { tenant: TenantSummary }) {
         </div>
       )}
 
+      <AccessTokenManager tenantId={tenant.id} tenantName={tenant.name} />
+
       <TenantLimitModal
         open={editingLimit}
         onClose={() => setEditingLimit(false)}
         tenant={tenant}
       />
     </Card>
+  );
+}
+
+/** Como o token aparece em texto para copiar. */
+function copyText(text: string, ok: string) {
+  void navigator.clipboard?.writeText(text).then(
+    () => toast(ok, 'success'),
+    () => toast('Não foi possível copiar — copie manualmente.', 'error'),
+  );
+}
+
+/**
+ * Token de acesso da empresa (por tenant). Só o superadmin gera/revoga. Ao gerar,
+ * o valor aparece UMA vez num modal copiável; depois fica identificado por prefixo,
+ * com "revelar" para reexibir (decifra no servidor).
+ */
+function AccessTokenManager({ tenantId, tenantName }: { tenantId: string; tenantName: string }) {
+  const [open, setOpen] = useState(false);
+  const { data, isLoading } = useTenantTokens(tenantId, open);
+  const generate = useGenerateToken();
+  const revoke = useRevokeToken();
+  const [justCreated, setJustCreated] = useState<AccessTokenReveal | null>(null);
+  const [revealed, setRevealed] = useState(false);
+
+  const active = data?.active ?? null;
+
+  function doGenerate() {
+    generate.mutate(
+      { tenantId },
+      {
+        onSuccess: (token) => {
+          setJustCreated(token);
+          setRevealed(false);
+          toast('Token gerado — copie agora, ele só aparece uma vez aqui.', 'success');
+        },
+        onError: (err) => toast(getErrorMessage(err), 'error'),
+      },
+    );
+  }
+
+  return (
+    <div className="border-t border-border pt-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 text-left"
+      >
+        <span className="flex items-center gap-1.5 text-xs font-semibold text-text-secondary">
+          <KeyIcon width={14} height={14} />
+          Token de acesso
+        </span>
+        <Badge tone={active ? 'success' : 'neutral'}>
+          {active ? `${active.token_prefix}…` : 'nenhum'}
+        </Badge>
+      </button>
+
+      {open && (
+        <div className="mt-2 flex flex-col gap-2">
+          {isLoading && <Spinner label="Carregando token..." />}
+
+          {active && (
+            <div className="flex items-center gap-2 rounded-lg border border-border bg-bg p-2">
+              <code className="min-w-0 flex-1 truncate text-xs text-text-primary">
+                {revealed ? active.token : `${active.token_prefix}${'•'.repeat(10)}`}
+              </code>
+              <Button size="sm" variant="ghost" onClick={() => setRevealed((v) => !v)}>
+                {revealed ? 'Ocultar' : 'Revelar'}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => copyText(active.token, 'Token copiado!')}
+              >
+                <CopyIcon width={14} height={14} />
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                loading={revoke.isPending}
+                onClick={() =>
+                  revoke.mutate(
+                    { id: active.id, tenantId },
+                    {
+                      onSuccess: () => toast('Token revogado.', 'success'),
+                      onError: (err) => toast(getErrorMessage(err), 'error'),
+                    },
+                  )
+                }
+              >
+                Revogar
+              </Button>
+            </div>
+          )}
+
+          <Button size="sm" variant={active ? 'secondary' : 'primary'} loading={generate.isPending} onClick={doGenerate}>
+            <KeyIcon width={15} height={15} />
+            {active ? 'Gerar novo (revoga o atual)' : 'Gerar token de acesso'}
+          </Button>
+          <p className="text-[11px] leading-snug text-text-secondary">
+            Entregue este token ao responsável de <strong>{tenantName}</strong>. Ele vê o mesmo token
+            no painel (Configurações) depois de logar. Só existe um token ativo por empresa.
+          </p>
+        </div>
+      )}
+
+      <Modal
+        open={Boolean(justCreated)}
+        onClose={() => setJustCreated(null)}
+        title="Token gerado"
+        footer={
+          <div className="flex justify-end">
+            <Button onClick={() => setJustCreated(null)}>Fechar</Button>
+          </div>
+        }
+      >
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-text-secondary">
+            Copie agora e guarde. Por segurança ele fica cifrado; você pode reexibi-lo depois em
+            “Revelar”, mas é mais seguro copiar já.
+          </p>
+          <div className="flex items-center gap-2 rounded-lg border border-border bg-bg p-2">
+            <code className="min-w-0 flex-1 break-all text-xs text-text-primary">
+              {justCreated?.token}
+            </code>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => justCreated && copyText(justCreated.token, 'Token copiado!')}
+            >
+              <CopyIcon width={14} height={14} />
+              Copiar
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    </div>
   );
 }
 

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { logger } from '../../config/logger';
 import { complete } from '../ai/orchestrator';
+import { getReminderPersona } from '../../db/queries/settings';
 import type { ReminderCategory } from '../../types';
 import { DEFAULT_TZ, formatForOwner, isValidRecurrence, parseLocalIso, toWallClock, weekdayNamePt } from './time';
 
@@ -48,10 +49,20 @@ export function describeLead(minutes: number): string {
   return `${minutes} min antes`;
 }
 
-function buildSystemPrompt(now: Date, tz: string): string {
+function buildSystemPrompt(now: Date, tz: string, persona?: string | null): string {
   const wc = toWallClock(now, tz);
   const pad = (n: number) => String(n).padStart(2, '0');
   const agora = `${wc.year}-${pad(wc.month)}-${pad(wc.day)}T${pad(wc.hour)}:${pad(wc.minute)}`;
+  // A persona (editável no painel) molda só o TOM do confirmation_text — a data
+  // resolvida continua sendo anexada pelo código, para não depender de a IA
+  // acertar o horário.
+  const personaBlock = persona?.trim()
+    ? [
+        '',
+        'TOM ao redigir o confirmation_text (siga este estilo de secretária):',
+        persona.trim(),
+      ].join('\n')
+    : '';
   return [
     `Você é um extrator de lembretes. Agora é ${agora} (${weekdayNamePt(now, tz)}), fuso ${tz}.`,
     'Responda APENAS com JSON válido, sem texto antes ou depois, no formato:',
@@ -85,6 +96,7 @@ function buildSystemPrompt(now: Date, tz: string): string {
     '',
     'Categorias: "importante" para pagamentos/prazos críticos; "rotina" para hábitos repetidos;',
     '"data_especifica" para compromissos pontuais.',
+    personaBlock,
   ].join('\n');
 }
 
@@ -103,15 +115,23 @@ function extractJson(text: string): unknown | null {
  * ou devolveu algo que não dá para confiar — o chamador então pede o texto de
  * outro jeito, em vez de salvar um lembrete errado.
  */
+export interface ParseReminderOptions {
+  /** Persona a usar no lugar da salva (playground do painel). */
+  personaOverride?: string | null;
+}
+
 export async function parseReminder(
   tenantId: string,
   message: string,
   tz: string = DEFAULT_TZ,
+  opts: ParseReminderOptions = {},
 ): Promise<ParsedReminder | null> {
   const now = new Date();
+  const persona =
+    opts.personaOverride !== undefined ? opts.personaOverride : await getReminderPersona(tenantId);
   const result = await complete(
     {
-      system: buildSystemPrompt(now, tz),
+      system: buildSystemPrompt(now, tz, persona),
       messages: [{ role: 'user', content: message.slice(0, 1000) }],
       maxTokens: 400,
       temperature: 0,
