@@ -16,7 +16,18 @@ import {
 import { env } from '../config/env';
 import type { Audio } from '../types';
 
-ffmpeg.setFfmpegPath(ffmpegPath.path);
+// Binário do ffmpeg embarcado pelo @ffmpeg-installer. Se, por qualquer motivo,
+// o pacote da plataforma não tiver sido instalado (ex.: build com
+// --omit=optional), o caminho vem vazio — avisamos no boot para que a falha de
+// conversão de áudio não vire um "erro interno" misterioso mais tarde.
+if (ffmpegPath?.path) {
+  ffmpeg.setFfmpegPath(ffmpegPath.path);
+} else {
+  logger.error(
+    'ffmpeg não encontrado (@ffmpeg-installer). A conversão de áudio vai falhar — ' +
+      'reinstale as dependências sem --omit=optional ou disponibilize o ffmpeg no PATH.',
+  );
+}
 
 interface ConvertResult {
   outputPath: string;
@@ -100,7 +111,22 @@ async function prepareAudioFromTmp(tmpFilePath: string): Promise<PreparedAudio> 
     const fileData = storageMode === 'local' ? await fs.readFile(outputPath) : null;
 
     const filename = path.basename(outputPath);
-    const stored = await persistFile(outputPath, 'audios', filename, 'audio/ogg');
+    let stored;
+    try {
+      stored = await persistFile(outputPath, 'audios', filename, 'audio/ogg');
+    } catch (err) {
+      // Erro cru de storage (S3/R2) ou de disco: em produção o middleware o
+      // mascara como "Erro interno do servidor". Convertemos numa mensagem
+      // acionável (e logamos a causa real) para o operador saber o que corrigir.
+      logger.error('Falha ao persistir o áudio no storage', err);
+      throw new AppError(
+        storageMode === 'remote'
+          ? 'Não foi possível enviar o áudio para o armazenamento (R2/S3). Verifique as credenciais S3_ACCESS_KEY/S3_SECRET_KEY, o S3_BUCKET e o R2_ACCOUNT_ID/S3_ENDPOINT.'
+          : 'Não foi possível salvar o áudio no disco do servidor. Verifique o UPLOAD_DIR e o disco persistente do Render (ou configure o R2 para URLs permanentes).',
+        500,
+        'AUDIO_STORAGE_FAILED',
+      );
+    }
 
     return { fileData, durationSeconds, sizeKb: stored.sizeKb, storedUrl: stored.url };
   } finally {
@@ -142,11 +168,23 @@ export async function processAndStoreAudio(input: ProcessAudioInput): Promise<Au
     fileData: prepared.fileData,
     mimeType: prepared.fileData ? 'audio/ogg' : null,
   };
-  const audio = await createAudio(input.tenantId, dbInput);
-
-  const finalUrl = publicUrlForAudio(input.tenantId, audio.id, prepared.storedUrl);
-  await setAudioFileUrl(input.tenantId, audio.id, finalUrl);
-  audio.file_url = finalUrl;
+  let audio: Audio;
+  try {
+    audio = await createAudio(input.tenantId, dbInput);
+    const finalUrl = publicUrlForAudio(input.tenantId, audio.id, prepared.storedUrl);
+    await setAudioFileUrl(input.tenantId, audio.id, finalUrl);
+    audio.file_url = finalUrl;
+  } catch (err) {
+    // Erro cru do banco (ex.: coluna ausente por migration não aplicada, blob
+    // recusado): logamos a causa e devolvemos uma mensagem clara em vez do
+    // "Erro interno do servidor" genérico.
+    logger.error('Falha ao registrar o áudio no banco de dados', err);
+    throw new AppError(
+      'Não foi possível registrar o áudio no banco de dados. Verifique se as migrations foram aplicadas (npm run migrate) e a conexão com o banco.',
+      500,
+      'AUDIO_DB_FAILED',
+    );
+  }
   return audio;
 }
 
@@ -161,11 +199,20 @@ export async function replaceAudioFile(
 ): Promise<Audio | null> {
   const prepared = await prepareAudioFromTmp(tmpFilePath);
   const finalUrl = publicUrlForAudio(tenantId, id, prepared.storedUrl);
-  return updateAudioFile(tenantId, id, {
-    fileData: prepared.fileData,
-    mimeType: prepared.fileData ? 'audio/ogg' : null,
-    fileUrl: finalUrl,
-    fileSizeKb: prepared.sizeKb,
-    durationSeconds: prepared.durationSeconds,
-  });
+  try {
+    return await updateAudioFile(tenantId, id, {
+      fileData: prepared.fileData,
+      mimeType: prepared.fileData ? 'audio/ogg' : null,
+      fileUrl: finalUrl,
+      fileSizeKb: prepared.sizeKb,
+      durationSeconds: prepared.durationSeconds,
+    });
+  } catch (err) {
+    logger.error('Falha ao substituir o arquivo de áudio no banco de dados', err);
+    throw new AppError(
+      'Não foi possível atualizar o áudio no banco de dados. Verifique se as migrations foram aplicadas (npm run migrate) e a conexão com o banco.',
+      500,
+      'AUDIO_DB_FAILED',
+    );
+  }
 }
