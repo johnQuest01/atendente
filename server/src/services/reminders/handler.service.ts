@@ -46,6 +46,26 @@ interface OwnerState {
 const STATE_TTL_MS = 15 * 60_000;
 const state = new Map<string, OwnerState>();
 
+/**
+ * Mensagens do dono não entram em `messages_log`, então não passam pela
+ * deduplicação por id que protege o fluxo comercial. Como os provedores
+ * reenviam webhooks (a Meta insiste bastante), guardamos os ids recentes aqui
+ * — senão um retry cria o lembrete duas vezes.
+ */
+const seenMessages = new Map<string, number>();
+const SEEN_TTL_MS = 10 * 60_000;
+
+function alreadyHandled(messageId: string | null): boolean {
+  if (!messageId) return false;
+  const now = Date.now();
+  for (const [id, at] of seenMessages) {
+    if (now - at > SEEN_TTL_MS) seenMessages.delete(id);
+  }
+  if (seenMessages.has(messageId)) return true;
+  seenMessages.set(messageId, now);
+  return false;
+}
+
 function stateKey(tenantId: string, phone: string): string {
   return `${tenantId}:${phone}`;
 }
@@ -175,6 +195,11 @@ export async function handleOwnerMessage(
 ): Promise<boolean> {
   const phone = inbound.phone;
   const tz = DEFAULT_TZ;
+
+  if (alreadyHandled(inbound.providerMessageId)) {
+    logger.info(`Lembretes: webhook repetido ignorado (${inbound.providerMessageId}).`);
+    return true;
+  }
 
   // Passo 0: obter o texto do comando, venha de onde vier.
   let text: string | null = null;
