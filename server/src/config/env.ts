@@ -84,8 +84,9 @@ const envSchema = z.object({
   S3_ENDPOINT: z.string().trim().optional(),
   S3_REGION: z.string().trim().default('auto'),
   // URL pública/CDN do bucket (ex.: https://pub-xxxx.r2.dev ou domínio próprio).
-  // É o que vai no file_url e é enviado à Z-API.
-  S3_PUBLIC_URL: z.string().trim().url().optional(),
+  // É o que vai no file_url e é enviado à Z-API. Sem .url() pelo mesmo motivo
+  // do cadeado: URL torta degrada para storage local, não derruba o serviço.
+  S3_PUBLIC_URL: z.string().trim().optional(),
   // Atalho para R2: só o Account ID; o endpoint S3 é derivado dele.
   R2_ACCOUNT_ID: z.string().trim().optional(),
 
@@ -97,8 +98,13 @@ const envSchema = z.object({
   // se ausentes, /blocked/unlock responde 503 (o boot do servidor segue).
   // .trim(): o hash tem base64 e `$`; um espaço ou quebra de linha colado junto
   // no painel faz a verificação falhar como se a senha estivesse errada.
-  BLOCK_ADMIN_EMAIL: z.string().trim().email().optional(),
-  BLOCK_ADMIN_PASSWORD_HASH: z.string().trim().min(20).optional(),
+  //
+  // Sem .min()/.email() aqui de propósito: um valor malformado numa feature
+  // OPCIONAL não pode abortar o boot (e, no Render, o build inteiro junto com
+  // as migrations). A checagem virou "suave" logo abaixo — avisa e desliga só
+  // o cadeado.
+  BLOCK_ADMIN_EMAIL: z.string().trim().optional(),
+  BLOCK_ADMIN_PASSWORD_HASH: z.string().trim().optional(),
 
   // SSRF: sufixos de host permitidos no download de mídia inbound (vírgula).
   // Vazio/ausente → só as regras de IP privado valem.
@@ -158,6 +164,42 @@ if (!parsed.success) {
 
 const data = parsed.data;
 
+/**
+ * Validação "suave" de recursos OPCIONAIS.
+ *
+ * Um valor torto aqui desliga apenas o recurso afetado, com aviso no log. Antes
+ * ele abortava o processo — e como o Render roda as migrations dentro do build,
+ * um hash colado errado derrubava o deploy inteiro. Configuração acessória não
+ * pode ter esse poder.
+ */
+function softDisable(value: string | undefined, valid: boolean, warning: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (valid) return value;
+  // eslint-disable-next-line no-console
+  console.warn(`[config] ${warning}`);
+  return undefined;
+}
+
+const blockAdminEmail = softDisable(
+  data.BLOCK_ADMIN_EMAIL,
+  /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(data.BLOCK_ADMIN_EMAIL ?? ''),
+  'BLOCK_ADMIN_EMAIL não é um e-mail válido — cadeado desativado (/blocked/unlock responde 503).',
+);
+
+const blockAdminHash = softDisable(
+  data.BLOCK_ADMIN_PASSWORD_HASH,
+  (data.BLOCK_ADMIN_PASSWORD_HASH ?? '').length >= 20,
+  'BLOCK_ADMIN_PASSWORD_HASH curto demais — parece a SENHA em vez do hash. ' +
+    'Gere com "npm run hash-password --workspace server" e cole a linha inteira ' +
+    '(começa com scrypt$). Cadeado desativado até lá.',
+);
+
+const s3PublicUrlRaw = softDisable(
+  data.S3_PUBLIC_URL,
+  /^https?:\/\/[^\s]+$/.test(data.S3_PUBLIC_URL ?? ''),
+  'S3_PUBLIC_URL não é uma URL válida — storage remoto desativado, a mídia vai para o disco local.',
+);
+
 // Endpoint S3 efetivo: usa S3_ENDPOINT explícito ou, no R2, deriva do Account ID.
 const s3Endpoint =
   data.S3_ENDPOINT ??
@@ -170,11 +212,16 @@ const hasRemoteStorage = Boolean(
     data.S3_BUCKET &&
     data.S3_ACCESS_KEY &&
     data.S3_SECRET_KEY &&
-    data.S3_PUBLIC_URL,
+    s3PublicUrlRaw,
 );
 
 export const env = {
   ...data,
+  // Sobrescreve os opcionais que passaram pela validação suave: inválido vira
+  // "não configurado", em vez de derrubar o processo.
+  BLOCK_ADMIN_EMAIL: blockAdminEmail,
+  BLOCK_ADMIN_PASSWORD_HASH: blockAdminHash,
+  S3_PUBLIC_URL: s3PublicUrlRaw,
   isProd: data.NODE_ENV === 'production',
   isDev: data.NODE_ENV === 'development',
   uploadDirAbsolute: path.isAbsolute(data.UPLOAD_DIR)
@@ -193,7 +240,7 @@ export const env = {
   s3Endpoint,
   hasRemoteStorage,
   // Remove a barra final da URL pública para concatenar com segurança.
-  s3PublicUrl: data.S3_PUBLIC_URL?.replace(/\/+$/, ''),
+  s3PublicUrl: s3PublicUrlRaw?.replace(/\/+$/, ''),
 } as const;
 
 export type Env = typeof env;
