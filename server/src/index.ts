@@ -103,7 +103,9 @@ function warnInsecureProductionConfig(): void {
   }
   if (!env.BLOCK_ADMIN_EMAIL || !env.BLOCK_ADMIN_PASSWORD_HASH) {
     logger.warn(
-      'SEGURANÇA: BLOCK_ADMIN_EMAIL / BLOCK_ADMIN_PASSWORD_HASH não configurados. /blocked/unlock retornará 503.',
+      'SEGURANÇA: BLOCK_ADMIN_EMAIL / BLOCK_ADMIN_PASSWORD_HASH não configurados — o cadeado (área "Números bloqueados") retornará 503. ' +
+        'Defina os dois no Render: BLOCK_ADMIN_EMAIL=seu@email e BLOCK_ADMIN_PASSWORD_HASH=<hash> ' +
+        '(gere o hash com: echo SUA_SENHA | npm run hash-password --workspace server).',
     );
   }
   if (!env.WEBHOOK_VERIFY_TOKEN) {
