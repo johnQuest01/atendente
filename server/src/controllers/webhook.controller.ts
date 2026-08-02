@@ -55,6 +55,41 @@ import {
  * ativo (Z-API ou Evolution API — normalizado pelo whatsapp.service),
  * registra, classifica a intenção e responde automaticamente.
  */
+/**
+ * GET /webhook/whatsapp/:webhookToken — handshake da Meta Cloud.
+ *
+ * Ao salvar a URL no painel da Meta, ela chama este endpoint com o verify token
+ * que o cliente digitou lá. Devolvemos o hub.challenge em texto puro (é isso que
+ * a Meta espera) somente se o token bater com o guardado nesta conexão.
+ */
+export async function verifyWhatsappWebhook(req: Request, res: Response): Promise<void> {
+  const webhookToken = req.params.webhookToken as string | undefined;
+  const mode = req.query['hub.mode'] as string | undefined;
+  const challenge = req.query['hub.challenge'] as string | undefined;
+  const verifyToken = req.query['hub.verify_token'] as string | undefined;
+
+  if (mode !== 'subscribe' || !challenge) {
+    res.status(400).json({ error: { code: 'BAD_REQUEST', message: 'Parâmetros de verificação ausentes.' } });
+    return;
+  }
+
+  const conn = webhookToken ? await getConnectionByWebhookToken(webhookToken) : null;
+  if (!conn || !conn.is_active) {
+    res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Conexão de webhook não encontrada.' } });
+    return;
+  }
+
+  const expected = conn.secrets.verifyToken;
+  if (!expected || verifyToken !== expected) {
+    logger.warn(`Verificação de webhook recusada para o tenant ${conn.tenant_id}: verify token não confere.`);
+    res.status(403).json({ error: { code: 'FORBIDDEN', message: 'Verify token inválido.' } });
+    return;
+  }
+
+  logger.info(`Webhook da Meta verificado com sucesso para o tenant ${conn.tenant_id}.`);
+  res.status(200).type('text/plain').send(challenge);
+}
+
 export async function handleWhatsappWebhook(req: Request, res: Response): Promise<void> {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const webhookToken = req.params.webhookToken as string | undefined;
@@ -182,6 +217,25 @@ async function processFromMe(tenantId: string, inbound: NormalizedInbound): Prom
   );
 }
 
+/**
+ * Meta Cloud entrega a mídia como handle, não como URL/base64. Resolve os bytes
+ * aqui e preenche `mediaBase64`, para o resto do pipeline (transcrição e
+ * re-hospedagem) seguir igual ao da Evolution. Best-effort: falhou, a mensagem
+ * é processada sem a mídia.
+ */
+async function hydrateProviderMedia(tenantId: string, inbound: NormalizedInbound): Promise<void> {
+  if (!inbound.mediaId || inbound.mediaBase64 || inbound.mediaUrl) return;
+  const wa = await getTenantWhatsapp(tenantId);
+  if (!wa.downloadMedia) return;
+  const media = await wa.downloadMedia(inbound.mediaId).catch((err) => {
+    logger.warn('Falha ao baixar mídia do provedor', err);
+    return null;
+  });
+  if (!media) return;
+  inbound.mediaBase64 = media.base64;
+  inbound.mediaMime = inbound.mediaMime ?? media.mime;
+}
+
 async function processInbound(tenantId: string, inbound: NormalizedInbound): Promise<void> {
   // Idempotência: a Z-API pode reenviar o mesmo webhook (retries). Se já
   // registramos esta mensagem, não processamos de novo (evita resposta
@@ -190,6 +244,8 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
     logger.info(`Mensagem duplicada ignorada (já processada): ${inbound.providerMessageId}`);
     return;
   }
+
+  await hydrateProviderMedia(tenantId, inbound);
 
   const client = await findOrCreateClient(tenantId, inbound.phone, inbound.senderName);
 

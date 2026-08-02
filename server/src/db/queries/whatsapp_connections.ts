@@ -21,6 +21,8 @@ export interface WhatsappSecrets {
   // Meta Cloud API
   accessToken?: string;
   phoneNumberId?: string;
+  /** Verify token do webhook Meta (gerado por nós, colado no painel da Meta). */
+  verifyToken?: string;
 }
 
 export interface WhatsappConnection {
@@ -81,6 +83,14 @@ function mapRow(row: ConnectionRow): WhatsappConnection {
 /** Gera um token opaco para a URL de webhook desta empresa. */
 export function generateWebhookToken(): string {
   return crypto.randomBytes(24).toString('hex');
+}
+
+/**
+ * Verify token do webhook da Meta. Diferente do webhook_token: este o cliente
+ * digita no painel da Meta, e ela o devolve no GET de verificação.
+ */
+export function generateVerifyToken(): string {
+  return crypto.randomBytes(16).toString('hex');
 }
 
 export async function getConnectionByTenant(tenantId: string): Promise<WhatsappConnection | null> {

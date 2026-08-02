@@ -17,9 +17,11 @@ import { listProducts } from '../db/queries/products';
 import { listScripts } from '../db/queries/messages_scripts';
 import { getTenantWhatsapp, invalidateTenantWhatsapp } from '../services/whatsapp.service';
 import {
+  generateVerifyToken,
   getConnectionByTenant,
   updateConnectionStatus,
   upsertConnection,
+  type WhatsappSecrets,
 } from '../db/queries/whatsapp_connections';
 import { hasEncryptionKey } from '../utils/crypto';
 import { env } from '../config/env';
@@ -179,6 +181,12 @@ async function buildWhatsappView(tenantId: string): Promise<Record<string, unkno
     hasToken: Boolean(conn?.secrets.token),
     hasClientToken: Boolean(conn?.secrets.clientToken),
     hasApiKey: Boolean(conn?.secrets.apiKey),
+    // Meta Cloud: o phone number ID não é segredo (aparece no painel da Meta) e
+    // o verify token precisa ser LIDO pelo cliente para colar lá — os dois vão
+    // inteiros. O access token, esse sim, nunca sai daqui.
+    phoneNumberId: conn?.secrets.phoneNumberId ?? null,
+    verifyToken: conn?.secrets.verifyToken ?? null,
+    hasAccessToken: Boolean(conn?.secrets.accessToken),
     status,
   };
 }
@@ -195,6 +203,9 @@ export const updateWhatsappSchema = z.object({
   clientToken: z.string().trim().max(400).optional(),
   apiKey: z.string().trim().max(400).optional(),
   instance: z.string().trim().max(200).optional(),
+  // Meta Cloud API
+  accessToken: z.string().trim().max(1000).optional(),
+  phoneNumberId: z.string().trim().max(64).optional(),
   baseUrl: z.string().url().optional(),
   isActive: z.boolean().optional(),
 });
@@ -213,12 +224,18 @@ export async function putWhatsappConnection(req: Request, res: Response): Promis
   const existing = await getConnectionByTenant(tenantId);
   const prev = existing?.secrets ?? {};
   // Campo vazio = "não alterar" (o front nunca recebe o segredo em texto).
-  const secrets = {
+  const secrets: WhatsappSecrets = {
     instanceId: input.instanceId || prev.instanceId,
     token: input.token || prev.token,
     clientToken: input.clientToken || prev.clientToken,
     apiKey: input.apiKey || prev.apiKey,
     instance: input.instance || prev.instance,
+    accessToken: input.accessToken || prev.accessToken,
+    phoneNumberId: input.phoneNumberId || prev.phoneNumberId,
+    // Geramos o verify token na primeira vez que a empresa escolhe Meta Cloud:
+    // é ele que a cliente cola no painel da Meta, e precisa ser estável depois.
+    verifyToken:
+      prev.verifyToken ?? (input.provider === 'metacloud' ? generateVerifyToken() : undefined),
   };
 
   await upsertConnection(tenantId, {

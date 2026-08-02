@@ -1,10 +1,14 @@
 import { Router } from 'express';
 import { asyncHandler } from '../utils/asyncHandler';
-import { handleWhatsappWebhook } from '../controllers/webhook.controller';
+import { handleWhatsappWebhook, verifyWhatsappWebhook } from '../controllers/webhook.controller';
 
 const router = Router();
 
-// Rota POR EMPRESA: cada instância (Z-API/Evolution) posta em
+// Verificação do webhook da Meta Cloud: ao cadastrar a URL, a Meta faz um GET
+// com hub.challenge e só ativa a assinatura se devolvermos o desafio.
+router.get('/whatsapp/:webhookToken', asyncHandler(verifyWhatsappWebhook));
+
+// Rota POR EMPRESA: cada instância (Z-API/Evolution/Meta) posta em
 // /webhook/whatsapp/<token>. O token opaco resolve o tenant + provedor.
 router.post('/whatsapp/:webhookToken', asyncHandler(handleWhatsappWebhook));
 

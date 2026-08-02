@@ -4,7 +4,12 @@ import { DEFAULT_TENANT_ID } from '../config/tenant';
 import type { MessageType } from '../types';
 import * as zapi from './zapi.service';
 import * as evolution from './evolution.service';
-import { createMetaCloudProvider, type MetaCloudConnection } from './whatsapp/metacloud.service';
+import {
+  createMetaCloudProvider,
+  parseMetaCloudInbound,
+  parseMetaCloudStatus,
+  type MetaCloudConnection,
+} from './whatsapp/metacloud.service';
 import type {
   NormalizedInbound,
   NormalizedStatus,
@@ -64,6 +69,7 @@ function resolveFromDb(conn: WhatsappConnection): ResolvedConnection {
         accessToken: conn.secrets.accessToken ?? '',
         phoneNumberId: conn.secrets.phoneNumberId ?? '',
         graphBaseUrl: conn.base_url ?? undefined,
+        verifyToken: conn.secrets.verifyToken,
       },
     };
   }
@@ -195,6 +201,9 @@ export function parseStatusUpdate(
   provider: WhatsappProviderName,
   body: Record<string, unknown>,
 ): NormalizedStatus | null {
+  if (provider === 'metacloud') {
+    return parseMetaCloudStatus(body);
+  }
   if (provider === 'evolution') {
     // Evolution: event "messages.update" com data.status (READ/DELIVERY_ACK...)
     const event = String(body.event ?? '');
@@ -218,6 +227,9 @@ export function parseInbound(
   provider: WhatsappProviderName,
   body: Record<string, unknown>,
 ): NormalizedInbound | null {
+  if (provider === 'metacloud') {
+    return parseMetaCloudInbound(body);
+  }
   if (provider === 'evolution') {
     return parseEvolutionInbound(body);
   }

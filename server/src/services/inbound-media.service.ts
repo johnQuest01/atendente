@@ -191,20 +191,27 @@ async function readBodyLimited(
 /**
  * Fetch seguro para URLs de mídia do webhook: https apenas, sem IP privado,
  * redirects revalidados, allowlist opcional, teto de bytes no stream.
+ *
+ * `authHeaders` (ex.: Bearer da Graph API) só acompanha o redirect enquanto o
+ * host não muda — credencial não vaza para um terceiro domínio.
  */
 export async function safeFetchMedia(
   url: string,
   signal?: AbortSignal,
+  authHeaders?: Record<string, string>,
 ): Promise<{ buffer: Buffer; mime: string | null } | null> {
   let current = url;
+  let originHost: string | null = null;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     const safe = await assertSafeHttpsUrl(current);
     if (!safe) return null;
+    if (originHost === null) originHost = safe.hostname.toLowerCase();
 
+    const sameHost = safe.hostname.toLowerCase() === originHost;
     const resp = await fetch(safe.href, {
       signal,
       redirect: 'manual',
-      headers: { Accept: '*/*' },
+      headers: { Accept: '*/*', ...(authHeaders && sameHost ? authHeaders : {}) },
     });
 
     if (resp.status >= 300 && resp.status < 400) {

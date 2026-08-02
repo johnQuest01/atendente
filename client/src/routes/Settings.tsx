@@ -16,6 +16,7 @@ import {
   useWhatsappConnection,
   useSaveWhatsappConnection,
   type WhatsappConnectionInput,
+  type WhatsappProvider,
 } from '@/hooks/useWhatsappConnection';
 import { useAiUsage } from '@/hooks/useAiProviders';
 import { AiProvidersManager } from '@/components/ai/AiProvidersManager';
@@ -28,6 +29,7 @@ import type { UserRole } from '@/types';
 const PROVIDER_LABEL: Record<string, string> = {
   zapi: 'Z-API',
   evolution: 'Evolution API',
+  metacloud: 'WhatsApp Oficial (Meta)',
 };
 
 function roleLabel(role: UserRole): string {
@@ -350,12 +352,14 @@ function WhatsappCard({ canEdit }: { canEdit: boolean }) {
   const save = useSaveWhatsappConnection();
 
   const [editing, setEditing] = useState(false);
-  const [provider, setProvider] = useState<'zapi' | 'evolution'>('zapi');
+  const [provider, setProvider] = useState<WhatsappProvider>('zapi');
   const [instanceId, setInstanceId] = useState('');
   const [token, setToken] = useState('');
   const [clientToken, setClientToken] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [instance, setInstance] = useState('');
+  const [accessToken, setAccessToken] = useState('');
+  const [phoneNumberId, setPhoneNumberId] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
 
   useEffect(() => {
@@ -367,10 +371,10 @@ function WhatsappCard({ canEdit }: { canEdit: boolean }) {
   const tone = !data ? 'warning' : ok ? 'success' : data.configured ? 'danger' : 'warning';
   const label = !data ? '...' : ok ? 'Conectado' : data.configured ? 'Offline' : 'Não configurado';
 
-  function copyWebhook() {
-    if (!data?.webhookUrl) return;
-    void navigator.clipboard?.writeText(data.webhookUrl).then(
-      () => toast('URL de webhook copiada!', 'success'),
+  function copyValue(value: string | null | undefined, what: string) {
+    if (!value) return;
+    void navigator.clipboard?.writeText(value).then(
+      () => toast(`${what} copiado!`, 'success'),
       () => toast('Não foi possível copiar — copie manualmente.', 'error'),
     );
   }
@@ -381,6 +385,8 @@ function WhatsappCard({ canEdit }: { canEdit: boolean }) {
     setClientToken('');
     setApiKey('');
     setInstance('');
+    setAccessToken('');
+    setPhoneNumberId('');
     setBaseUrl('');
   }
 
@@ -390,6 +396,9 @@ function WhatsappCard({ canEdit }: { canEdit: boolean }) {
       if (instanceId.trim()) payload.instanceId = instanceId.trim();
       if (token.trim()) payload.token = token.trim();
       if (clientToken.trim()) payload.clientToken = clientToken.trim();
+    } else if (provider === 'metacloud') {
+      if (accessToken.trim()) payload.accessToken = accessToken.trim();
+      if (phoneNumberId.trim()) payload.phoneNumberId = phoneNumberId.trim();
     } else {
       if (apiKey.trim()) payload.apiKey = apiKey.trim();
       if (instance.trim()) payload.instance = instance.trim();
@@ -424,16 +433,36 @@ function WhatsappCard({ canEdit }: { canEdit: boolean }) {
         <div className="mb-3 rounded-xl border border-border bg-bg p-3">
           <p className="mb-1 text-xs font-semibold text-text-primary">URL de webhook desta empresa</p>
           <p className="mb-2 text-xs text-text-secondary">
-            Cole no painel da {PROVIDER_LABEL[data.provider] ?? 'Z-API'} (mensagens recebidas e status).
+            {data.provider === 'metacloud'
+              ? 'Cole em Meta for Developers → WhatsApp → Configuration → Callback URL.'
+              : `Cole no painel da ${PROVIDER_LABEL[data.provider] ?? 'Z-API'} (mensagens recebidas e status).`}
           </p>
           <div className="flex items-center gap-2">
             <code className="block flex-1 truncate rounded-lg bg-surface px-2 py-1.5 text-xs text-text-primary">
               {data.webhookUrl}
             </code>
-            <Button size="sm" variant="secondary" onClick={copyWebhook}>
+            <Button size="sm" variant="secondary" onClick={() => copyValue(data.webhookUrl, 'URL de webhook')}>
               Copiar
             </Button>
           </div>
+
+          {data.provider === 'metacloud' && data.verifyToken && (
+            <>
+              <p className="mb-1 mt-3 text-xs font-semibold text-text-primary">Verify token</p>
+              <p className="mb-2 text-xs text-text-secondary">
+                No mesmo formulário da Meta, cole este valor no campo “Verify token”. Depois clique em
+                Verify and save e assine o campo <strong>messages</strong>.
+              </p>
+              <div className="flex items-center gap-2">
+                <code className="block flex-1 truncate rounded-lg bg-surface px-2 py-1.5 text-xs text-text-primary">
+                  {data.verifyToken}
+                </code>
+                <Button size="sm" variant="secondary" onClick={() => copyValue(data.verifyToken, 'Verify token')}>
+                  Copiar
+                </Button>
+              </div>
+            </>
+          )}
         </div>
       )}
 
@@ -450,11 +479,28 @@ function WhatsappCard({ canEdit }: { canEdit: boolean }) {
           <Select
             label="Provedor"
             value={provider}
-            onChange={(e) => setProvider(e.target.value as 'zapi' | 'evolution')}
+            onChange={(e) => setProvider(e.target.value as WhatsappProvider)}
           >
             <option value="zapi">Z-API</option>
             <option value="evolution">Evolution API</option>
+            <option value="metacloud">WhatsApp Oficial (Meta)</option>
           </Select>
+
+          {provider === 'metacloud' && (
+            <p className="rounded-lg bg-primary/10 px-3 py-2 text-xs text-text-secondary">
+              Pegue os dois valores em{' '}
+              <a
+                href="https://developers.facebook.com/apps"
+                target="_blank"
+                rel="noreferrer"
+                className="font-semibold text-primary underline"
+              >
+                Meta for Developers
+              </a>{' '}
+              → seu app → WhatsApp → API Setup. Salve aqui primeiro: a URL de webhook e o verify token
+              aparecem logo acima, e é com eles que você conclui a configuração lá na Meta.
+            </p>
+          )}
 
           {provider === 'zapi' ? (
             <>
@@ -475,6 +521,21 @@ function WhatsappCard({ canEdit }: { canEdit: boolean }) {
                 value={clientToken}
                 onChange={(e) => setClientToken(e.target.value)}
                 placeholder={data?.hasClientToken ? '•••• salvo (vazio = manter)' : 'Segurança da conta'}
+              />
+            </>
+          ) : provider === 'metacloud' ? (
+            <>
+              <Input
+                label="Token de acesso permanente"
+                value={accessToken}
+                onChange={(e) => setAccessToken(e.target.value)}
+                placeholder={data?.hasAccessToken ? '•••• salvo (vazio = manter)' : 'Começa com EAA...'}
+              />
+              <Input
+                label="Phone number ID"
+                value={phoneNumberId}
+                onChange={(e) => setPhoneNumberId(e.target.value)}
+                placeholder={data?.phoneNumberId ?? 'Ex.: 123456789012345'}
               />
             </>
           ) : (
@@ -498,7 +559,14 @@ function WhatsappCard({ canEdit }: { canEdit: boolean }) {
             label="URL base (opcional)"
             value={baseUrl}
             onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder={data?.baseUrl ?? (provider === 'zapi' ? 'https://api.z-api.io/instances' : 'http://...')}
+            placeholder={
+              data?.baseUrl ??
+              (provider === 'zapi'
+                ? 'https://api.z-api.io/instances'
+                : provider === 'metacloud'
+                  ? 'https://graph.facebook.com/v21.0'
+                  : 'http://...')
+            }
           />
 
           <div className="flex justify-end gap-2">

@@ -21,6 +21,11 @@ export interface NormalizedInbound {
   mediaUrl?: string | null;
   mediaBase64?: string | null;
   mediaMime?: string | null;
+  /**
+   * Handle da mídia no provedor, quando ele não entrega URL nem base64 no
+   * webhook (caso da Meta Cloud). Resolvido depois via `downloadMedia`.
+   */
+  mediaId?: string | null;
   fileName?: string | null;
   caption?: string | null;
   timestamp?: string | null;
@@ -44,11 +49,16 @@ export interface WhatsAppProvider {
   sendImages(phone: string, imageUrls: string[], caption?: string): Promise<Array<string | null>>;
   markAsRead(phone: string, messageId: string): Promise<string | null>;
   getConnectionStatus(): Promise<ProviderStatus>;
+  /**
+   * Só para provedores que entregam a mídia por handle (Meta Cloud). Baixa os
+   * bytes autenticado e devolve base64, o mesmo formato que a Evolution já
+   * manda pronto no webhook.
+   */
+  downloadMedia?(mediaId: string): Promise<DownloadedMedia | null>;
 }
 
-export class NotImplementedError extends Error {
-  constructor(method: string) {
-    super(`Meta Cloud API: ${method} ainda não implementado.`);
-    this.name = 'NotImplementedError';
-  }
+export interface DownloadedMedia {
+  base64: string;
+  mime: string | null;
+  fileName?: string | null;
 }

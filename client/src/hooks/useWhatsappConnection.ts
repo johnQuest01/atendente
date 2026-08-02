@@ -2,8 +2,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 import { SYSTEM_STATUS_QUERY_KEY } from './useSystemStatus';
 
+export type WhatsappProvider = 'zapi' | 'evolution' | 'metacloud';
+
 export interface WhatsappConnectionView {
-  provider: 'zapi' | 'evolution';
+  provider: WhatsappProvider;
   baseUrl: string | null;
   isActive: boolean;
   configured: boolean;
@@ -14,16 +16,22 @@ export interface WhatsappConnectionView {
   hasToken: boolean;
   hasClientToken: boolean;
   hasApiKey: boolean;
+  /** Meta Cloud: não são segredos — o cliente precisa vê-los para configurar. */
+  phoneNumberId: string | null;
+  verifyToken: string | null;
+  hasAccessToken: boolean;
   status: { ok: boolean; detail: string };
 }
 
 export interface WhatsappConnectionInput {
-  provider: 'zapi' | 'evolution';
+  provider: WhatsappProvider;
   instanceId?: string;
   token?: string;
   clientToken?: string;
   apiKey?: string;
   instance?: string;
+  accessToken?: string;
+  phoneNumberId?: string;
   baseUrl?: string;
   isActive?: boolean;
 }
