@@ -631,24 +631,44 @@ function WhatsappCard({ canEdit }: { canEdit: boolean }) {
 
           {provider === 'zapi' ? (
             <>
+              <p className="rounded-lg bg-primary/10 px-3 py-2 text-xs text-text-secondary">
+                Abra o{' '}
+                <a
+                  href="https://app.z-api.io"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-semibold text-primary underline"
+                >
+                  painel da Z-API
+                </a>{' '}
+                → <strong>Minhas instâncias</strong> → clique na sua instância. O ID e o token estão
+                lá, um do lado do outro. O Client-Token fica em outro lugar: menu{' '}
+                <strong>Segurança</strong> da conta.
+              </p>
               <Input
-                label="Instance ID"
+                label="ID da instância"
                 value={instanceId}
                 onChange={(e) => setInstanceId(e.target.value)}
-                placeholder={data?.instanceId ? `Salvo (${data.instanceId})` : 'Ex.: 3DF1A2...'}
+                placeholder={data?.instanceId ? `Salvo (${data.instanceId})` : 'Ex.: 3DF1A2B4C5D6E7F8'}
               />
               <Input
-                label="Token"
+                label="Token da instância"
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
-                placeholder={data?.hasToken ? '•••• salvo (vazio = manter)' : 'Token da instância'}
+                placeholder={data?.hasToken ? '•••• salvo (deixe vazio para manter)' : 'Token da própria instância'}
               />
               <Input
-                label="Client-Token (opcional)"
+                label="Client-Token (token de segurança da conta)"
                 value={clientToken}
                 onChange={(e) => setClientToken(e.target.value)}
-                placeholder={data?.hasClientToken ? '•••• salvo (vazio = manter)' : 'Segurança da conta'}
+                placeholder={
+                  data?.hasClientToken ? '•••• salvo (deixe vazio para manter)' : 'Deixe vazio se não ativou'
+                }
               />
+              <p className="-mt-1 text-xs text-text-secondary">
+                O Client-Token só é obrigatório se você ativou o token de segurança na conta. Com ele
+                ligado na Z-API e vazio aqui, todo envio volta com erro de autorização.
+              </p>
             </>
           ) : provider === 'metacloud' ? (
             <>
@@ -667,17 +687,22 @@ function WhatsappCard({ canEdit }: { canEdit: boolean }) {
             </>
           ) : (
             <>
+              <p className="rounded-lg bg-primary/10 px-3 py-2 text-xs text-text-secondary">
+                Evolution é auto-hospedada: a chave é a <strong>apikey</strong> definida no servidor
+                dela, e a instância é o nome que você deu ao criá-la. Preencha também a URL base
+                abaixo, apontando para o seu servidor.
+              </p>
               <Input
                 label="API Key"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                placeholder={data?.hasApiKey ? '•••• salvo (vazio = manter)' : 'apikey da Evolution'}
+                placeholder={data?.hasApiKey ? '•••• salvo (deixe vazio para manter)' : 'apikey da Evolution'}
               />
               <Input
-                label="Instância"
+                label="Nome da instância"
                 value={instance}
                 onChange={(e) => setInstance(e.target.value)}
-                placeholder={data?.instance ? `Salvo (${data.instance})` : 'Nome da instância'}
+                placeholder={data?.instance ? `Salvo (${data.instance})` : 'Ex.: minha-loja'}
               />
             </>
           )}
