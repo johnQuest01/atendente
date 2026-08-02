@@ -122,6 +122,26 @@ export interface Product {
 
 export type ContentType = 'audio' | 'text' | 'product' | 'claude';
 
+/** Lembretes pessoais do dono (assistente por WhatsApp). */
+export type ReminderCategory = 'importante' | 'rotina' | 'data_especifica';
+export type ReminderStatus = 'pendente' | 'enviado' | 'concluido' | 'cancelado';
+
+export interface Reminder {
+  id: string;
+  tenant_id: string;
+  owner_phone: string;
+  task: string;
+  category: ReminderCategory;
+  /** NULL = disparo único; senão 'daily' | 'weekly:FRI' | 'monthly:20'. */
+  recurrence: string | null;
+  next_fire_at: string;
+  status: ReminderStatus;
+  timezone: string;
+  notes: string | null;
+  last_fired_at: string | null;
+  created_at: string;
+}
+
 export interface Keyword {
   id: string;
   keyword: string;

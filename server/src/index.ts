@@ -12,6 +12,7 @@ import webhookRoutes from './routes/webhook.routes';
 import mediaRoutes from './routes/media.routes';
 import { logStorageMode } from './services/storage.service';
 import { isAiConfigured } from './services/ai.service';
+import { startReminderScheduler, stopReminderScheduler } from './services/reminders/scheduler.service';
 import { apiLimiter, webhookLimiter } from './middleware/rateLimit.middleware';
 import { errorHandler, notFoundHandler } from './middleware/error.middleware';
 
@@ -87,6 +88,9 @@ async function start(): Promise<void> {
     });
     if (!env.hasWhatsapp)
       logger.warn(`Provedor de WhatsApp (${env.WHATSAPP_PROVIDER}) não configurado — envios serão simulados.`);
+    // Lembretes do dono: processo 24/7, então o intervalo basta. Atenção ao
+    // plano do Render — se o serviço hibernar, o agendador para junto.
+    startReminderScheduler();
     warnInsecureProductionConfig();
   });
 }
@@ -116,6 +120,7 @@ function warnInsecureProductionConfig(): void {
 
 function shutdown(signal: string): void {
   logger.info(`Recebido ${signal}, encerrando...`);
+  stopReminderScheduler();
   server.close(() => {
     void closePool().finally(() => process.exit(0));
   });

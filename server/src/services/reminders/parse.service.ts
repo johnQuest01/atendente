@@ -1,0 +1,169 @@
+import { z } from 'zod';
+import { logger } from '../../config/logger';
+import { complete } from '../ai/orchestrator';
+import type { ReminderCategory } from '../../types';
+import { DEFAULT_TZ, formatForOwner, isValidRecurrence, parseLocalIso, toWallClock, weekdayNamePt } from './time';
+
+/**
+ * Interpretação do lembrete em linguagem natural. Usa o orquestrador de IA da
+ * empresa (com failover) — nunca um SDK cru.
+ *
+ * A data relativa é resolvida pelo MODELO, mas com a data/hora atual injetada
+ * no prompt: sem isso ele chuta "hoje" a partir do treino. E o horário volta
+ * como relógio de parede, convertido aqui para UTC no fuso do dono.
+ */
+
+const parsedSchema = z.object({
+  task: z.string().trim().min(1).max(500),
+  type: z.enum(['unico', 'recorrente']),
+  due_at: z.string().nullable().optional(),
+  recurrence: z.string().nullable().optional(),
+  category: z.enum(['importante', 'rotina', 'data_especifica']),
+  confirmation_text: z.string().trim().min(1).max(400),
+});
+
+export interface ParsedReminder {
+  task: string;
+  category: ReminderCategory;
+  recurrence: string | null;
+  nextFireAt: Date;
+  confirmationText: string;
+}
+
+function buildSystemPrompt(now: Date, tz: string): string {
+  const wc = toWallClock(now, tz);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const agora = `${wc.year}-${pad(wc.month)}-${pad(wc.day)}T${pad(wc.hour)}:${pad(wc.minute)}`;
+  return [
+    `Você é um extrator de lembretes. Agora é ${agora} (${weekdayNamePt(now, tz)}), fuso ${tz}.`,
+    'Responda APENAS com JSON válido, sem texto antes ou depois, no formato:',
+    '{',
+    '  "task": "descrição curta do que fazer",',
+    '  "type": "unico" | "recorrente",',
+    '  "due_at": "YYYY-MM-DDTHH:mm do PRIMEIRO disparo (sempre preencha, inclusive se for recorrente)",',
+    '  "recurrence": "daily | weekly:MON..SUN | monthly:N — apenas se recorrente, senão null",',
+    '  "category": "importante" | "rotina" | "data_especifica",',
+    '  "confirmation_text": "uma frase curta em pt-BR confirmando o que você entendeu"',
+    '}',
+    '',
+    'Regras de data, sempre a partir do agora informado acima:',
+    '- "hoje" é a data de hoje; "amanhã" é o dia seguinte.',
+    '- Um dia da semana ("quinta") é a próxima ocorrência dele; se hoje é esse dia e o horário já passou, é o da semana seguinte.',
+    '- "dia N" é o dia N deste mês, ou do próximo se já passou.',
+    '- "daqui a X dias" é hoje + X dias.',
+    '- "toda segunda" = weekly:MON; "todo dia N" = monthly:N; "todo dia" = daily.',
+    '- Sem horário explícito, use 09:00 e diga isso no confirmation_text.',
+    '- NUNCA use fuso ou "Z" no due_at: escreva a hora como o usuário leria no relógio dele.',
+    '- Se a mensagem for ambígua, escolha a interpretação mais provável e explique-a no confirmation_text.',
+    '',
+    'Categorias: "importante" para pagamentos/prazos críticos; "rotina" para hábitos repetidos;',
+    '"data_especifica" para compromissos pontuais.',
+  ].join('\n');
+}
+
+function extractJson(text: string): unknown | null {
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  try {
+    return JSON.parse(match[0]);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Interpreta a mensagem do dono. Retorna null quando a IA não está disponível
+ * ou devolveu algo que não dá para confiar — o chamador então pede o texto de
+ * outro jeito, em vez de salvar um lembrete errado.
+ */
+export async function parseReminder(
+  tenantId: string,
+  message: string,
+  tz: string = DEFAULT_TZ,
+): Promise<ParsedReminder | null> {
+  const now = new Date();
+  const result = await complete(
+    {
+      system: buildSystemPrompt(now, tz),
+      messages: [{ role: 'user', content: message.slice(0, 1000) }],
+      maxTokens: 400,
+      temperature: 0,
+    },
+    tenantId,
+    { meter: true },
+  );
+  if (!result) {
+    logger.warn('Lembretes: nenhuma IA disponível para interpretar a mensagem.');
+    return null;
+  }
+
+  const json = extractJson(result.text);
+  if (!json) {
+    logger.warn(`Lembretes: resposta da IA não era JSON — "${result.text.slice(0, 120)}"`);
+    return null;
+  }
+
+  const parsed = parsedSchema.safeParse(json);
+  if (!parsed.success) {
+    logger.warn(`Lembretes: JSON da IA fora do formato — ${parsed.error.issues[0]?.message}`);
+    return null;
+  }
+
+  const data = parsed.data;
+  if (!data.due_at) {
+    logger.warn('Lembretes: IA não devolveu due_at.');
+    return null;
+  }
+
+  const nextFireAt = parseLocalIso(data.due_at, tz);
+  if (!nextFireAt) {
+    logger.warn(`Lembretes: due_at inválido — "${data.due_at}"`);
+    return null;
+  }
+
+  // A IA às vezes calcula um horário que já passou (ex.: "às 8h" quando são 9h).
+  // Salvar assim faria o agendador disparar no mesmo minuto.
+  if (nextFireAt.getTime() <= Date.now()) {
+    logger.warn(`Lembretes: due_at no passado (${data.due_at}) — descartado.`);
+    return null;
+  }
+
+  let recurrence: string | null = null;
+  if (data.type === 'recorrente' && data.recurrence) {
+    const rule = data.recurrence.trim().toLowerCase();
+    if (isValidRecurrence(rule)) recurrence = rule;
+    else logger.warn(`Lembretes: recorrência não reconhecida — "${data.recurrence}" (salvando como único).`);
+  }
+
+  return {
+    task: data.task,
+    category: data.category,
+    recurrence,
+    nextFireAt,
+    // Anexamos a data resolvida: é a checagem que o dono realmente precisa ver
+    // antes de confirmar, e não dá para confiar que o modelo a escreveu certo.
+    confirmationText: `${data.confirmation_text}\n📅 ${formatForOwner(nextFireAt, tz)}${
+      recurrence ? ` · repete: ${describeRecurrence(recurrence)}` : ''
+    }`,
+  };
+}
+
+const WEEKDAY_PT: Record<string, string> = {
+  MON: 'toda segunda',
+  TUE: 'toda terça',
+  WED: 'toda quarta',
+  THU: 'toda quinta',
+  FRI: 'toda sexta',
+  SAT: 'todo sábado',
+  SUN: 'todo domingo',
+};
+
+export function describeRecurrence(rule: string): string {
+  const r = rule.toLowerCase();
+  if (r === 'daily') return 'todo dia';
+  const weekly = r.match(/^weekly:([a-z]{3})$/);
+  if (weekly) return WEEKDAY_PT[weekly[1].toUpperCase()] ?? rule;
+  const monthly = r.match(/^monthly:(\d{1,2})$/);
+  if (monthly) return `todo dia ${monthly[1]}`;
+  return rule;
+}

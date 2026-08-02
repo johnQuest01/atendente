@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Toggle } from '@/components/ui/Toggle';
 import { Input, Select } from '@/components/ui/Input';
+import { Spinner } from '@/components/ui/States';
 import { BuildingIcon } from '@/components/ui/Icons';
 import { useAuth } from '@/hooks/useAuth';
 import { useAgentStatus, useSetAgentStatus, AGENT_QUERY_KEY } from '@/hooks/useAgent';
@@ -18,6 +19,11 @@ import {
   type WhatsappConnectionInput,
   type WhatsappProvider,
 } from '@/hooks/useWhatsappConnection';
+import {
+  useReminderOwners,
+  useAddReminderOwner,
+  useRemoveReminderOwner,
+} from '@/hooks/useReminderOwners';
 import { useAiUsage } from '@/hooks/useAiProviders';
 import { AiProvidersManager } from '@/components/ai/AiProvidersManager';
 import { useSocket } from '@/hooks/useSocket';
@@ -130,6 +136,8 @@ export default function Settings() {
         </Card>
 
         <WhatsappCard canEdit={user?.role === 'admin' || user?.role === 'superadmin'} />
+
+        {(user?.role === 'admin' || user?.role === 'superadmin') && <ReminderOwnersCard />}
 
         {(user?.role === 'admin' || user?.role === 'superadmin') && <AiCard />}
 
@@ -343,6 +351,102 @@ function PersonaCard() {
           </div>
         )}
       </div>
+    </Card>
+  );
+}
+
+/**
+ * Assistente pessoal de lembretes. Um número cadastrado aqui para de ser
+ * atendido como cliente: o que ele mandar (texto ou áudio) vira lembrete.
+ */
+function ReminderOwnersCard() {
+  const { data: owners, isLoading } = useReminderOwners();
+  const add = useAddReminderOwner();
+  const remove = useRemoveReminderOwner();
+
+  const [phone, setPhone] = useState('');
+  const [label, setLabel] = useState('');
+
+  function submit() {
+    if (!phone.trim()) return;
+    add.mutate(
+      { phone: phone.trim(), label: label.trim() || undefined },
+      {
+        onSuccess: () => {
+          setPhone('');
+          setLabel('');
+          toast('Número autorizado a usar os lembretes.', 'success');
+        },
+        onError: (err) => toast(getErrorMessage(err), 'error'),
+      },
+    );
+  }
+
+  return (
+    <Card className="flex flex-col gap-3">
+      <div>
+        <h2 className="text-base font-bold text-text-primary">Lembretes pessoais</h2>
+        <p className="text-sm text-text-secondary">
+          Números autorizados falam com seu assistente pessoal pelo mesmo WhatsApp. Eles não viram
+          clientes e não recebem resposta de vendas — só lembretes.
+        </p>
+      </div>
+
+      {isLoading && <Spinner label="Carregando..." />}
+
+      {owners?.map((o) => (
+        <div
+          key={o.phone}
+          className="flex items-center gap-2 rounded-xl border border-border px-3 py-2"
+        >
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold text-text-primary">{o.label ?? o.phone}</p>
+            {o.label && <p className="truncate text-xs text-text-secondary">{o.phone}</p>}
+          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            loading={remove.isPending}
+            onClick={() =>
+              remove.mutate(o.phone, {
+                onSuccess: () => toast('Número removido.', 'success'),
+                onError: (err) => toast(getErrorMessage(err), 'error'),
+              })
+            }
+          >
+            Remover
+          </Button>
+        </div>
+      ))}
+
+      {owners && owners.length === 0 && (
+        <p className="text-xs text-text-secondary">
+          Nenhum número autorizado. Adicione o seu para começar a mandar lembretes por WhatsApp.
+        </p>
+      )}
+
+      <div className="flex flex-col gap-2 rounded-xl border border-border bg-bg p-3">
+        <Input
+          label="Número (com DDI e DDD)"
+          placeholder="Ex.: 5511999998888"
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+        />
+        <Input
+          label="Identificação (opcional)"
+          placeholder="Ex.: meu celular"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+        />
+        <Button size="sm" onClick={submit} loading={add.isPending}>
+          Autorizar número
+        </Button>
+      </div>
+
+      <p className="text-xs text-text-secondary">
+        Depois é só mandar no WhatsApp: <em>“me lembra amanhã às 9h de pagar o fornecedor”</em>.
+        Envie <strong>AJUDA</strong> para ver todos os comandos.
+      </p>
     </Card>
   );
 }

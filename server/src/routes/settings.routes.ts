@@ -26,6 +26,15 @@ import {
   testAiCredsSchema,
   listAiModelsSchema,
 } from '../controllers/ai_providers.controller';
+import {
+  getReminderOwners,
+  postReminderOwner,
+  createReminderOwnerSchema,
+  deleteReminderOwner,
+  reminderOwnerParamSchema,
+  getReminders,
+  listRemindersQuerySchema,
+} from '../controllers/reminders.controller';
 
 const router = Router();
 
@@ -51,6 +60,28 @@ router.put(
   adminOnly,
   validate({ body: updateWhatsappSchema }),
   asyncHandler(putWhatsappConnection),
+);
+
+// Assistente pessoal de lembretes: quais números da empresa falam com ele em
+// vez de serem atendidos como clientes. Só admin mexe na whitelist.
+router.get('/reminder-owners', adminOnly, asyncHandler(getReminderOwners));
+router.post(
+  '/reminder-owners',
+  adminOnly,
+  validate({ body: createReminderOwnerSchema }),
+  asyncHandler(postReminderOwner),
+);
+router.delete(
+  '/reminder-owners/:phone',
+  adminOnly,
+  validate({ params: reminderOwnerParamSchema }),
+  asyncHandler(deleteReminderOwner),
+);
+router.get(
+  '/reminders',
+  adminOnly,
+  validate({ query: listRemindersQuerySchema }),
+  asyncHandler(getReminders),
 );
 
 // IA da EMPRESA (BYO): conectar/ordenar as próprias chaves. Só admin gerencia.

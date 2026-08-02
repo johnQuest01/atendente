@@ -22,6 +22,8 @@ import {
 } from '../db/queries/messages';
 import { isAgentEnabled, getAiPersona } from '../db/queries/settings';
 import { isPhoneBlocked } from '../db/queries/blocked';
+import { isReminderOwner } from '../db/queries/reminders';
+import { handleOwnerMessage } from '../services/reminders/handler.service';
 import { isTenantBlocked } from '../middleware/tenantAccess.middleware';
 import { emitNewMessage, emitNewConversation, emitConversationUpdated } from '../socket';
 import { matchIntent, getTriggerPhrases } from '../services/matcher.service';
@@ -244,6 +246,18 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
   if (inbound.providerMessageId && (await inboundMessageExists(tenantId, inbound.providerMessageId))) {
     logger.info(`Mensagem duplicada ignorada (já processada): ${inbound.providerMessageId}`);
     return;
+  }
+
+  // Assistente pessoal do dono (lembretes). Entra ANTES de findOrCreateClient
+  // para o dono não virar cliente nem abrir conversa comercial no painel.
+  // Aceita texto ou áudio — o handler transcreve internamente.
+  if (
+    (inbound.type === 'text' || inbound.type === 'audio') &&
+    (await isReminderOwner(tenantId, inbound.phone))
+  ) {
+    await hydrateProviderMedia(tenantId, inbound);
+    const handled = await handleOwnerMessage(tenantId, inbound);
+    if (handled) return;
   }
 
   await hydrateProviderMedia(tenantId, inbound);
