@@ -20,6 +20,9 @@ import {
   putBehaviorSetting,
   behaviorKeyParamSchema,
   updateBehaviorSchema,
+  getMemoryScan,
+  putMemoryScan,
+  updateMemoryScanSchema,
   getSystemStatus,
   getWhatsappConnection,
   configureWhatsappWebhook,
@@ -76,6 +79,15 @@ router.put(
   adminOnly,
   validate({ params: behaviorKeyParamSchema, body: updateBehaviorSchema }),
   asyncHandler(putBehaviorSetting),
+);
+
+// Varredura de conversas (recuperar compromissos): liga/desliga (OFF por padrão).
+router.get('/memory-scan', adminOnly, asyncHandler(getMemoryScan));
+router.put(
+  '/memory-scan',
+  adminOnly,
+  validate({ body: updateMemoryScanSchema }),
+  asyncHandler(putMemoryScan),
 );
 
 // Status REAL das integrações (banco, Claude, WhatsApp, STT).

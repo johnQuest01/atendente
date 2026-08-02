@@ -107,6 +107,23 @@ export async function setAiPersona(tenantId: string, prompt: string): Promise<st
 }
 
 // ---------------------------------------------------------------------------
+// Varredura de conversas (opcional, OFF por padrão) — recupera compromissos
+// ---------------------------------------------------------------------------
+
+const MEMORY_SCAN_KEY = 'memory_scan_enabled';
+
+/** A varredura de conversas está LIGADA para esta empresa? Default: false. */
+export async function isMemoryScanEnabled(tenantId: string): Promise<boolean> {
+  return (await readSetting(tenantId, MEMORY_SCAN_KEY)) === 'true';
+}
+
+/** Liga/desliga a varredura de conversas desta empresa. */
+export async function setMemoryScanEnabled(tenantId: string, enabled: boolean): Promise<boolean> {
+  await writeSetting(tenantId, MEMORY_SCAN_KEY, enabled ? 'true' : 'false');
+  return enabled;
+}
+
+// ---------------------------------------------------------------------------
 // Persona do assistente de lembretes (como a "secretária" fala com o dono)
 // ---------------------------------------------------------------------------
 

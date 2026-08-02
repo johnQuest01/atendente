@@ -11,6 +11,8 @@ import {
   setAiMaxTokens,
   getReminderPersona,
   setReminderPersona,
+  isMemoryScanEnabled,
+  setMemoryScanEnabled,
   readSetting,
   writeSetting,
 } from '../db/queries/settings';
@@ -227,6 +229,25 @@ export async function putBehaviorSetting(req: Request, res: Response): Promise<v
   const normalized = coerceBehaviorValue(setting, value); // valida (400 se torto)
   await writeSetting(tenantId, key, normalized);
   res.json({ key, value: normalized });
+}
+
+// ---------------------------------------------------------------------------
+// Varredura de conversas (opcional, OFF por padrão) — só o liga/desliga aqui.
+// O acionamento é pelo WhatsApp do dono ("RECUPERAR COMPROMISSOS"), que já é
+// owner-gated e propõe/confirma antes de salvar.
+// ---------------------------------------------------------------------------
+
+export async function getMemoryScan(req: Request, res: Response): Promise<void> {
+  const enabled = await isMemoryScanEnabled(req.user!.tenant_id);
+  res.json({ enabled });
+}
+
+export const updateMemoryScanSchema = z.object({ enabled: z.boolean() });
+
+export async function putMemoryScan(req: Request, res: Response): Promise<void> {
+  const { enabled } = req.body as z.infer<typeof updateMemoryScanSchema>;
+  await setMemoryScanEnabled(req.user!.tenant_id, enabled);
+  res.json({ enabled });
 }
 
 /**

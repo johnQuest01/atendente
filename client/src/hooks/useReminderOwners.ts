@@ -48,3 +48,34 @@ export function useRemoveReminderOwner() {
     onSuccess: (owners) => qc.setQueryData(REMINDER_OWNERS_QUERY_KEY, owners),
   });
 }
+
+// ---------------------------------------------------------------------------
+// Varredura de conversas (recuperar compromissos) — só o liga/desliga
+// ---------------------------------------------------------------------------
+
+export const MEMORY_SCAN_QUERY_KEY = ['memory-scan'] as const;
+
+export function useMemoryScan(enabled = true) {
+  return useQuery({
+    queryKey: MEMORY_SCAN_QUERY_KEY,
+    queryFn: async () => {
+      const { data } = await api.get<{ enabled: boolean }>('/settings/memory-scan');
+      return data.enabled;
+    },
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+export function useSetMemoryScan() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (nextEnabled: boolean) => {
+      const { data } = await api.put<{ enabled: boolean }>('/settings/memory-scan', {
+        enabled: nextEnabled,
+      });
+      return data.enabled;
+    },
+    onSuccess: (value) => qc.setQueryData(MEMORY_SCAN_QUERY_KEY, value),
+  });
+}

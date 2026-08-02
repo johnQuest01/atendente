@@ -34,6 +34,8 @@ import {
   useReminderOwners,
   useAddReminderOwner,
   useRemoveReminderOwner,
+  useMemoryScan,
+  useSetMemoryScan,
 } from '@/hooks/useReminderOwners';
 import { useAiUsage } from '@/hooks/useAiProviders';
 import { AiProvidersManager } from '@/components/ai/AiProvidersManager';
@@ -153,6 +155,8 @@ export default function Settings() {
         {(user?.role === 'admin' || user?.role === 'superadmin') && <ReminderOwnersCard />}
 
         {(user?.role === 'admin' || user?.role === 'superadmin') && <ReminderPersonaCard />}
+
+        {(user?.role === 'admin' || user?.role === 'superadmin') && <MemoryScanCard />}
 
         {(user?.role === 'admin' || user?.role === 'superadmin') && <BehaviorSettingsCard />}
 
@@ -656,6 +660,53 @@ function ReminderPersonaCard() {
           </div>
         )}
       </div>
+    </Card>
+  );
+}
+
+/**
+ * Varredura de conversas (recuperar compromissos). OFF por padrão — custa IA.
+ * O liga/desliga é aqui; quem aciona é o dono pelo WhatsApp, e a secretária
+ * propõe os compromissos achados antes de salvar (nada entra sozinho).
+ */
+function MemoryScanCard() {
+  const { data: enabled } = useMemoryScan();
+  const setScan = useSetMemoryScan();
+  const isOn = enabled ?? false;
+
+  return (
+    <Card className="flex flex-col gap-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h2 className="text-base font-bold text-text-primary">Recuperar compromissos</h2>
+            <Badge tone={isOn ? 'success' : 'neutral'}>{isOn ? 'Ligado' : 'Desligado'}</Badge>
+          </div>
+          <p className="mt-1 text-sm text-text-secondary">
+            Deixa a IA reler as conversas recentes e sugerir compromissos que foram falados mas não
+            viraram lembrete. Só roda quando você pede — e consome IA só nessa hora.
+          </p>
+        </div>
+        <Toggle
+          checked={isOn}
+          disabled={setScan.isPending}
+          onChange={(next) =>
+            setScan.mutate(next, {
+              onSuccess: () =>
+                toast(next ? 'Varredura ligada.' : 'Varredura desligada.', 'success'),
+              onError: (err) => toast(getErrorMessage(err), 'error'),
+            })
+          }
+          label="Ligar ou desligar a varredura de conversas"
+        />
+      </div>
+      {isOn && (
+        <p className="rounded-lg bg-primary/10 px-3 py-2 text-xs text-text-secondary">
+          No WhatsApp do dono, mande <strong>RECUPERAR COMPROMISSOS</strong> (ou{' '}
+          <strong>VARRER 7 DIAS</strong>). A secretária lista o que encontrou e só salva depois do
+          seu <strong>SIM</strong>.
+        </p>
+      )}
     </Card>
   );
 }

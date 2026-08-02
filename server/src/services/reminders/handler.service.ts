@@ -10,7 +10,9 @@ import {
   type ListRemindersFilter,
 } from '../../db/queries/reminders';
 import { getActiveKeywords } from '../../db/queries/keywords';
+import { isMemoryScanEnabled } from '../../db/queries/settings';
 import { keywordMatches } from '../matcher.service';
+import { scanForCommitments } from './scan.service';
 import { env } from '../../config/env';
 import { getTenantWhatsapp } from '../whatsapp.service';
 import { transcribeAudioFromBase64, transcribeAudioFromUrl } from '../transcription.service';
@@ -138,6 +140,9 @@ const HELP_TEXT = [
   'Ou mande a palavra: *HOJE*, *AMANHÃ*, *SEMANA*, *MÊS*, *ROTINA*, *IMPORTANTES*, *TODOS*',
   'Para fechar: *CONCLUIR 2* · Para remover: *CANCELAR 2*',
   '(o número é o da última lista que eu te mandei)',
+  '',
+  'Manda vários de uma vez que eu confirmo todos juntos.',
+  'Se a varredura estiver ligada: *RECUPERAR COMPROMISSOS* ou *VARRER 7 DIAS*.',
 ].join('\n');
 
 /** Intervalos de consulta, calculados no fuso do dono. */
@@ -425,6 +430,36 @@ export async function handleOwnerMessage(
           ? '✅ Marquei como concluído.'
           : '🗑️ Cancelado.'
         : 'Esse lembrete já não estava mais na lista.',
+    );
+    return true;
+  }
+
+  // 3.5. Varredura opcional de conversas (Parte 3): "VARRER 7 DIAS" /
+  // "RECUPERAR COMPROMISSOS". OFF por padrão; sob demanda; propõe e só grava
+  // com a confirmação em massa. Custa token só aqui.
+  if (/^varrer\b/.test(normalized) || /recuperar\s+compromiss/.test(normalized)) {
+    if (!(await isMemoryScanEnabled(tenantId))) {
+      await reply(
+        tenantId,
+        phone,
+        '🔒 A varredura de conversas está desligada. Ligue em Configurações → *Recuperar compromissos* e tente de novo.',
+      );
+      return true;
+    }
+    const daysMatch = normalized.match(/(\d{1,3})\s*dias?/);
+    const days = daysMatch ? Number(daysMatch[1]) : 7;
+    await reply(tenantId, phone, `🔎 Varrendo as conversas dos últimos ${days} dias... já te mostro o que encontrei.`);
+    const candidates = await scanForCommitments(tenantId, { days });
+    if (candidates.length === 0) {
+      await reply(tenantId, phone, 'Não achei compromissos soltos nesse período. 👍');
+      return true;
+    }
+    const items = candidates.map(toPendingItem);
+    setState(tenantId, phone, { pending: { items, source: `varredura ${days} dias` } });
+    await reply(
+      tenantId,
+      phone,
+      `Encontrei possíveis compromissos nas conversas:\n\n${renderConfirmation(items, tz)}`,
     );
     return true;
   }
