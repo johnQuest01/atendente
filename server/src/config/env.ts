@@ -95,8 +95,10 @@ const envSchema = z.object({
 
   // Acesso restrito à área de "Números bloqueados". Sem default no código —
   // se ausentes, /blocked/unlock responde 503 (o boot do servidor segue).
-  BLOCK_ADMIN_EMAIL: z.string().email().optional(),
-  BLOCK_ADMIN_PASSWORD_HASH: z.string().min(20).optional(),
+  // .trim(): o hash tem base64 e `$`; um espaço ou quebra de linha colado junto
+  // no painel faz a verificação falhar como se a senha estivesse errada.
+  BLOCK_ADMIN_EMAIL: z.string().trim().email().optional(),
+  BLOCK_ADMIN_PASSWORD_HASH: z.string().trim().min(20).optional(),
 
   // SSRF: sufixos de host permitidos no download de mídia inbound (vírgula).
   // Vazio/ausente → só as regras de IP privado valem.
