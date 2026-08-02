@@ -119,6 +119,10 @@ async function prepareAudioFromTmp(tmpFilePath: string): Promise<PreparedAudio> 
       // mascara como "Erro interno do servidor". Convertemos numa mensagem
       // acionável (e logamos a causa real) para o operador saber o que corrigir.
       logger.error('Falha ao persistir o áudio no storage', err);
+      // O storage já identifica a variável culpada quando consegue ("S3_SECRET_KEY
+      // não confere"). Nesse caso repassamos como veio — trocar por uma lista de
+      // "confira tudo" só faria o operador procurar às cegas.
+      if (err instanceof AppError) throw err;
       throw new AppError(
         storageMode === 'remote'
           ? 'Não foi possível enviar o áudio para o armazenamento (R2/S3). Verifique as credenciais S3_ACCESS_KEY/S3_SECRET_KEY, o S3_BUCKET e o R2_ACCOUNT_ID/S3_ENDPOINT.'
