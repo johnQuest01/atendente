@@ -1,0 +1,12 @@
+{
+  // Verificação de tipos MAIS ampla que a do build: inclui `scripts/`, que fica
+  // fora do tsconfig principal porque o build emite com rootDir em `src`.
+  // Sem isto, os scripts operacionais (backfill de mídia, hash de senha) só
+  // revelariam erro de tipo na hora de rodar, em produção.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src/**/*.ts", "scripts/**/*.ts"]
+}

@@ -2,6 +2,7 @@ import { env } from '../config/env';
 import { pool } from '../db';
 import { getTenantWhatsapp } from './whatsapp.service';
 import { adapters, getChainStatus, resolveChain } from './ai/orchestrator';
+import { missingStorageVars, testRemoteStorage } from './storage.service';
 import type { WhatsappProviderName } from '../db/queries/whatsapp_connections';
 
 /**
@@ -201,11 +202,24 @@ async function checkTranscription(): Promise<ServiceCheck> {
  * persistente e a URL depende do backend estar no ar — por isso conta como
  * degradado, não como falha.
  */
-function checkStorage(): ServiceCheck {
+async function checkStorage(): Promise<ServiceCheck> {
   if (env.hasRemoteStorage) {
     const host = hostOf(env.S3_PUBLIC_URL) ?? '';
     const name = host.includes('r2.dev') || host.includes('cloudflare') ? 'Cloudflare R2' : host || 'S3';
-    return { ok: true, provider: name, detail: 'Mídia em CDN com URL permanente.' };
+    // Escreve de verdade: ter as variáveis não prova que a chave funciona.
+    const { value: result, ms } = await timed(() => testRemoteStorage());
+    return { ok: result.ok, provider: name, latencyMs: ms, detail: result.detail };
+  }
+
+  const missing = missingStorageVars();
+  // Nenhuma variável = escolha consciente (dev). Algumas = engano de config, e
+  // é o caso que precisa gritar: parece configurado, mas está gravando no disco.
+  if (missing.length < 5) {
+    return {
+      ok: false,
+      provider: 'Disco local',
+      detail: `Configuração do R2 incompleta — falta: ${missing.join(', ')}. A mídia está indo para o disco do servidor.`,
+    };
   }
   return {
     ok: false,
@@ -226,11 +240,12 @@ export async function getHealthReport(tenantId: string, force = false): Promise<
   }
 
   const wa = await getTenantWhatsapp(tenantId);
-  const [database, ai, wppTimed, transcription] = await Promise.all([
+  const [database, ai, wppTimed, transcription, storage] = await Promise.all([
     checkDatabase(),
     checkAi(tenantId),
     timed(() => wa.getConnectionStatus()),
     checkTranscription(),
+    checkStorage(),
   ]);
 
   // O nome do provedor de WhatsApp vem daqui pronto: quando a empresa troca de
@@ -248,7 +263,7 @@ export async function getHealthReport(tenantId: string, force = false): Promise<
     whatsappProvider: wa.provider,
     aiProvider: ai.provider,
     storage: env.hasRemoteStorage ? 'remote' : 'local',
-    services: { database, ai: ai.check, whatsapp, transcription, storage: checkStorage() },
+    services: { database, ai: ai.check, whatsapp, transcription, storage },
   };
 
   cache.set(tenantId, { at: Date.now(), report });
