@@ -82,7 +82,10 @@ function toChatMessages(history: AiHistoryMessage[]): ChatMessage[] {
   for (const msg of history) {
     const content = describeMessage(msg).trim();
     if (!content) continue;
-    raw.push({ role: msg.direction === 'inbound' ? 'user' : 'assistant', content });
+    // Turno digitado pelo operador no celular: entra como 'assistant', mas marcado
+    // para a IA não achar que foi ela quem escreveu.
+    const text = msg.origin === 'human' ? `[operador] ${content}` : content;
+    raw.push({ role: msg.direction === 'inbound' ? 'user' : 'assistant', content: text });
   }
 
   while (raw.length > 0 && raw[0].role !== 'user') raw.shift();
@@ -152,6 +155,15 @@ const VISION_INSTRUCTION =
   'pergunte os detalhes que faltam (cor, tamanho, marca, modelo). NUNCA afirme que temos um produto ' +
   'que não está no catálogo — nesse caso, diga que vai verificar.';
 
+/**
+ * Instrução extra ligada quando o operador humano já respondeu na conversa:
+ * evita que a IA repita o que ele disse ou copie o marcador na resposta.
+ */
+const HUMAN_TURN_INSTRUCTION =
+  '\n\nATENÇÃO — ALGUNS TURNOS DO HISTÓRICO COMEÇAM COM "[operador]". Eles foram escritos por um ' +
+  'atendente humano da loja, não por você. Trate-os como já ditos ao cliente: não repita nem ' +
+  'contradiga. NUNCA escreva "[operador]" na sua resposta.';
+
 /** Anexa imagens ao último turno do cliente (cria um turno 'user' se necessário). */
 function attachImagesToLastUser(messages: ChatMessage[], images: ChatImage[]): void {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -181,7 +193,11 @@ export async function generateReply(
   const hasImages = Boolean(input.attachImages?.length);
   if (hasImages) attachImagesToLastUser(messages, input.attachImages as ChatImage[]);
 
-  const system = buildSystemPrompt(input) + (hasImages ? VISION_INSTRUCTION : '');
+  const hasHumanTurns = input.history.some((m) => m.origin === 'human');
+  const system =
+    buildSystemPrompt(input) +
+    (hasImages ? VISION_INSTRUCTION : '') +
+    (hasHumanTurns ? HUMAN_TURN_INSTRUCTION : '');
   const [temperature, configuredMax] = await Promise.all([
     getAiTemperature(tenantId),
     getAiMaxTokens(tenantId),
