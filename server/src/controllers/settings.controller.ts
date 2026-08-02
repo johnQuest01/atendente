@@ -239,6 +239,29 @@ export async function configureWhatsappWebhook(req: Request, res: Response): Pro
   res.status(result.ok ? 200 : 502).json({ ...result, webhookUrl: url });
 }
 
+/**
+ * Corta o que vier depois da raiz da API no campo "URL base".
+ *
+ * É comum colar ali a URL inteira de um endpoint (ex.: `.../token/XXX/send-text`),
+ * porque é ela que aparece na documentação do provedor. O código concatena o ID
+ * e o token EM CIMA dessa base, então o endereço final vira impossível e todas
+ * as chamadas respondem 404 — sem nenhuma pista de que a causa foi este campo.
+ */
+function normalizeBaseUrl(provider: string, raw: string | null): string | null {
+  if (!raw) return null;
+  const url = raw.trim().replace(/\/+$/, '');
+  if (provider === 'zapi') {
+    const m = url.match(/^(https?:\/\/[^/]+\/instances)\b/i);
+    if (m) return m[1];
+    // Sem "/instances" reconhecível, guarda só a origem (host) e deixa o
+    // resto com o padrão do provedor.
+    const cut = url.match(/^(https?:\/\/[^/]+)/i);
+    return cut ? `${cut[1]}/instances` : null;
+  }
+  // Outros provedores: descarta caminho de endpoint óbvio, mantém o resto.
+  return url.replace(/\/(token|message|send)[^]*$/i, '') || null;
+}
+
 export async function putWhatsappConnection(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenant_id;
   if (!hasEncryptionKey()) {
@@ -270,7 +293,7 @@ export async function putWhatsappConnection(req: Request, res: Response): Promis
   await upsertConnection(tenantId, {
     provider: input.provider,
     secrets,
-    baseUrl: input.baseUrl ?? existing?.base_url ?? null,
+    baseUrl: normalizeBaseUrl(input.provider, input.baseUrl ?? existing?.base_url ?? null),
     isActive: input.isActive ?? existing?.is_active ?? true,
     webhookToken: existing?.webhook_token,
   });
