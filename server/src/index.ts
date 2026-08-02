@@ -50,11 +50,18 @@ app.use('/media', mediaRoutes);
 // Healthcheck LEVE (probe do Render): só o banco, resposta rápida. O status
 // REAL e detalhado das integrações fica em GET /api/settings/status (autenticado),
 // para não martelar/atrasar as APIs externas no probe automático da plataforma.
+// Momento em que ESTE processo subiu — junto com o commit, diz de fora se um
+// deploy já entrou no ar, sem precisar abrir o painel do Render.
+const BOOTED_AT = new Date().toISOString();
+
 app.get('/health', async (_req, res) => {
   const db = await checkDbConnection();
   res.status(db ? 200 : 503).json({
     status: db ? 'ok' : 'degraded',
     db,
+    // O Render injeta o commit publicado; em dev fica 'dev'.
+    commit: (process.env.RENDER_GIT_COMMIT ?? 'dev').slice(0, 7),
+    bootedAt: BOOTED_AT,
     timestamp: new Date().toISOString(),
   });
 });
