@@ -90,9 +90,21 @@ export function logStorageMode(): void {
 export function describeS3Error(err: unknown): string {
   const name = (err as { name?: string })?.name ?? '';
   const code = (err as { Code?: string })?.Code ?? '';
+  const status = (err as { $metadata?: { httpStatusCode?: number } })?.$metadata?.httpStatusCode;
   const message = err instanceof Error ? err.message : String(err);
   const kind = name || code;
 
+  // 401 do R2 é genérico: ele não distingue chave inexistente de chave de outra
+  // conta. Listamos as causas em ordem de frequência real.
+  if (kind.includes('Unauthorized') || status === 401) {
+    return (
+      'R2 recusou a credencial (401 Unauthorized). Em ordem de probabilidade: ' +
+      '(1) S3_ACCESS_KEY/S3_SECRET_KEY não são o par gerado em "Manage R2 API Tokens" — ' +
+      'o token global da Cloudflare NÃO funciona aqui; ' +
+      `(2) o R2_ACCOUNT_ID (${env.R2_ACCOUNT_ID ?? 'não definido'}) é de outra conta que não a dona do token; ` +
+      '(3) o token foi revogado ou expirou.'
+    );
+  }
   if (kind.includes('InvalidAccessKeyId')) {
     return 'S3_ACCESS_KEY inválida (o R2 não reconhece esta chave).';
   }
@@ -102,8 +114,11 @@ export function describeS3Error(err: unknown): string {
   if (kind.includes('NoSuchBucket')) {
     return `Bucket "${env.S3_BUCKET}" não existe nesta conta — confira S3_BUCKET.`;
   }
-  if (kind.includes('AccessDenied')) {
-    return 'Credencial sem permissão de escrita no bucket (o token do R2 precisa ser de leitura E escrita).';
+  if (kind.includes('AccessDenied') || status === 403) {
+    return (
+      'Credencial válida, mas sem permissão de escrita neste bucket. No R2, o token precisa ser ' +
+      `"Object Read & Write" e incluir o bucket "${env.S3_BUCKET}" no escopo dele.`
+    );
   }
   if (message.includes('ENOTFOUND') || message.includes('getaddrinfo') || kind.includes('EAI_AGAIN')) {
     return `Endpoint inacessível (${env.s3Endpoint}) — confira R2_ACCOUNT_ID.`;

@@ -73,18 +73,21 @@ const envSchema = z.object({
   // Com estes campos preenchidos, áudios/imagens vão para o bucket e ganham uma
   // URL pública PERMANENTE (CDN), que a Z-API sempre consegue baixar — mesmo que
   // o backend esteja reiniciando. Sem eles, cai no modo local (disco/dev).
-  S3_BUCKET: z.string().optional(),
-  S3_ACCESS_KEY: z.string().optional(),
-  S3_SECRET_KEY: z.string().optional(),
+  // .trim() em todos: colar no painel do Render costuma trazer espaço ou quebra
+  // de linha junto, e um único caractere invisível na chave faz o R2 responder
+  // 401 Unauthorized — erro que não dá nenhuma pista da causa real.
+  S3_BUCKET: z.string().trim().optional(),
+  S3_ACCESS_KEY: z.string().trim().optional(),
+  S3_SECRET_KEY: z.string().trim().optional(),
   // Endpoint S3. No R2 é https://<accountid>.r2.cloudflarestorage.com — se você
   // informar R2_ACCOUNT_ID, montamos este endpoint automaticamente.
-  S3_ENDPOINT: z.string().optional(),
-  S3_REGION: z.string().default('auto'),
+  S3_ENDPOINT: z.string().trim().optional(),
+  S3_REGION: z.string().trim().default('auto'),
   // URL pública/CDN do bucket (ex.: https://pub-xxxx.r2.dev ou domínio próprio).
   // É o que vai no file_url e é enviado à Z-API.
-  S3_PUBLIC_URL: z.string().url().optional(),
+  S3_PUBLIC_URL: z.string().trim().url().optional(),
   // Atalho para R2: só o Account ID; o endpoint S3 é derivado dele.
-  R2_ACCOUNT_ID: z.string().optional(),
+  R2_ACCOUNT_ID: z.string().trim().optional(),
 
   SEED_ADMIN_NAME: z.string().default('Mayra'),
   SEED_ADMIN_EMAIL: z.string().email().default('mayra@loja.com'),
