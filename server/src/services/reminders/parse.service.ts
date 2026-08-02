@@ -49,7 +49,7 @@ export function describeLead(minutes: number): string {
   return `${minutes} min antes`;
 }
 
-function buildSystemPrompt(now: Date, tz: string, persona?: string | null): string {
+function buildSystemPrompt(now: Date, tz: string, persona?: string | null, bulk = false): string {
   const wc = toWallClock(now, tz);
   const pad = (n: number) => String(n).padStart(2, '0');
   const agora = `${wc.year}-${pad(wc.month)}-${pad(wc.day)}T${pad(wc.hour)}:${pad(wc.minute)}`;
@@ -63,9 +63,14 @@ function buildSystemPrompt(now: Date, tz: string, persona?: string | null): stri
         persona.trim(),
       ].join('\n')
     : '';
+  const formatLine = bulk
+    ? 'O usuário pode ter enviado VÁRIOS lembretes numa mensagem. Responda APENAS com um ' +
+      'ARRAY JSON (um objeto por lembrete, no máximo 20; se houver só um, um array de um item), ' +
+      'sem texto antes ou depois. Cada objeto tem o formato:'
+    : 'Responda APENAS com JSON válido, sem texto antes ou depois, no formato:';
   return [
     `Você é um extrator de lembretes. Agora é ${agora} (${weekdayNamePt(now, tz)}), fuso ${tz}.`,
-    'Responda APENAS com JSON válido, sem texto antes ou depois, no formato:',
+    formatLine,
     '{',
     '  "task": "descrição curta do que fazer",',
     '  "type": "unico" | "recorrente",',
@@ -108,6 +113,82 @@ function extractJson(text: string): unknown | null {
   } catch {
     return null;
   }
+}
+
+/** Extrai um ARRAY JSON; tolera a IA devolver um objeto só (vira array de 1). */
+function extractJsonArray(text: string): unknown[] | null {
+  const arr = text.match(/\[[\s\S]*\]/);
+  if (arr) {
+    try {
+      const parsed = JSON.parse(arr[0]);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      /* cai no objeto único abaixo */
+    }
+  }
+  const obj = extractJson(text);
+  return obj ? [obj] : null;
+}
+
+/** Teto por mensagem — barra alucinação/abuso (bate com a Parte 1 do prompt). */
+const MAX_BULK = 20;
+
+/**
+ * Converte UM objeto validado da IA em ParsedReminder resolvendo data,
+ * recorrência e aviso prévio. Retorna null quando não dá para confiar (sem
+ * due_at, data no passado, etc.) — o item é simplesmente ignorado.
+ */
+function resolveParsed(data: z.infer<typeof parsedSchema>, now: Date, tz: string): ParsedReminder | null {
+  if (!data.due_at) {
+    logger.warn('Lembretes: IA não devolveu due_at.');
+    return null;
+  }
+
+  const nextFireAt = parseLocalIso(data.due_at, tz);
+  if (!nextFireAt) {
+    logger.warn(`Lembretes: due_at inválido — "${data.due_at}"`);
+    return null;
+  }
+
+  // A IA às vezes calcula um horário que já passou (ex.: "às 8h" quando são 9h).
+  // Salvar assim faria o agendador disparar no mesmo minuto.
+  if (nextFireAt.getTime() <= now.getTime()) {
+    logger.warn(`Lembretes: due_at no passado (${data.due_at}) — descartado.`);
+    return null;
+  }
+
+  let recurrence: string | null = null;
+  if (data.type === 'recorrente' && data.recurrence) {
+    const rule = data.recurrence.trim().toLowerCase();
+    if (isValidRecurrence(rule)) recurrence = rule;
+    else logger.warn(`Lembretes: recorrência não reconhecida — "${data.recurrence}" (salvando como único).`);
+  }
+
+  // Antecedência: descartada se não couber antes do próprio compromisso — avisar
+  // "1 dia antes" de algo que é daqui a 2h não faz sentido e o toque prévio
+  // nunca dispararia.
+  let leadMinutes: number | null = null;
+  const rawLead = data.remind_before_minutes ?? null;
+  if (rawLead && rawLead > 0) {
+    const clamped = Math.min(rawLead, MAX_LEAD_MINUTES);
+    const fitsBeforeNow = nextFireAt.getTime() - clamped * 60_000 > now.getTime();
+    if (fitsBeforeNow) leadMinutes = clamped;
+    else logger.warn(`Lembretes: aviso de ${clamped}min antes não cabe até o compromisso — ignorado.`);
+  }
+
+  return {
+    task: data.task,
+    category: data.category,
+    recurrence,
+    nextFireAt,
+    leadMinutes,
+    // Anexamos a data resolvida: é a checagem que o dono realmente precisa ver
+    // antes de confirmar, e não dá para confiar que o modelo a escreveu certo.
+    confirmationText:
+      `${data.confirmation_text}\n📅 ${formatForOwner(nextFireAt, tz)}` +
+      `${recurrence ? ` · repete: ${describeRecurrence(recurrence)}` : ''}` +
+      `${leadMinutes ? `\n🔔 Aviso extra ${describeLead(leadMinutes)}` : ''}`,
+  };
 }
 
 /**
@@ -156,57 +237,58 @@ export async function parseReminder(
     return null;
   }
 
-  const data = parsed.data;
-  if (!data.due_at) {
-    logger.warn('Lembretes: IA não devolveu due_at.');
-    return null;
+  return resolveParsed(parsed.data, now, tz);
+}
+
+/**
+ * Criação em MASSA: a mensagem pode conter vários lembretes de uma vez. Devolve
+ * a lista resolvida (data/recorrência/aviso), no máximo MAX_BULK, ignorando
+ * itens sem data/tarefa. Vazio quando não deu para interpretar nada.
+ */
+export async function parseReminders(
+  tenantId: string,
+  message: string,
+  tz: string = DEFAULT_TZ,
+): Promise<ParsedReminder[]> {
+  const now = new Date();
+  const persona = await getReminderPersona(tenantId);
+  const result = await complete(
+    {
+      system: buildSystemPrompt(now, tz, persona, true),
+      messages: [{ role: 'user', content: message.slice(0, 2000) }],
+      // Mais itens = mais tokens; ainda modesto. O orquestrador dobra se truncar.
+      maxTokens: 900,
+      temperature: 0,
+    },
+    tenantId,
+    { meter: true },
+  );
+  if (!result) {
+    logger.warn('Lembretes: nenhuma IA disponível para interpretar a mensagem.');
+    return [];
   }
 
-  const nextFireAt = parseLocalIso(data.due_at, tz);
-  if (!nextFireAt) {
-    logger.warn(`Lembretes: due_at inválido — "${data.due_at}"`);
-    return null;
+  const rawItems = extractJsonArray(result.text);
+  if (!rawItems) {
+    logger.warn(`Lembretes: resposta da IA não era JSON — "${result.text.slice(0, 120)}"`);
+    return [];
   }
 
-  // A IA às vezes calcula um horário que já passou (ex.: "às 8h" quando são 9h).
-  // Salvar assim faria o agendador disparar no mesmo minuto.
-  if (nextFireAt.getTime() <= Date.now()) {
-    logger.warn(`Lembretes: due_at no passado (${data.due_at}) — descartado.`);
-    return null;
+  if (rawItems.length > MAX_BULK) {
+    logger.warn(`Lembretes: ${rawItems.length} itens recebidos — cortando para ${MAX_BULK}.`);
   }
 
-  let recurrence: string | null = null;
-  if (data.type === 'recorrente' && data.recurrence) {
-    const rule = data.recurrence.trim().toLowerCase();
-    if (isValidRecurrence(rule)) recurrence = rule;
-    else logger.warn(`Lembretes: recorrência não reconhecida — "${data.recurrence}" (salvando como único).`);
+  const out: ParsedReminder[] = [];
+  for (const raw of rawItems.slice(0, MAX_BULK)) {
+    const parsed = parsedSchema.safeParse(raw);
+    if (!parsed.success) {
+      logger.warn(`Lembretes: item fora do formato — ${parsed.error.issues[0]?.message}`);
+      continue;
+    }
+    const resolved = resolveParsed(parsed.data, now, tz);
+    if (resolved) out.push(resolved);
   }
-
-  // Antecedência: descartada se não couber antes do próprio compromisso — avisar
-  // "1 dia antes" de algo que é daqui a 2h não faz sentido e o toque prévio
-  // nunca dispararia.
-  let leadMinutes: number | null = null;
-  const rawLead = data.remind_before_minutes ?? null;
-  if (rawLead && rawLead > 0) {
-    const clamped = Math.min(rawLead, MAX_LEAD_MINUTES);
-    const fitsBeforeNow = nextFireAt.getTime() - clamped * 60_000 > Date.now();
-    if (fitsBeforeNow) leadMinutes = clamped;
-    else logger.warn(`Lembretes: aviso de ${clamped}min antes não cabe até o compromisso — ignorado.`);
-  }
-
-  return {
-    task: data.task,
-    category: data.category,
-    recurrence,
-    nextFireAt,
-    leadMinutes,
-    // Anexamos a data resolvida: é a checagem que o dono realmente precisa ver
-    // antes de confirmar, e não dá para confiar que o modelo a escreveu certo.
-    confirmationText:
-      `${data.confirmation_text}\n📅 ${formatForOwner(nextFireAt, tz)}` +
-      `${recurrence ? ` · repete: ${describeRecurrence(recurrence)}` : ''}` +
-      `${leadMinutes ? `\n🔔 Aviso extra ${describeLead(leadMinutes)}` : ''}`,
-  };
+  return out;
 }
 
 const WEEKDAY_PT: Record<string, string> = {

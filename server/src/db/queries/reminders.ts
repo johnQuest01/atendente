@@ -1,4 +1,4 @@
-import { assertTenantMatchesScope, query, queryOne } from '../index';
+import { assertTenantMatchesScope, query, queryOne, withTransaction } from '../index';
 import type { Reminder, ReminderCategory, ReminderStatus } from '../../types';
 
 /**
@@ -88,6 +88,43 @@ export async function createReminder(
     ],
   );
   return rows[0];
+}
+
+/**
+ * Criação em MASSA, tudo-ou-nada. Insere todos os lembretes numa transação: se
+ * um falhar, faz rollback de todos (o dono não fica com metade da lista salva).
+ * Reusa o mesmo INSERT do createReminder, num loop dentro da transação.
+ */
+export async function createRemindersBulk(
+  tenantId: string,
+  inputs: CreateReminderInput[],
+): Promise<Reminder[]> {
+  assertTenantMatchesScope(tenantId);
+  if (inputs.length === 0) return [];
+  return withTransaction(async (client) => {
+    const created: Reminder[] = [];
+    for (const input of inputs) {
+      const { rows } = await client.query<Reminder>(
+        `INSERT INTO reminders
+           (tenant_id, owner_phone, task, category, recurrence, next_fire_at, timezone, notes, lead_minutes)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING *`,
+        [
+          tenantId,
+          input.ownerPhone,
+          input.task,
+          input.category,
+          input.recurrence ?? null,
+          input.nextFireAt.toISOString(),
+          input.timezone ?? 'America/Sao_Paulo',
+          input.notes ?? null,
+          input.leadMinutes ?? null,
+        ],
+      );
+      created.push(rows[0]);
+    }
+    return created;
+  });
 }
 
 export interface ListRemindersFilter {

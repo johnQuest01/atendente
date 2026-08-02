@@ -2,10 +2,11 @@ import { logger } from '../../config/logger';
 import {
   cancelReminder,
   completeReminder,
-  createReminder,
+  createRemindersBulk,
   getTodayReminders,
   isReminderOwner,
   listReminders,
+  type CreateReminderInput,
   type ListRemindersFilter,
 } from '../../db/queries/reminders';
 import { getActiveKeywords } from '../../db/queries/keywords';
@@ -15,7 +16,7 @@ import { getTenantWhatsapp } from '../whatsapp.service';
 import { transcribeAudioFromBase64, transcribeAudioFromUrl } from '../transcription.service';
 import type { NormalizedInbound } from '../whatsapp/types';
 import type { Reminder } from '../../types';
-import { describeLead, describeRecurrence, parseReminder } from './parse.service';
+import { describeLead, describeRecurrence, parseReminders, type ParsedReminder } from './parse.service';
 import { DEFAULT_TZ, formatForOwner, fromWallClock, toWallClock } from './time';
 
 /**
@@ -33,15 +34,23 @@ const OWNER_STT_PROMPT =
   'Pode conter datas e horários (hoje, amanhã, segunda, dia 20, às 15h), e termos como ' +
   'pagar, boleto, fornecedor, cliente, reunião, ligar, cobrar, vencimento, entrega.';
 
-/** Estado curto por dono: confirmação pendente e a última lista exibida. */
+/** Um lembrete já interpretado, aguardando confirmação. */
+interface PendingItem {
+  task: string;
+  category: Reminder['category'];
+  recurrence: string | null;
+  nextFireAt: Date;
+  leadMinutes: number | null;
+  /** Frase de confirmação (com o tom da persona) para item único. */
+  confirmationText: string;
+}
+
+/** Estado curto por dono: confirmação pendente (em massa) e a última lista. */
 interface OwnerState {
   at: number;
   pending?: {
-    task: string;
-    category: Reminder['category'];
-    recurrence: string | null;
-    nextFireAt: Date;
-    leadMinutes: number | null;
+    /** Um ou vários lembretes; "SIM" grava todos de uma vez. */
+    items: PendingItem[];
     /** Texto original, para o dono poder corrigir sem repetir tudo. */
     source: string;
   };
@@ -313,9 +322,10 @@ export async function handleOwnerMessage(
 
   // 1. Confirmação pendente tem prioridade sobre tudo.
   if (owner.pending) {
+    const { items, source } = owner.pending;
+
     if (AFFIRMATIVE.has(normalized)) {
-      const p = owner.pending;
-      await createReminder(tenantId, {
+      const inputs: CreateReminderInput[] = items.map((p) => ({
         ownerPhone: phone,
         task: p.task,
         category: p.category,
@@ -323,20 +333,50 @@ export async function handleOwnerMessage(
         nextFireAt: p.nextFireAt,
         leadMinutes: p.leadMinutes,
         timezone: tz,
-      });
+      }));
+      // Tudo-ou-nada: ou grava todos, ou nenhum (transação).
+      await createRemindersBulk(tenantId, inputs);
       setState(tenantId, phone, { pending: undefined });
-      await reply(tenantId, phone, `✅ Anotado! Te aviso ${formatForOwner(p.nextFireAt, tz)}.`);
+      await reply(
+        tenantId,
+        phone,
+        items.length === 1
+          ? `✅ Anotado! Te aviso ${formatForOwner(items[0].nextFireAt, tz)}.`
+          : `✅ Salvei os ${items.length} lembretes. 👍`,
+      );
       return true;
     }
+
     if (NEGATIVE.has(normalized)) {
       setState(tenantId, phone, { pending: undefined });
       await reply(tenantId, phone, 'Beleza, descartei. 👍');
       return true;
     }
-    // Qualquer outra coisa é uma CORREÇÃO: reprocessa somando o texto original,
-    // para o dono poder dizer só "na verdade às 15h".
+
+    // Correção citando um NÚMERO ("2 na verdade às 16h"): reprocessa só aquele
+    // item e mantém os demais. Só quando há vários pendentes.
+    const numbered = normalized.match(/^(\d{1,2})\b/);
+    if (numbered && items.length > 1) {
+      const idx = Number(numbered[1]) - 1;
+      if (idx >= 0 && idx < items.length) {
+        const correction = text.replace(/^\s*\d{1,2}[).:\-]?\s*/, '').trim() || text;
+        const reparsed = await parseReminders(tenantId, `${items[idx].task}\nCorreção: ${correction}`, tz);
+        if (reparsed.length > 0) {
+          const nextItems = items.slice();
+          nextItems[idx] = toPendingItem(reparsed[0]);
+          setState(tenantId, phone, { pending: { items: nextItems, source } });
+          await reply(tenantId, phone, renderConfirmation(nextItems, tz));
+        } else {
+          await reply(tenantId, phone, 'Não consegui reprocessar esse item. Pode repetir dizendo a data?');
+        }
+        return true;
+      }
+    }
+
+    // Qualquer outra coisa é uma CORREÇÃO geral: reprocessa somando o texto
+    // original, para o dono poder dizer só "na verdade às 15h" (caso de 1 item).
     setState(tenantId, phone, { pending: undefined });
-    const corrected = `${owner.pending.source}\nCorreção: ${text}`;
+    const corrected = `${source}\nCorreção: ${text}`;
     return handleCreate(tenantId, phone, corrected, tz, text);
   }
 
@@ -398,6 +438,38 @@ export async function handleOwnerMessage(
   return handleCreate(tenantId, phone, text, tz, text);
 }
 
+function toPendingItem(p: ParsedReminder): PendingItem {
+  return {
+    task: p.task,
+    category: p.category,
+    recurrence: p.recurrence,
+    nextFireAt: p.nextFireAt,
+    leadMinutes: p.leadMinutes,
+    confirmationText: p.confirmationText,
+  };
+}
+
+/** UMA confirmação, numerada quando há vários (Parte 1: massa). */
+function renderConfirmation(items: PendingItem[], tz: string): string {
+  if (items.length === 1) {
+    return `${items[0].confirmationText}\n\nConfirma? (responda *sim* ou me corrija)`;
+  }
+  const lines = items.map((it, i) => {
+    const when = formatForOwner(it.nextFireAt, tz);
+    const repeat = it.recurrence ? ` 🔁 ${describeRecurrence(it.recurrence)}` : '';
+    const lead = it.leadMinutes ? ` 🔔 ${describeLead(it.leadMinutes)}` : '';
+    const flag = it.category === 'importante' ? '⚠️ ' : '';
+    return `${i + 1}. ${flag}${it.task}\n   ${when}${repeat}${lead}`;
+  });
+  return [
+    `Entendi *${items.length}* lembretes:`,
+    '',
+    ...lines,
+    '',
+    'Responda *SIM* para salvar todos, ou diga o número a corrigir (ex.: _"2 na verdade às 16h"_).',
+  ].join('\n');
+}
+
 async function handleCreate(
   tenantId: string,
   phone: string,
@@ -406,9 +478,9 @@ async function handleCreate(
   originalText: string,
 ): Promise<boolean> {
   const looksLikeReminder = CREATE_TRIGGERS.test(message);
-  const parsed = await parseReminder(tenantId, message, tz);
+  const parsed = await parseReminders(tenantId, message, tz);
 
-  if (!parsed) {
+  if (parsed.length === 0) {
     // Sem gatilho claro E sem interpretação: provavelmente não era um lembrete.
     // Mesmo assim respondemos o menu — o dono nunca deve cair no fluxo de vendas.
     await reply(
@@ -421,17 +493,8 @@ async function handleCreate(
     return true;
   }
 
-  setState(tenantId, phone, {
-    pending: {
-      task: parsed.task,
-      category: parsed.category,
-      recurrence: parsed.recurrence,
-      nextFireAt: parsed.nextFireAt,
-      leadMinutes: parsed.leadMinutes,
-      source: originalText,
-    },
-  });
-
-  await reply(tenantId, phone, `${parsed.confirmationText}\n\nConfirma? (responda *sim* ou me corrija)`);
+  const items = parsed.map(toPendingItem);
+  setState(tenantId, phone, { pending: { items, source: originalText } });
+  await reply(tenantId, phone, renderConfirmation(items, tz));
   return true;
 }
