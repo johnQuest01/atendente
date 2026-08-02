@@ -70,6 +70,9 @@ function buildSystemPrompt(now: Date, tz: string): string {
     '- Um dia da semana ("quinta") é a próxima ocorrência dele; se hoje é esse dia e o horário já passou, é o da semana seguinte.',
     '- "dia N" é o dia N deste mês, ou do próximo se já passou.',
     '- "daqui a X dias" é hoje + X dias.',
+    // Sem esta linha o modelo tende a arredondar "daqui a 5 minutos" para o dia
+    // seguinte — e é assim que qualquer pessoa testa o recurso pela primeira vez.
+    '- "daqui a X minutos" / "daqui a X horas" / "em X min" é o horário de agora + X, no MESMO dia.',
     '- "toda segunda" = weekly:MON; "todo dia N" = monthly:N; "todo dia" = daily.',
     '- Sem horário explícito, use 09:00 e diga isso no confirmation_text.',
     '- NUNCA use fuso ou "Z" no due_at: escreva a hora como o usuário leria no relógio dele.',

@@ -118,6 +118,7 @@ const HELP_TEXT = [
   '_"me lembra amanhã às 9h de pagar o fornecedor"_',
   '_"toda sexta cobrar os inadimplentes"_',
   '_"reunião quinta às 15h, me avise 1 hora antes"_',
+  '_"me lembra daqui a 10 minutos de ligar pro cliente"_',
   '',
   'Para consultar, pergunte à vontade:',
   '_"o que temos para hoje?"_ · _"meus compromissos da semana"_',
