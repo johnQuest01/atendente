@@ -19,6 +19,16 @@ import type { WhatsappProviderName } from '../db/queries/whatsapp_connections';
 export interface ServiceCheck {
   ok: boolean;
   detail: string;
+  /**
+   * Quem está REALMENTE atendendo agora (ex.: "Meta Cloud", "Groq", "Neon").
+   * É o que a tela mostra — trocar de provedor troca o nome aqui, sem rótulo
+   * chumbado no front.
+   */
+  provider?: string | null;
+  /** Quanto a checagem demorou, em ms. Denuncia lentidão antes da queda. */
+  latencyMs?: number;
+  /** Opcional não derruba o status geral (ex.: transcrição desligada). */
+  optional?: boolean;
 }
 
 export interface HealthReport {
@@ -33,7 +43,60 @@ export interface HealthReport {
     ai: ServiceCheck;
     whatsapp: ServiceCheck;
     transcription: ServiceCheck;
+    storage: ServiceCheck;
   };
+}
+
+/** Rótulo de exibição de cada provedor de WhatsApp. */
+const WHATSAPP_LABEL: Record<WhatsappProviderName, string> = {
+  zapi: 'Z-API',
+  evolution: 'Evolution API',
+  metacloud: 'WhatsApp Oficial (Meta)',
+};
+
+function hostOf(url: string | undefined): string | null {
+  if (!url) return null;
+  try {
+    // A connection string do Postgres também é parseável como URL.
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Deduz o nome do banco a partir do host da connection string. Nada de "Neon"
+ * chumbado: se você migrar de provedor, a tela acompanha.
+ */
+function describeDatabase(): string {
+  const host = hostOf(env.DATABASE_URL);
+  if (!host) return 'PostgreSQL';
+  if (host.includes('localhost') || host === '127.0.0.1') return 'PostgreSQL local';
+  let name = 'PostgreSQL';
+  if (host.endsWith('neon.tech')) name = 'Neon';
+  else if (host.includes('supabase')) name = 'Supabase';
+  else if (host.includes('rds.amazonaws')) name = 'Amazon RDS';
+  else if (host.includes('render.com')) name = 'Render Postgres';
+  // Hosts gerenciados costumam trazer a região no próprio nome (sa-east-1).
+  const region = host.split('.').find((p) => /^[a-z]{2}-[a-z]+-\d$/.test(p));
+  return region ? `${name} · ${region}` : name;
+}
+
+/** Mesma ideia para o speech-to-text, que é um endpoint compatível com OpenAI. */
+function describeStt(): string {
+  const host = hostOf(env.STT_BASE_URL);
+  if (!host) return 'STT';
+  if (host.includes('groq.com')) return 'Groq';
+  if (host.includes('openai.com')) return 'OpenAI';
+  if (host.includes('deepgram')) return 'Deepgram';
+  return host;
+}
+
+/** Mede quanto uma checagem demorou, sem deixar a exceção escapar. */
+async function timed<T>(fn: () => Promise<T>): Promise<{ value: T; ms: number }> {
+  const started = Date.now();
+  const value = await fn();
+  return { value, ms: Date.now() - started };
 }
 
 function errMessage(err: unknown, fallback = 'Erro desconhecido'): string {
@@ -46,11 +109,19 @@ function errMessage(err: unknown, fallback = 'Erro desconhecido'): string {
 }
 
 async function checkDatabase(): Promise<ServiceCheck> {
+  const provider = describeDatabase();
   try {
-    await pool.query('SELECT 1');
-    return { ok: true, detail: 'Conectado ao banco (Neon).' };
+    const { ms } = await timed(() => pool.query('SELECT 1'));
+    return {
+      ok: true,
+      provider,
+      latencyMs: ms,
+      // Acima de ~300ms por ida e volta quase sempre é distância física entre
+      // o servidor e o banco — vale dizer, não só mostrar o número.
+      detail: ms > 300 ? `Conectado, mas lento (${ms}ms) — servidor e banco em regiões distantes?` : 'Conectado.',
+    };
   } catch (err) {
-    return { ok: false, detail: errMessage(err, 'Falha ao conectar no banco.') };
+    return { ok: false, provider, detail: errMessage(err, 'Falha ao conectar no banco.') };
   }
 }
 
@@ -80,11 +151,13 @@ async function checkAi(tenantId: string): Promise<{ check: ServiceCheck; provide
   const hasFallback = chain.providers.length > 1;
 
   try {
-    const result = await adapters[active.kind].validateKey(active.creds);
+    const { value: result, ms } = await timed(() => adapters[active.kind].validateKey(active.creds));
     return {
       check: {
         ok: result.ok || hasFallback,
-        detail: `Ativa: ${active.label}${sourceTxt}. ${result.detail}${fallbackTxt}`,
+        provider: active.label,
+        latencyMs: ms,
+        detail: `${sourceTxt.trim()} ${result.detail}${fallbackTxt}`.trim(),
       },
       provider: active.label,
     };
@@ -92,7 +165,8 @@ async function checkAi(tenantId: string): Promise<{ check: ServiceCheck; provide
     return {
       check: {
         ok: hasFallback,
-        detail: `${active.label}: ${errMessage(err, 'Falha ao validar.')}${fallbackTxt}`,
+        provider: active.label,
+        detail: `${errMessage(err, 'Falha ao validar.')}${fallbackTxt}`,
       },
       provider: active.label,
     };
@@ -101,22 +175,44 @@ async function checkAi(tenantId: string): Promise<{ check: ServiceCheck; provide
 
 async function checkTranscription(): Promise<ServiceCheck> {
   if (env.STT_PROVIDER === 'none') {
-    return { ok: false, detail: 'Transcrição desativada (opcional).' };
+    return { ok: false, optional: true, provider: null, detail: 'Desativada — áudios não são transcritos.' };
   }
+  const provider = describeStt();
   if (!env.STT_API_KEY) {
-    return { ok: false, detail: 'STT_API_KEY ausente.' };
+    return { ok: false, optional: true, provider, detail: 'STT_API_KEY ausente.' };
   }
   try {
-    const res = await fetch(`${env.STT_BASE_URL}/models`, {
-      headers: { Authorization: `Bearer ${env.STT_API_KEY}` },
-      signal: AbortSignal.timeout(6000),
-    });
-    if (res.ok) return { ok: true, detail: `Endpoint OK (modelo ${env.STT_MODEL}).` };
-    if (res.status === 401) return { ok: false, detail: 'Chave inválida (401).' };
-    return { ok: false, detail: `STT respondeu HTTP ${res.status}.` };
+    const { value: res, ms } = await timed(() =>
+      fetch(`${env.STT_BASE_URL}/models`, {
+        headers: { Authorization: `Bearer ${env.STT_API_KEY}` },
+        signal: AbortSignal.timeout(6000),
+      }),
+    );
+    if (res.ok) return { ok: true, optional: true, provider, latencyMs: ms, detail: `Modelo ${env.STT_MODEL}.` };
+    if (res.status === 401) return { ok: false, optional: true, provider, detail: 'Chave inválida (401).' };
+    return { ok: false, optional: true, provider, detail: `Respondeu HTTP ${res.status}.` };
   } catch (err) {
-    return { ok: false, detail: errMessage(err, 'Falha ao validar a transcrição.') };
+    return { ok: false, optional: true, provider, detail: errMessage(err, 'Falha ao validar a transcrição.') };
   }
+}
+
+/**
+ * Onde a mídia é hospedada. Local funciona, mas some a cada deploy sem disco
+ * persistente e a URL depende do backend estar no ar — por isso conta como
+ * degradado, não como falha.
+ */
+function checkStorage(): ServiceCheck {
+  if (env.hasRemoteStorage) {
+    const host = hostOf(env.S3_PUBLIC_URL) ?? '';
+    const name = host.includes('r2.dev') || host.includes('cloudflare') ? 'Cloudflare R2' : host || 'S3';
+    return { ok: true, provider: name, detail: 'Mídia em CDN com URL permanente.' };
+  }
+  return {
+    ok: false,
+    optional: true,
+    provider: 'Disco local',
+    detail: 'Sem CDN: a mídia depende do servidor no ar. Configure o R2 para URL permanente.',
+  };
 }
 
 const cache = new Map<string, { at: number; report: HealthReport }>();
@@ -130,21 +226,29 @@ export async function getHealthReport(tenantId: string, force = false): Promise<
   }
 
   const wa = await getTenantWhatsapp(tenantId);
-  const [database, ai, wpp, transcription] = await Promise.all([
+  const [database, ai, wppTimed, transcription] = await Promise.all([
     checkDatabase(),
     checkAi(tenantId),
-    wa.getConnectionStatus(),
+    timed(() => wa.getConnectionStatus()),
     checkTranscription(),
   ]);
 
+  // O nome do provedor de WhatsApp vem daqui pronto: quando a empresa troca de
+  // Z-API para Meta, a tela passa a dizer "Meta" sozinha.
+  const whatsapp: ServiceCheck = {
+    ...wppTimed.value,
+    provider: wa.configured ? WHATSAPP_LABEL[wa.provider] : null,
+    latencyMs: wppTimed.ms,
+  };
+
   const report: HealthReport = {
     // "degraded" se o essencial (banco ou WhatsApp) estiver fora.
-    status: database.ok && wpp.ok ? 'ok' : 'degraded',
+    status: database.ok && whatsapp.ok ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),
     whatsappProvider: wa.provider,
     aiProvider: ai.provider,
     storage: env.hasRemoteStorage ? 'remote' : 'local',
-    services: { database, ai: ai.check, whatsapp: wpp, transcription },
+    services: { database, ai: ai.check, whatsapp, transcription, storage: checkStorage() },
   };
 
   cache.set(tenantId, { at: Date.now(), report });

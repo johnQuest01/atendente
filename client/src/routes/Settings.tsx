@@ -105,33 +105,33 @@ export default function Settings() {
         </Card>
 
         <Card>
-          <div className="mb-3 flex items-center justify-between">
+          <div className="mb-1 flex items-center justify-between gap-2">
             <h2 className="text-sm font-bold text-text-primary">Status do sistema</h2>
-            <Button size="sm" variant="secondary" loading={isFetching} onClick={() => void refetch()}>
-              Testar
-            </Button>
+            <div className="flex items-center gap-2">
+              {health && (
+                <Badge tone={health.status === 'ok' ? 'success' : 'warning'}>
+                  {health.status === 'ok' ? 'Tudo operando' : 'Atenção'}
+                </Badge>
+              )}
+              <Button size="sm" variant="secondary" loading={isFetching} onClick={() => void refetch()}>
+                Testar
+              </Button>
+            </div>
           </div>
+          <p className="mb-2 text-xs text-text-secondary">
+            Cada linha mostra o serviço que está em uso agora — trocar de provedor troca o nome aqui.
+          </p>
           <ul className="flex flex-col divide-y divide-border">
-            <StatusRow label="Servidor / Banco" check={health?.services.database} />
-            <StatusRow
-              label={`IA${health?.aiProvider && health.aiProvider !== 'nenhum' ? ` (${health.aiProvider})` : ''}`}
-              check={health?.services.ai}
-            />
-            <StatusRow label="Transcrição de áudio (STT)" check={health?.services.transcription} />
-            <StatusRow
-              label={`WhatsApp (${PROVIDER_LABEL[health?.whatsappProvider ?? 'zapi'] ?? 'Z-API'})`}
-              check={health?.services.whatsapp}
-            />
+            <StatusRow label="WhatsApp" check={health?.services.whatsapp} />
+            <StatusRow label="Inteligência artificial" check={health?.services.ai} />
+            <StatusRow label="Banco de dados" check={health?.services.database} />
+            <StatusRow label="Transcrição de áudio" check={health?.services.transcription} />
+            <StatusRow label="Armazenamento de mídia" check={health?.services.storage} />
           </ul>
           {health && (
-            <div className="mt-3 flex items-center justify-between gap-2">
-              <p className="text-xs text-text-secondary">
-                Última verificação: {new Date(health.timestamp).toLocaleString('pt-BR')}
-              </p>
-              <Badge tone={health.storage === 'remote' ? 'success' : 'warning'}>
-                {health.storage === 'remote' ? 'Mídia: CDN (R2)' : 'Mídia: local'}
-              </Badge>
-            </div>
+            <p className="mt-3 text-xs text-text-secondary">
+              Última verificação: {new Date(health.timestamp).toLocaleString('pt-BR')}
+            </p>
           )}
         </Card>
 
@@ -494,6 +494,15 @@ function WhatsappCard({ canEdit }: { canEdit: boolean }) {
     setBaseUrl('');
   }
 
+  /** Reconsulta o provedor e diz o resultado em voz alta, em vez de só repintar o badge. */
+  async function testConnection() {
+    const { data: fresh } = await refetch();
+    if (!fresh) return;
+    if (!fresh.configured) toast('Nenhuma credencial cadastrada ainda.', 'info');
+    else if (fresh.status?.ok) toast(`Conectado! ${fresh.status.detail}`, 'success');
+    else toast(fresh.status?.detail ?? 'Não foi possível conectar.', 'error');
+  }
+
   function submit() {
     const payload: WhatsappConnectionInput = { provider };
     if (provider === 'zapi') {
@@ -509,11 +518,19 @@ function WhatsappCard({ canEdit }: { canEdit: boolean }) {
     }
     if (baseUrl.trim()) payload.baseUrl = baseUrl.trim();
 
+    // O backend testa a conexão logo após salvar e devolve o status real — é
+    // isso que o usuário precisa ouvir, não um "salvo" que não prova nada.
     save.mutate(payload, {
-      onSuccess: () => {
+      onSuccess: (view) => {
         setEditing(false);
         resetFields();
-        toast('Conexão de WhatsApp salva!', 'success');
+        if (view.status?.ok) {
+          toast(`Conectado! ${view.status.detail}`, 'success');
+        } else if (!view.configured) {
+          toast('Credenciais incompletas — preencha os campos do provedor escolhido.', 'error');
+        } else {
+          toast(`Salvo, mas a conexão falhou: ${view.status?.detail ?? 'sem detalhe'}`, 'error');
+        }
       },
       onError: (err) => toast(getErrorMessage(err), 'error'),
     });
@@ -589,6 +606,12 @@ function WhatsappCard({ canEdit }: { canEdit: boolean }) {
             <option value="evolution">Evolution API</option>
             <option value="metacloud">WhatsApp Oficial (Meta)</option>
           </Select>
+
+          <p className="-mt-1 text-xs text-text-secondary">
+            Só um provedor fica ativo por vez — ao salvar, o anterior é desligado na hora, sem risco
+            de os dois responderem juntos. As credenciais do outro continuam guardadas, então dá para
+            voltar depois sem digitar tudo de novo.
+          </p>
 
           {provider === 'metacloud' && (
             <p className="rounded-lg bg-primary/10 px-3 py-2 text-xs text-text-secondary">
@@ -684,7 +707,7 @@ function WhatsappCard({ canEdit }: { canEdit: boolean }) {
         </div>
       ) : (
         <div className="flex items-center justify-between gap-2">
-          <Button size="sm" variant="secondary" loading={isFetching} onClick={() => void refetch()}>
+          <Button size="sm" variant="secondary" loading={isFetching} onClick={() => void testConnection()}>
             Testar conexão
           </Button>
           <Button size="sm" onClick={() => setEditing(true)}>
@@ -698,19 +721,34 @@ function WhatsappCard({ canEdit }: { canEdit: boolean }) {
 
 function StatusRow({ label, check }: { label: string; check?: ServiceCheck }) {
   const ok = check?.ok ?? false;
+  // Serviço opcional fora do ar é aviso, não falha: o sistema segue funcionando
+  // sem transcrição ou sem CDN, só com menos recurso.
+  const tone = !check ? 'warning' : ok ? 'success' : check.optional ? 'warning' : 'danger';
+  const badgeText = !check ? '...' : ok ? 'OK' : check.optional ? 'Inativo' : 'Falha';
+
   return (
     <li className="flex items-start justify-between gap-3 py-2.5">
-      <div className="min-w-0">
-        <span className="text-sm text-text-primary">{label}</span>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <span className="text-sm text-text-primary">{label}</span>
+          {check?.provider ? (
+            <span className="text-sm font-bold text-text-primary">{check.provider}</span>
+          ) : (
+            check && <span className="text-sm text-text-secondary">não configurado</span>
+          )}
+        </div>
         {check?.detail && (
           <p className="mt-0.5 truncate text-xs text-text-secondary" title={check.detail}>
             {check.detail}
           </p>
         )}
       </div>
-      <Badge tone={check ? (ok ? 'success' : 'danger') : 'warning'}>
-        {check ? (ok ? 'OK' : 'Falha') : '...'}
-      </Badge>
+      <div className="flex shrink-0 flex-col items-end gap-0.5">
+        <Badge tone={tone}>{badgeText}</Badge>
+        {check?.latencyMs != null && (
+          <span className="text-[10px] tabular-nums text-text-secondary">{check.latencyMs}ms</span>
+        )}
+      </div>
     </li>
   );
 }
