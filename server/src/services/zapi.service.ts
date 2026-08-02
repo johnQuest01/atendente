@@ -121,6 +121,53 @@ export function typingSecondsFor(message: string): number {
   return Math.min(8, Math.max(1, seconds));
 }
 
+/**
+ * Aponta TODOS os webhooks da instância para a nossa URL, de uma só vez.
+ *
+ * Existe porque "instância conectada" e "webhook apontado para nós" são coisas
+ * diferentes: a Z-API pode estar pareada com o celular e mesmo assim não
+ * entregar nada aqui — sintoma silencioso, porque o painel dela mostra tudo
+ * verde. Configurar por API elimina o passo manual (e o erro de colar a URL no
+ * campo errado, já que ela tem vários).
+ *
+ * `notifySentByMe` liga o eco das mensagens que o operador envia pelo próprio
+ * celular — é o que alimenta a pausa automática da IA.
+ */
+export async function configureWebhooks(
+  conn: ZapiConnection,
+  url: string,
+  notifySentByMe = true,
+): Promise<{ ok: boolean; detail: string }> {
+  if (!isConfigured(conn)) {
+    return { ok: false, detail: 'Credenciais da Z-API não cadastradas.' };
+  }
+  if (!url.startsWith('https://')) {
+    return { ok: false, detail: `A Z-API só aceita webhook HTTPS — a URL atual é "${url}".` };
+  }
+
+  try {
+    const res = await fetch(`${baseUrl(conn)}/update-every-webhooks`, {
+      method: 'PUT',
+      headers: headers(conn),
+      body: JSON.stringify({ value: url, notifySentByMe }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      logger.error(`Z-API update-every-webhooks retornou ${res.status}: ${text}`);
+      return { ok: false, detail: `A Z-API recusou (HTTP ${res.status}): ${text.slice(0, 160)}` };
+    }
+    logger.info(`Webhooks da Z-API apontados para ${url}`);
+    return {
+      ok: true,
+      detail: 'Webhooks configurados na Z-API (recebimento, status e eco das suas mensagens).',
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, detail: `Falha ao falar com a Z-API: ${msg}` };
+  }
+}
+
 /** Envia mensagem de texto, com o "digitando..." antes. */
 export function sendText(conn: ZapiConnection, phone: string, message: string): Promise<string | null> {
   return post(conn, 'send-text', {

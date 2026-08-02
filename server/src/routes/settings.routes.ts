@@ -15,6 +15,7 @@ import {
   previewPersonaSchema,
   getSystemStatus,
   getWhatsappConnection,
+  configureWhatsappWebhook,
   putWhatsappConnection,
   updateWhatsappSchema,
 } from '../controllers/settings.controller';
@@ -61,6 +62,8 @@ router.put(
   validate({ body: updateWhatsappSchema }),
   asyncHandler(putWhatsappConnection),
 );
+// Registra a URL de webhook direto no provedor, sem o cliente colar nada lá.
+router.post('/whatsapp/webhook', adminOnly, asyncHandler(configureWhatsappWebhook));
 
 // Assistente pessoal de lembretes: quais números da empresa falam com ele em
 // vez de serem atendidos como clientes. Só admin mexe na whitelist.

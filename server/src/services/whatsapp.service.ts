@@ -179,6 +179,7 @@ function build(resolved: ResolvedConnection | null): TenantWhatsapp {
     sendImages: (phone, imageUrls, caption) => zapi.sendImages(c, phone, imageUrls, caption),
     markAsRead: (phone, messageId) => zapi.markAsRead(c, phone, messageId),
     getConnectionStatus: () => zapi.getConnectionStatus(c),
+    configureWebhook: (url) => zapi.configureWebhooks(c, url),
   };
 }
 

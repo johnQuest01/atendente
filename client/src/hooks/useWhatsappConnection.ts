@@ -50,6 +50,26 @@ export function useWhatsappConnection() {
   });
 }
 
+/**
+ * Manda o servidor registrar a URL de webhook direto no provedor. Evita o passo
+ * manual de colar a URL no painel dele, que é onde a integração mais falha.
+ */
+export function useConfigureWebhook() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const { data } = await api.post<{ ok: boolean; detail: string; webhookUrl: string }>(
+        '/settings/whatsapp/webhook',
+      );
+      return data;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: WHATSAPP_CONN_QUERY_KEY });
+      void qc.invalidateQueries({ queryKey: SYSTEM_STATUS_QUERY_KEY });
+    },
+  });
+}
+
 export function useSaveWhatsappConnection() {
   const qc = useQueryClient();
   return useMutation({

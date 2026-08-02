@@ -210,6 +210,35 @@ export const updateWhatsappSchema = z.object({
   isActive: z.boolean().optional(),
 });
 
+/**
+ * Aponta o webhook do provedor para a URL desta empresa, por API.
+ *
+ * O passo manual (copiar a URL e colar no painel do provedor) é onde a
+ * integração mais quebra: a instância fica conectada, o painel mostra tudo
+ * verde, e mesmo assim nenhuma mensagem chega — sem erro em lugar nenhum.
+ */
+export async function configureWhatsappWebhook(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const conn = await getConnectionByTenant(tenantId);
+  if (!conn) throw new AppError('Cadastre as credenciais do WhatsApp primeiro.', 400, 'NO_CONNECTION');
+
+  const wa = await getTenantWhatsapp(tenantId);
+  if (!wa.configured) {
+    throw new AppError('Conexão incompleta — preencha as credenciais do provedor.', 400, 'NOT_CONFIGURED');
+  }
+  if (!wa.configureWebhook) {
+    throw new AppError(
+      'Este provedor não permite configurar o webhook por API — cole a URL no painel dele.',
+      400,
+      'MANUAL_WEBHOOK',
+    );
+  }
+
+  const url = `${env.PUBLIC_BASE_URL}/webhook/whatsapp/${conn.webhook_token}`;
+  const result = await wa.configureWebhook(url);
+  res.status(result.ok ? 200 : 502).json({ ...result, webhookUrl: url });
+}
+
 export async function putWhatsappConnection(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenant_id;
   if (!hasEncryptionKey()) {

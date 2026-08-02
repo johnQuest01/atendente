@@ -55,6 +55,12 @@ export interface WhatsAppProvider {
    * manda pronto no webhook.
    */
   downloadMedia?(mediaId: string): Promise<DownloadedMedia | null>;
+  /**
+   * Registra a URL de webhook no provedor, quando ele permite fazer isso por
+   * API. Ausente = a configuração é manual no painel dele (caso da Meta, onde
+   * a URL é validada por um desafio).
+   */
+  configureWebhook?(url: string): Promise<ProviderStatus>;
 }
 
 export interface DownloadedMedia {

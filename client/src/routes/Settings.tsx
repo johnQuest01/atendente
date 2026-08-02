@@ -16,6 +16,7 @@ import { useSystemStatus, type ServiceCheck } from '@/hooks/useSystemStatus';
 import {
   useWhatsappConnection,
   useSaveWhatsappConnection,
+  useConfigureWebhook,
   type WhatsappConnectionInput,
   type WhatsappProvider,
 } from '@/hooks/useWhatsappConnection';
@@ -454,6 +455,7 @@ function ReminderOwnersCard() {
 function WhatsappCard({ canEdit }: { canEdit: boolean }) {
   const { data, isFetching, refetch } = useWhatsappConnection();
   const save = useSaveWhatsappConnection();
+  const configureWebhook = useConfigureWebhook();
 
   const [editing, setEditing] = useState(false);
   const [provider, setProvider] = useState<WhatsappProvider>('zapi');
@@ -566,6 +568,29 @@ function WhatsappCard({ canEdit }: { canEdit: boolean }) {
               Copiar
             </Button>
           </div>
+
+          {canEdit && data.provider !== 'metacloud' && (
+            <>
+              <Button
+                size="sm"
+                className="mt-2"
+                loading={configureWebhook.isPending}
+                onClick={() =>
+                  configureWebhook.mutate(undefined, {
+                    onSuccess: (r) => toast(r.detail, 'success'),
+                    onError: (err) => toast(getErrorMessage(err), 'error'),
+                  })
+                }
+              >
+                Configurar webhook automaticamente
+              </Button>
+              <p className="mt-1.5 text-xs text-text-secondary">
+                Registra esta URL na {PROVIDER_LABEL[data.provider] ?? 'Z-API'} por API — recebimento,
+                status de entrega e o eco das mensagens que você envia pelo celular. Dispensa colar
+                nada no painel dela.
+              </p>
+            </>
+          )}
 
           {data.provider === 'metacloud' && data.verifyToken && (
             <>
