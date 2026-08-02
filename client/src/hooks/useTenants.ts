@@ -13,6 +13,8 @@ export interface TenantSummary {
   ai_message_limit: number | null;
   /** Mensagens de IA (pagas pela plataforma) usadas no mês atual. */
   ai_used: number;
+  /** Fim do período de teste (null = sem prazo). */
+  trial_ends_at: string | null;
 }
 
 export interface CreateTenantInput {
@@ -56,6 +58,7 @@ export function useUpdateTenant() {
       name?: string;
       is_active?: boolean;
       ai_message_limit?: number | null;
+      trial_ends_at?: string | null;
     }) => {
       const { data } = await api.patch(`/admin/tenants/${id}`, patch);
       return data;

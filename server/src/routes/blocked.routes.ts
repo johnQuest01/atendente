@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { asyncHandler } from '../utils/asyncHandler';
 import { validate } from '../middleware/validate';
+import { requireActiveTenant } from '../middleware/tenantAccess.middleware';
 import { authenticate, requireBlockAccess } from '../middleware/auth.middleware';
 import { authLimiter } from '../middleware/rateLimit.middleware';
 import {
@@ -17,7 +18,7 @@ import {
 
 const router = Router();
 
-router.use(authenticate);
+router.use(authenticate, requireActiveTenant);
 
 // Login do cadeado: exige o usuário autenticado + rate limit anti força-bruta.
 router.post('/unlock', authLimiter, validate({ body: unlockSchema }), asyncHandler(unlockBlocked));

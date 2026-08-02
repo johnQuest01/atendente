@@ -15,6 +15,7 @@ import {
   useUpdateTenant,
   type TenantSummary,
 } from '@/hooks/useTenants';
+import { useInvites, useCreateInvite, useRevokeInvite, inviteStatus } from '@/hooks/useInvites';
 import { AiProvidersManager } from '@/components/ai/AiProvidersManager';
 import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
@@ -62,12 +63,151 @@ export default function Admin() {
         ))}
 
         <div className="mt-4 border-t border-border pt-4">
+          <InvitesManager />
+        </div>
+
+        <div className="mt-4 border-t border-border pt-4">
           <AiProvidersManager scope="global" />
         </div>
       </div>
 
       <CreateTenantModal open={creating} onClose={() => setCreating(false)} />
     </>
+  );
+}
+
+/** Quanto falta do teste, em linguagem de gente. */
+function trialLabel(trialEndsAt: string | null): { text: string; expired: boolean } | null {
+  if (!trialEndsAt) return null;
+  const ends = Date.parse(trialEndsAt);
+  if (Number.isNaN(ends)) return null;
+  const days = Math.ceil((ends - Date.now()) / 86_400_000);
+  if (days <= 0) return { text: 'Teste vencido', expired: true };
+  return { text: `Teste: ${days} dia${days > 1 ? 's' : ''}`, expired: false };
+}
+
+/**
+ * Convites de acesso. Sem gateway de pagamento, é assim que um cliente novo
+ * entra: gera-se o link, ele cria a conta e o teste começa no aceite.
+ */
+function InvitesManager() {
+  const { data: invites, isLoading } = useInvites();
+  const create = useCreateInvite();
+  const revoke = useRevokeInvite();
+
+  const [email, setEmail] = useState('');
+  const [companyName, setCompanyName] = useState('');
+  const [trialDays, setTrialDays] = useState('14');
+
+  function copy(url: string) {
+    void navigator.clipboard?.writeText(url).then(
+      () => toast('Link do convite copiado!', 'success'),
+      () => toast('Não foi possível copiar — copie manualmente.', 'error'),
+    );
+  }
+
+  function submit() {
+    create.mutate(
+      {
+        email: email.trim() || undefined,
+        companyName: companyName.trim() || undefined,
+        trialDays: Math.max(1, Number(trialDays) || 14),
+        expiresInDays: 14,
+      },
+      {
+        onSuccess: ({ url }) => {
+          setEmail('');
+          setCompanyName('');
+          copy(url);
+          toast('Convite criado — link copiado.', 'success');
+        },
+        onError: (err) => toast(getErrorMessage(err), 'error'),
+      },
+    );
+  }
+
+  return (
+    <Card className="flex flex-col gap-3">
+      <div>
+        <h2 className="text-base font-bold text-text-primary">Convites de acesso</h2>
+        <p className="text-sm text-text-secondary">
+          Gere um link para o cliente criar a própria conta e testar com o WhatsApp dele.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-2 rounded-xl border border-border bg-bg p-3">
+        <Input
+          label="E-mail do convidado (opcional)"
+          type="email"
+          placeholder="Deixe vazio para um link aberto"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+        <Input
+          label="Nome sugerido da empresa (opcional)"
+          placeholder="Ex.: Distribuidora Alfa"
+          value={companyName}
+          onChange={(e) => setCompanyName(e.target.value)}
+        />
+        <Input
+          label="Dias de teste"
+          type="number"
+          min={1}
+          max={365}
+          value={trialDays}
+          onChange={(e) => setTrialDays(e.target.value)}
+        />
+        <Button size="sm" onClick={submit} loading={create.isPending}>
+          <PlusIcon width={16} height={16} />
+          Gerar convite
+        </Button>
+      </div>
+
+      {isLoading && <Spinner label="Carregando convites..." />}
+      {invites && invites.length === 0 && (
+        <p className="text-xs text-text-secondary">Nenhum convite gerado ainda.</p>
+      )}
+
+      {invites?.map((inv) => {
+        const st = inviteStatus(inv);
+        return (
+          <div key={inv.id} className="flex flex-col gap-1.5 rounded-xl border border-border p-3">
+            <div className="flex items-center gap-2">
+              <Badge tone={st === 'open' ? 'success' : st === 'used' ? 'neutral' : 'danger'}>
+                {st === 'open' ? 'Aberto' : st === 'used' ? 'Usado' : 'Expirado'}
+              </Badge>
+              <p className="min-w-0 flex-1 truncate text-xs text-text-secondary">
+                {inv.tenant_name ?? inv.company_name ?? inv.email ?? 'Link aberto'} ·{' '}
+                {inv.trial_days} dias de teste
+              </p>
+            </div>
+            {st === 'open' && (
+              <div className="flex items-center gap-2">
+                <code className="min-w-0 flex-1 truncate rounded-lg bg-surface px-2 py-1.5 text-xs text-text-primary">
+                  {inv.url}
+                </code>
+                <Button size="sm" variant="secondary" onClick={() => copy(inv.url)}>
+                  Copiar
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  loading={revoke.isPending}
+                  onClick={() =>
+                    revoke.mutate(inv.id, {
+                      onSuccess: () => toast('Convite revogado.', 'success'),
+                      onError: (err) => toast(getErrorMessage(err), 'error'),
+                    })
+                  }
+                >
+                  Revogar
+                </Button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </Card>
   );
 }
 
@@ -91,6 +231,20 @@ function TenantRow({ tenant }: { tenant: TenantSummary }) {
       ? 'IA: ilimitada'
       : `IA: ${tenant.ai_used}/${tenant.ai_message_limit} no mês`;
   const overLimit = tenant.ai_message_limit != null && tenant.ai_used >= tenant.ai_message_limit;
+  const trial = trialLabel(tenant.trial_ends_at);
+
+  /** Estende a partir de HOJE — não do vencimento, que pode ter passado faz tempo. */
+  function extendTrial(days: number | null) {
+    const trial_ends_at = days === null ? null : new Date(Date.now() + days * 86_400_000).toISOString();
+    update.mutate(
+      { id: tenant.id, trial_ends_at },
+      {
+        onSuccess: () =>
+          toast(days === null ? 'Acesso liberado sem prazo.' : `Teste estendido por ${days} dias.`, 'success'),
+        onError: (err) => toast(getErrorMessage(err), 'error'),
+      },
+    );
+  }
 
   return (
     <Card className="flex flex-col gap-2">
@@ -129,6 +283,20 @@ function TenantRow({ tenant }: { tenant: TenantSummary }) {
           Limite de IA
         </Button>
       </div>
+
+      {trial && (
+        <div className="flex items-center justify-between gap-2 border-t border-border pt-2">
+          <Badge tone={trial.expired ? 'danger' : 'neutral'}>{trial.text}</Badge>
+          <div className="flex gap-1">
+            <Button size="sm" variant="ghost" loading={update.isPending} onClick={() => extendTrial(30)}>
+              +30 dias
+            </Button>
+            <Button size="sm" variant="ghost" loading={update.isPending} onClick={() => extendTrial(null)}>
+              Sem prazo
+            </Button>
+          </div>
+        </div>
+      )}
 
       <TenantLimitModal
         open={editingLimit}

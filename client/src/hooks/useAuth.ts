@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { api, getErrorMessage, getToken, setToken } from '@/services/api';
 import { useAuthStore } from '@/store/authStore';
-import { toast } from '@/store/appStore';
+import { toast, useAccessBlock } from '@/store/appStore';
 import { reauthSocket } from '@/hooks/useSocket';
 import type { User } from '@/types';
 
@@ -17,6 +17,8 @@ export function useAuth() {
     try {
       const { data } = await api.post<LoginResponse>('/auth/login', { email, password });
       setAuth(data.user, data.token);
+      // Sessão nova: um bloqueio antigo (teste vencido) não pode grudar na tela.
+      useAccessBlock.getState().clear();
       reauthSocket();
       return true;
     } catch (err) {
@@ -27,6 +29,7 @@ export function useAuth() {
 
   function logoutAndDisconnect(): void {
     logout();
+    useAccessBlock.getState().clear();
     reauthSocket();
   }
 

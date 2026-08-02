@@ -12,6 +12,8 @@ export interface TenantRow {
   created_at: string;
   /** Teto mensal de mensagens de IA no plano base (NULL = ilimitado). */
   ai_message_limit: number | null;
+  /** Fim do período de teste (NULL = sem prazo, ex.: a empresa padrão). */
+  trial_ends_at: string | null;
 }
 
 /** Linha enriquecida para a lista do super-admin (contadores + conexao + uso de IA). */
@@ -25,7 +27,7 @@ export interface TenantSummary extends TenantRow {
 
 export async function listTenants(): Promise<TenantSummary[]> {
   const { rows } = await query<TenantSummary>(
-    `SELECT t.id, t.name, t.is_active, t.created_at, t.ai_message_limit,
+    `SELECT t.id, t.name, t.is_active, t.created_at, t.ai_message_limit, t.trial_ends_at,
             COALESCE(u.cnt, 0)::int AS users_count,
             (wc.tenant_id IS NOT NULL) AS has_whatsapp,
             wc.last_status AS whatsapp_status,
@@ -43,25 +45,53 @@ export async function listTenants(): Promise<TenantSummary[]> {
   return rows;
 }
 
+const TENANT_COLS = 'id, name, is_active, created_at, ai_message_limit, trial_ends_at';
+
 export async function getTenantById(id: string): Promise<TenantRow | null> {
-  return queryOne<TenantRow>(
-    'SELECT id, name, is_active, created_at, ai_message_limit FROM tenants WHERE id = $1',
-    [id],
-  );
+  return queryOne<TenantRow>(`SELECT ${TENANT_COLS} FROM tenants WHERE id = $1`, [id]);
 }
 
-export async function createTenant(name: string): Promise<TenantRow> {
+export interface CreateTenantOptions {
+  /** Dias de teste a partir de agora. Ausente = sem prazo. */
+  trialDays?: number | null;
+  aiMessageLimit?: number | null;
+}
+
+export async function createTenant(name: string, options: CreateTenantOptions = {}): Promise<TenantRow> {
   const row = await queryOne<TenantRow>(
-    `INSERT INTO tenants (name) VALUES ($1)
-     RETURNING id, name, is_active, created_at, ai_message_limit`,
-    [name],
+    `INSERT INTO tenants (name, ai_message_limit, trial_ends_at)
+     VALUES ($1, $2, CASE WHEN $3::int IS NULL THEN NULL ELSE NOW() + ($3 || ' days')::interval END)
+     RETURNING ${TENANT_COLS}`,
+    [name, options.aiMessageLimit ?? null, options.trialDays ?? null],
   );
   return row as TenantRow;
 }
 
+/** Estado de acesso da empresa, consultado pelo middleware a cada requisição. */
+export interface TenantAccess {
+  is_active: boolean;
+  trial_ends_at: string | null;
+}
+
+export async function getTenantAccess(id: string): Promise<TenantAccess | null> {
+  return queryOne<TenantAccess>('SELECT is_active, trial_ends_at FROM tenants WHERE id = $1', [id]);
+}
+
+/** Teste vencido? Sem prazo definido significa acesso liberado. */
+export function isTrialExpired(access: Pick<TenantAccess, 'trial_ends_at'>): boolean {
+  if (!access.trial_ends_at) return false;
+  const ends = Date.parse(access.trial_ends_at);
+  return !Number.isNaN(ends) && ends <= Date.now();
+}
+
 export async function updateTenant(
   id: string,
-  patch: { name?: string; is_active?: boolean; ai_message_limit?: number | null },
+  patch: {
+    name?: string;
+    is_active?: boolean;
+    ai_message_limit?: number | null;
+    trial_ends_at?: string | null;
+  },
 ): Promise<TenantRow | null> {
   const sets: string[] = [];
   const params: unknown[] = [];
@@ -81,11 +111,16 @@ export async function updateTenant(
     params.push(patch.ai_message_limit);
     i += 1;
   }
+  if (patch.trial_ends_at !== undefined) {
+    sets.push(`trial_ends_at = $${i}`);
+    params.push(patch.trial_ends_at);
+    i += 1;
+  }
   if (sets.length === 0) return getTenantById(id);
   params.push(id);
   return queryOne<TenantRow>(
     `UPDATE tenants SET ${sets.join(', ')} WHERE id = $${i}
-     RETURNING id, name, is_active, created_at, ai_message_limit`,
+     RETURNING ${TENANT_COLS}`,
     params,
   );
 }

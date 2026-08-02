@@ -32,6 +32,27 @@ export function toast(message: string, variant: ToastVariant = 'info'): void {
 }
 
 /**
+ * Acesso da EMPRESA ao produto. O backend responde 402/403 quando o período de
+ * teste vence ou a conta é desativada; guardamos a mensagem para o painel
+ * explicar o que houve em vez de exibir erro solto em cada tela.
+ */
+interface AccessBlockState {
+  message: string | null;
+  setBlocked: (message: string) => void;
+  clear: () => void;
+}
+
+export const useAccessBlock = create<AccessBlockState>((set) => ({
+  message: null,
+  setBlocked: (message) => set({ message }),
+  clear: () => set({ message: null }),
+}));
+
+export function setAccessBlocked(message: string): void {
+  useAccessBlock.getState().setBlocked(message);
+}
+
+/**
  * Acesso à área restrita de "Números bloqueados". O token (escopo 'blocklist')
  * é emitido pelo backend após o login do cadeado e fica salvo no navegador.
  */

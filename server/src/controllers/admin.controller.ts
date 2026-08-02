@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { createTenant, getTenantById, listTenants, updateTenant } from '../db/queries/tenants';
 import { createUser, findUserByEmail } from '../db/queries/users';
 import { hashPassword } from '../utils/password';
+import { invalidateTenantAccess } from '../middleware/tenantAccess.middleware';
 import { ConflictError, NotFoundError } from '../utils/errors';
 
 /**
@@ -58,9 +59,15 @@ export const updateTenantSchema = z
     ai_message_limit: z
       .union([z.coerce.number().int().min(0).max(1_000_000), z.null()])
       .optional(),
+    // Fim do período de teste. null = sem prazo (acesso liberado).
+    trial_ends_at: z.union([z.string().datetime(), z.null()]).optional(),
   })
   .refine(
-    (d) => d.name !== undefined || d.is_active !== undefined || d.ai_message_limit !== undefined,
+    (d) =>
+      d.name !== undefined ||
+      d.is_active !== undefined ||
+      d.ai_message_limit !== undefined ||
+      d.trial_ends_at !== undefined,
     { message: 'Informe ao menos um campo para atualizar.' },
   );
 
@@ -73,5 +80,7 @@ export async function patchTenant(req: Request, res: Response): Promise<void> {
   if (!existing) throw new NotFoundError('Empresa');
 
   const tenant = await updateTenant(id, patch);
+  // Reativar empresa ou estender o teste tem que valer na hora, não em 60s.
+  invalidateTenantAccess(id);
   res.json({ tenant });
 }

@@ -34,6 +34,12 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+interface ApiErrorBody {
+  error?: { message?: string; code?: string; details?: unknown };
+}
+
+const ACCESS_BLOCK_CODES = ['TRIAL_EXPIRED', 'TENANT_INACTIVE'];
+
 api.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
@@ -43,13 +49,19 @@ api.interceptors.response.use(
         window.location.href = '/login';
       }
     }
+    // Teste vencido / conta desativada: o painel troca a tela por um aviso, em
+    // vez de deixar cada requisição falhando isoladamente.
+    const body = error.response?.data as ApiErrorBody | undefined;
+    const code = body?.error?.code;
+    if (code && ACCESS_BLOCK_CODES.includes(code)) {
+      // Import tardio: o store importa daqui, então evitamos ciclo no módulo.
+      void import('@/store/appStore').then((m) =>
+        m.setAccessBlocked(body?.error?.message ?? 'Seu acesso está suspenso.'),
+      );
+    }
     return Promise.reject(error);
   },
 );
-
-interface ApiErrorBody {
-  error?: { message?: string; code?: string; details?: unknown };
-}
 
 /** Extrai uma mensagem de erro amigável de uma falha do Axios. */
 export function getErrorMessage(error: unknown, fallback = 'Algo deu errado.'): string {

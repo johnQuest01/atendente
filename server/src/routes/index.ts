@@ -9,10 +9,13 @@ import dashboardRoutes from './dashboard.routes';
 import settingsRoutes from './settings.routes';
 import blockedRoutes from './blocked.routes';
 import adminRoutes from './admin.routes';
+import invitesRoutes from './invites.routes';
 
 const api = Router();
 
 api.use('/auth', authRoutes);
+// Público: quem abre um convite ainda não tem conta.
+api.use('/invites', invitesRoutes);
 api.use('/conversations', conversationsRoutes);
 api.use('/audios', audiosRoutes);
 api.use('/messages', messagesRoutes);

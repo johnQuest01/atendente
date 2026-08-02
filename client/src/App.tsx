@@ -1,8 +1,10 @@
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import { useBootstrapAuth, useAuth } from '@/hooks/useAuth';
+import { useAccessBlock } from '@/store/appStore';
 import { AppShell } from '@/components/layout/AppShell';
 import { Spinner } from '@/components/ui/States';
 import Login from '@/routes/Login';
+import AcceptInvite from '@/routes/AcceptInvite';
 import Dashboard from '@/routes/Dashboard';
 import Conversations from '@/routes/Conversations';
 import ConversationDetail from '@/routes/ConversationDetail';
@@ -13,8 +15,31 @@ import Keywords from '@/routes/Keywords';
 import Settings from '@/routes/Settings';
 import Admin from '@/routes/Admin';
 
+/** Teste vencido / conta desativada: o painel para aqui, com explicação. */
+function AccessBlocked({ message }: { message: string }) {
+  const { logout } = useAuth();
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gap-5 bg-bg bg-app-radial px-6 text-center">
+      <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-warning/15 text-3xl">
+        ⏳
+      </div>
+      <div className="max-w-sm">
+        <h1 className="mb-2 text-xl font-extrabold text-text-primary">Acesso pausado</h1>
+        <p className="text-sm text-text-secondary">{message}</p>
+      </div>
+      <button
+        onClick={logout}
+        className="rounded-xl border border-border px-4 py-2 text-sm font-semibold text-text-secondary transition hover:text-text-primary"
+      >
+        Sair
+      </button>
+    </div>
+  );
+}
+
 function ProtectedRoutes() {
   const { isAuthenticated, isInitialized } = useAuth();
+  const blockedMessage = useAccessBlock((s) => s.message);
   const location = useLocation();
 
   if (!isInitialized) {
@@ -28,6 +53,8 @@ function ProtectedRoutes() {
   if (!isAuthenticated) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
+
+  if (blockedMessage) return <AccessBlocked message={blockedMessage} />;
 
   return (
     <AppShell>
@@ -53,6 +80,8 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      {/* Público: o convidado cria a conta antes de existir sessão. */}
+      <Route path="/convite/:token" element={<AcceptInvite />} />
       <Route path="/*" element={<ProtectedRoutes />} />
     </Routes>
   );

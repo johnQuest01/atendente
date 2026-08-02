@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { asyncHandler } from '../utils/asyncHandler';
 import { validate } from '../middleware/validate';
+import { requireActiveTenant } from '../middleware/tenantAccess.middleware';
 import { authenticate } from '../middleware/auth.middleware';
 import {
   createScriptSchema,
@@ -14,7 +15,7 @@ import {
 
 const router = Router();
 
-router.use(authenticate);
+router.use(authenticate, requireActiveTenant);
 
 router.get('/', asyncHandler(getScripts));
 router.post('/', validate({ body: createScriptSchema }), asyncHandler(postScript));

@@ -22,6 +22,7 @@ import {
 } from '../db/queries/messages';
 import { isAgentEnabled, getAiPersona } from '../db/queries/settings';
 import { isPhoneBlocked } from '../db/queries/blocked';
+import { isTenantBlocked } from '../middleware/tenantAccess.middleware';
 import { emitNewMessage, emitNewConversation, emitConversationUpdated } from '../socket';
 import { matchIntent, getTriggerPhrases } from '../services/matcher.service';
 import { extractClientInfo, generateReply, hasVisionProvider, isAiConfigured } from '../services/ai.service';
@@ -253,10 +254,12 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
   const conversation = existing ?? (await findOrCreateOpenConversation(tenantId, client.id));
   if (!existing) emitNewConversation(tenantId, conversation);
 
-  // Flag global + pausa por intervenção humana (janela human_paused_until).
+  // Flag global + pausa por intervenção humana (janela human_paused_until) +
+  // acesso da empresa (teste vencido / conta desativada).
   const agentEnabled = await isAgentEnabled(tenantId);
   const humanTakeover = isHumanPaused(conversation);
-  const autoReply = agentEnabled && !humanTakeover;
+  const tenantBlocked = await isTenantBlocked(tenantId);
+  const autoReply = agentEnabled && !humanTakeover && !tenantBlocked;
 
   // Tique azul IMEDIATO: assim que a IA "vê" a mensagem, marcamos como lida —
   // sem esperar transcrição nem geração de resposta. Best-effort, não bloqueia.
@@ -316,12 +319,15 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
   });
   emitNewMessage(tenantId, conversation.id, inboundMsg);
 
-  // Agente desligado ou conversa assumida por humano: registra sem auto-resposta.
+  // Agente desligado, conversa assumida por humano ou acesso encerrado:
+  // registra a mensagem no painel, mas não responde.
   if (!autoReply) {
     logger.info(
-      humanTakeover
-        ? 'Conversa em waiting (humano) — mensagem registrada, sem resposta automática.'
-        : 'Atendente de IA desligado — mensagem registrada, sem resposta automática.',
+      tenantBlocked
+        ? 'Empresa sem acesso ativo (teste vencido/desativada) — mensagem registrada, sem resposta automática.'
+        : humanTakeover
+          ? 'Conversa em waiting (humano) — mensagem registrada, sem resposta automática.'
+          : 'Atendente de IA desligado — mensagem registrada, sem resposta automática.',
     );
     return;
   }

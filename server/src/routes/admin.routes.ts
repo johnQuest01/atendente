@@ -11,6 +11,13 @@ import {
   tenantIdParamSchema,
 } from '../controllers/admin.controller';
 import {
+  postInvite,
+  createInviteSchema,
+  getInvites,
+  deleteInvite,
+  inviteIdParamSchema,
+} from '../controllers/invites.controller';
+import {
   adminAiProviders,
   createAiProviderSchema,
   updateAiProviderSchema,
@@ -30,6 +37,16 @@ router.patch(
   '/tenants/:id',
   validate({ params: tenantIdParamSchema, body: updateTenantSchema }),
   asyncHandler(patchTenant),
+);
+
+// Convites de acesso: como ainda não há gateway de pagamento, é assim que uma
+// empresa nova entra na plataforma (link + período de teste).
+router.get('/invites', asyncHandler(getInvites));
+router.post('/invites', validate({ body: createInviteSchema }), asyncHandler(postInvite));
+router.delete(
+  '/invites/:id',
+  validate({ params: inviteIdParamSchema }),
+  asyncHandler(deleteInvite),
 );
 
 // Provedores de IA GLOBAIS da plataforma (trocar de agente + cadeia de failover).
