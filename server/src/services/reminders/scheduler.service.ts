@@ -29,9 +29,8 @@ let timer: NodeJS.Timeout | null = null;
 let running = false;
 
 function reminderText(reminder: Reminder): string {
-  const flag = reminder.category === 'importante' ? '⚠️ ' : '';
-  const repeat = reminder.recurrence ? `\n🔁 ${describeRecurrence(reminder.recurrence)}` : '';
-  return `⏰ *Lembrete*\n${flag}${reminder.task}${repeat}`;
+  const repeat = reminder.recurrence ? `\nRepete: ${describeRecurrence(reminder.recurrence)}` : '';
+  return `Lembrete\n${reminder.task}${repeat}`;
 }
 
 async function fire(reminder: Reminder): Promise<void> {
@@ -86,7 +85,7 @@ async function fireLead(reminder: Reminder): Promise<void> {
 
   const quando = formatForOwner(new Date(reminder.next_fire_at), reminder.timezone);
   const antes = reminder.lead_minutes ? describeLead(reminder.lead_minutes) : 'em breve';
-  const text = `🔔 *Lembrete antecipado* (${antes})\n${reminder.task}\n🕒 ${quando}`;
+  const text = `Lembrete antecipado (${antes})\n${reminder.task}\nHorário: ${quando}`;
 
   try {
     const wa = await getTenantWhatsapp(reminder.tenant_id);

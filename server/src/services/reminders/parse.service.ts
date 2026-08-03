@@ -185,9 +185,9 @@ function resolveParsed(data: z.infer<typeof parsedSchema>, now: Date, tz: string
     // Anexamos a data resolvida: é a checagem que o dono realmente precisa ver
     // antes de confirmar, e não dá para confiar que o modelo a escreveu certo.
     confirmationText:
-      `${data.confirmation_text}\n📅 ${formatForOwner(nextFireAt, tz)}` +
-      `${recurrence ? ` · repete: ${describeRecurrence(recurrence)}` : ''}` +
-      `${leadMinutes ? `\n🔔 Aviso extra ${describeLead(leadMinutes)}` : ''}`,
+      `${data.confirmation_text}\nData: ${formatForOwner(nextFireAt, tz)}` +
+      `${recurrence ? ` · repete ${describeRecurrence(recurrence)}` : ''}` +
+      `${leadMinutes ? `\nAviso: ${describeLead(leadMinutes)}` : ''}`,
   };
 }
 

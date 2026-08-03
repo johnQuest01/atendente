@@ -37,6 +37,7 @@ import {
   useMemoryScan,
   useSetMemoryScan,
 } from '@/hooks/useReminderOwners';
+import { useKeywords, useCreateKeyword, useDeleteKeyword } from '@/hooks/useKeywords';
 import { useAiUsage } from '@/hooks/useAiProviders';
 import { AiProvidersManager } from '@/components/ai/AiProvidersManager';
 import { useSocket } from '@/hooks/useSocket';
@@ -153,6 +154,8 @@ export default function Settings() {
         <WhatsappCard canEdit={user?.role === 'admin' || user?.role === 'superadmin'} />
 
         {(user?.role === 'admin' || user?.role === 'superadmin') && <ReminderOwnersCard />}
+
+        {(user?.role === 'admin' || user?.role === 'superadmin') && <DispatchKeywordsCard />}
 
         {(user?.role === 'admin' || user?.role === 'superadmin') && <ReminderPersonaCard />}
 
@@ -528,6 +531,102 @@ function ReminderOwnersCard() {
         Depois é só mandar no WhatsApp: <em>“me lembra amanhã às 9h de pagar o fornecedor”</em>.
         Envie <strong>AJUDA</strong> para ver todos os comandos.
       </p>
+    </Card>
+  );
+}
+
+/**
+ * Palavras de disparo dos compromissos do dia. Quando um número autorizado manda
+ * uma dessas, a secretária responde os compromissos de HOJE (zero IA). As palavras
+ * padrão (HOJE, AMANHÃ, SEMANA, MÊS, TODOS) já funcionam sem cadastrar nada.
+ */
+function DispatchKeywordsCard() {
+  const { data: keywords, isLoading } = useKeywords();
+  const create = useCreateKeyword();
+  const remove = useDeleteKeyword();
+  const [word, setWord] = useState('');
+
+  const words = (keywords ?? []).filter((k) => k.content_type === 'reminders_today');
+
+  function add() {
+    const w = word.trim();
+    if (!w) return;
+    create.mutate(
+      {
+        keyword: w,
+        intent: 'reminders_today',
+        content_type: 'reminders_today',
+        content_id: null,
+        priority: 1,
+      },
+      {
+        onSuccess: () => {
+          setWord('');
+          toast('Palavra de disparo adicionada.', 'success');
+        },
+        onError: (err) => toast(getErrorMessage(err), 'error'),
+      },
+    );
+  }
+
+  return (
+    <Card className="flex flex-col gap-3">
+      <div>
+        <h2 className="text-base font-bold text-text-primary">Palavras de disparo</h2>
+        <p className="text-sm text-text-secondary">
+          Quando um número autorizado mandar uma destas palavras, eu respondo os compromissos de
+          hoje — sem gastar IA. As palavras <strong>HOJE</strong>, <strong>AMANHÃ</strong>,{' '}
+          <strong>SEMANA</strong>, <strong>MÊS</strong> e <strong>TODOS</strong> já funcionam sem
+          cadastrar.
+        </p>
+      </div>
+
+      {isLoading && <Spinner label="Carregando..." />}
+
+      {words.map((k) => (
+        <div key={k.id} className="flex items-center gap-2 rounded-xl border border-border px-3 py-2">
+          <span className="min-w-0 flex-1 truncate text-sm font-semibold text-text-primary">
+            {k.keyword}
+          </span>
+          <Button
+            size="sm"
+            variant="ghost"
+            loading={remove.isPending}
+            onClick={() =>
+              remove.mutate(k.id, {
+                onSuccess: () => toast('Palavra removida.', 'success'),
+                onError: (err) => toast(getErrorMessage(err), 'error'),
+              })
+            }
+          >
+            Remover
+          </Button>
+        </div>
+      ))}
+
+      {words.length === 0 && !isLoading && (
+        <p className="text-xs text-text-secondary">
+          Nenhuma palavra extra. Adicione, por exemplo, <em>resumo</em> ou <em>agenda do dia</em>.
+        </p>
+      )}
+
+      <div className="flex flex-col gap-2 rounded-xl border border-border bg-bg p-3">
+        <Input
+          label="Nova palavra de disparo"
+          placeholder="Ex.: resumo, agenda do dia"
+          value={word}
+          onChange={(e) => setWord(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              add();
+            }
+          }}
+        />
+        <Button size="sm" onClick={add} loading={create.isPending} disabled={!word.trim()}>
+          Adicionar palavra
+        </Button>
+      </div>
     </Card>
   );
 }

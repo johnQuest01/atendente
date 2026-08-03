@@ -127,7 +127,7 @@ const AFFIRMATIVE = new Set(['sim', 's', 'ok', 'okay', 'isso', 'confirmar', 'con
 const NEGATIVE = new Set(['nao', 'n', 'cancela', 'cancelar', 'esquece', 'deixa', 'nada', '0']);
 
 const HELP_TEXT = [
-  '🗒️ *Seu assistente de lembretes*',
+  '*Seu assistente de lembretes*',
   '',
   'Para criar, é só falar naturalmente (texto ou áudio):',
   '_"me lembra amanhã às 9h de pagar o fornecedor"_',
@@ -260,15 +260,14 @@ const QUERY_TITLE: Record<string, string> = {
 };
 
 function renderList(reminders: Reminder[], title: string, tz: string): string {
-  if (reminders.length === 0) return `Nada em *${title}*. 🎉`;
+  if (reminders.length === 0) return `Nenhum compromisso ${title.toLowerCase()}.`;
   const lines = reminders.map((r, i) => {
     const when = formatForOwner(new Date(r.next_fire_at), tz);
-    const repeat = r.recurrence ? ` 🔁 ${describeRecurrence(r.recurrence)}` : '';
-    const lead = r.lead_minutes ? ` 🔔 ${describeLead(r.lead_minutes)}` : '';
-    const flag = r.category === 'importante' ? '⚠️ ' : '';
-    return `${i + 1}. ${flag}${r.task}\n   ${when}${repeat}${lead}`;
+    const repeat = r.recurrence ? ` · repete ${describeRecurrence(r.recurrence)}` : '';
+    const lead = r.lead_minutes ? ` · aviso ${describeLead(r.lead_minutes)}` : '';
+    return `${i + 1}. ${r.task}\n   ${when}${repeat}${lead}`;
   });
-  return [`🗒️ *${title}*`, '', ...lines, '', '_CONCLUIR N_ ou _CANCELAR N_ para fechar um item._'].join('\n');
+  return [`*${title}*`, '', ...lines, '', 'Para fechar: CONCLUIR N ou CANCELAR N.'].join('\n');
 }
 
 const CREATE_TRIGGERS = /\b(lembr|anota|agenda|marca|avisa|nao me deixa esquecer|não me deixa esquecer)/i;
@@ -346,15 +345,15 @@ export async function handleOwnerMessage(
         tenantId,
         phone,
         items.length === 1
-          ? `✅ Anotado! Te aviso ${formatForOwner(items[0].nextFireAt, tz)}.`
-          : `✅ Salvei os ${items.length} lembretes. 👍`,
+          ? `Anotado! Te aviso ${formatForOwner(items[0].nextFireAt, tz)}.`
+          : `Salvei os ${items.length} lembretes.`,
       );
       return true;
     }
 
     if (NEGATIVE.has(normalized)) {
       setState(tenantId, phone, { pending: undefined });
-      await reply(tenantId, phone, 'Beleza, descartei. 👍');
+      await reply(tenantId, phone, 'Beleza, descartei.');
       return true;
     }
 
@@ -427,8 +426,8 @@ export async function handleOwnerMessage(
       phone,
       ok
         ? isDone
-          ? '✅ Marquei como concluído.'
-          : '🗑️ Cancelado.'
+          ? 'Marquei como concluído.'
+          : 'Cancelado.'
         : 'Esse lembrete já não estava mais na lista.',
     );
     return true;
@@ -442,16 +441,16 @@ export async function handleOwnerMessage(
       await reply(
         tenantId,
         phone,
-        '🔒 A varredura de conversas está desligada. Ligue em Configurações → *Recuperar compromissos* e tente de novo.',
+        'A varredura de conversas está desligada. Ligue em Configurações → Recuperar compromissos e tente de novo.',
       );
       return true;
     }
     const daysMatch = normalized.match(/(\d{1,3})\s*dias?/);
     const days = daysMatch ? Number(daysMatch[1]) : 7;
-    await reply(tenantId, phone, `🔎 Varrendo as conversas dos últimos ${days} dias... já te mostro o que encontrei.`);
+    await reply(tenantId, phone, `Varrendo as conversas dos últimos ${days} dias... já te mostro o que encontrei.`);
     const candidates = await scanForCommitments(tenantId, { days });
     if (candidates.length === 0) {
-      await reply(tenantId, phone, 'Não achei compromissos soltos nesse período. 👍');
+      await reply(tenantId, phone, 'Não achei compromissos soltos nesse período.');
       return true;
     }
     const items = candidates.map(toPendingItem);
@@ -491,17 +490,16 @@ function renderConfirmation(items: PendingItem[], tz: string): string {
   }
   const lines = items.map((it, i) => {
     const when = formatForOwner(it.nextFireAt, tz);
-    const repeat = it.recurrence ? ` 🔁 ${describeRecurrence(it.recurrence)}` : '';
-    const lead = it.leadMinutes ? ` 🔔 ${describeLead(it.leadMinutes)}` : '';
-    const flag = it.category === 'importante' ? '⚠️ ' : '';
-    return `${i + 1}. ${flag}${it.task}\n   ${when}${repeat}${lead}`;
+    const repeat = it.recurrence ? ` · repete ${describeRecurrence(it.recurrence)}` : '';
+    const lead = it.leadMinutes ? ` · aviso ${describeLead(it.leadMinutes)}` : '';
+    return `${i + 1}. ${it.task}\n   ${when}${repeat}${lead}`;
   });
   return [
-    `Entendi *${items.length}* lembretes:`,
+    `Entendi ${items.length} lembretes:`,
     '',
     ...lines,
     '',
-    'Responda *SIM* para salvar todos, ou diga o número a corrigir (ex.: _"2 na verdade às 16h"_).',
+    'Responda SIM para salvar todos, ou diga o número a corrigir (ex.: "2 na verdade às 16h").',
   ].join('\n');
 }
 

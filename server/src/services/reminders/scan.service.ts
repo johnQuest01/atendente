@@ -162,7 +162,7 @@ export async function scanForCommitments(
       recurrence: null,
       nextFireAt,
       leadMinutes: null,
-      confirmationText: `${parsed.data.task}\n📅 ${formatForOwner(nextFireAt, DEFAULT_TZ)}`,
+      confirmationText: `${parsed.data.task}\nData: ${formatForOwner(nextFireAt, DEFAULT_TZ)}`,
       snippet: parsed.data.snippet ?? '',
     });
   }
