@@ -1,9 +1,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { pool, closePool } from './index';
+import { Pool } from 'pg';
+import { env } from '../config/env';
 import { logger } from '../config/logger';
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '../../migrations');
+
+/**
+ * As migrations executam DDL (CREATE/ALTER TABLE), então SEMPRE conectam com o
+ * DONO do banco (DATABASE_URL) — nunca com o papel restrito do runtime
+ * (APP_DATABASE_URL), que é de propósito incapaz de alterar o schema.
+ */
+const pool = new Pool({
+  connectionString: env.DATABASE_URL,
+  ssl: env.DB_SSL ? { rejectUnauthorized: false } : undefined,
+});
 
 async function ensureMigrationsTable(): Promise<void> {
   await pool.query(`
@@ -67,10 +78,10 @@ async function run(): Promise<void> {
 }
 
 run()
-  .then(() => closePool())
+  .then(() => pool.end())
   .then(() => process.exit(0))
   .catch(async (err) => {
     logger.error('Erro ao rodar migrations', err);
-    await closePool();
+    await pool.end();
     process.exit(1);
   });

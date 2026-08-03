@@ -6,9 +6,13 @@ import { logger } from '../config/logger';
 /**
  * Pool de conexão único para o Neon PostgreSQL.
  * O Neon exige SSL; usamos pooling para reaproveitar conexões em serverless.
+ *
+ * O RUNTIME conecta com APP_DATABASE_URL (papel sem BYPASSRLS) quando disponível,
+ * para o Row-Level Security isolar por empresa de verdade. Sem essa variável,
+ * cai em DATABASE_URL. As migrations rodam à parte, sempre com o dono do banco.
  */
 export const pool = new Pool({
-  connectionString: env.DATABASE_URL,
+  connectionString: env.APP_DATABASE_URL ?? env.DATABASE_URL,
   max: env.DB_POOL_MAX,
   ssl: env.DB_SSL ? { rejectUnauthorized: false } : undefined,
   idleTimeoutMillis: 30_000,

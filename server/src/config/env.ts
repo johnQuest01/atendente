@@ -21,6 +21,12 @@ const envSchema = z.object({
 
   DATABASE_URL: z.string().min(1, 'DATABASE_URL é obrigatório'),
 
+  // Conexão do RUNTIME (servidor) com um papel SEM BYPASSRLS, para o Row-Level
+  // Security realmente isolar por empresa (defesa em profundidade). Opcional: se
+  // ausente, o runtime usa DATABASE_URL (comportamento atual). As MIGRATIONS
+  // sempre usam DATABASE_URL (o dono do banco), pois exigem DDL.
+  APP_DATABASE_URL: z.string().optional(),
+
   JWT_SECRET: z.string().min(16, 'JWT_SECRET deve ter ao menos 16 caracteres'),
   JWT_EXPIRES_IN: z.string().default('7d'),
 
