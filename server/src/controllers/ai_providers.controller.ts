@@ -112,6 +112,7 @@ export interface AiProviderControllers {
   testAiProvider: (req: Request, res: Response) => Promise<void>;
   testAiCreds: (req: Request, res: Response) => Promise<void>;
   listModels: (req: Request, res: Response) => Promise<void>;
+  listModelsForSaved: (req: Request, res: Response) => Promise<void>;
   getAiUsageInfo: (req: Request, res: Response) => Promise<void>;
 }
 
@@ -217,6 +218,28 @@ export function makeAiProviderControllers(scopeOf: ScopeResolver): AiProviderCon
       const r = await fetchModels(input.kind as AiKind, {
         apiKey: input.apiKey,
         baseUrl: input.baseUrl ? input.baseUrl : null,
+        model: '',
+      });
+      res.json({ ok: r.ok, authError: r.authError, models: r.models, error: r.error ?? null });
+    },
+
+    /**
+     * Modelos reais de um provedor JÁ SALVO — usa a chave guardada (o front não a
+     * tem). É o que permite trocar de modelo num provedor conectado sem redigitar
+     * a chave: o painel lista os modelos atuais do provedor e o dono escolhe.
+     */
+    async listModelsForSaved(req, res) {
+      const tenantId = scopeOf(req);
+      const { id } = req.params as z.infer<typeof aiProviderIdParamSchema>;
+      const provider = await getAiProviderById(id, tenantId);
+      if (!provider) throw new NotFoundError('Provedor de IA');
+      if (!provider.apiKey) {
+        res.json({ ok: false, authError: false, models: [], error: 'Sem chave configurada.' });
+        return;
+      }
+      const r = await fetchModels(provider.kind, {
+        apiKey: provider.apiKey,
+        baseUrl: provider.base_url,
         model: '',
       });
       res.json({ ok: r.ok, authError: r.authError, models: r.models, error: r.error ?? null });

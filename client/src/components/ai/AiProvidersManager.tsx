@@ -15,6 +15,7 @@ import {
   useTestAiCreds,
   useTestSavedAiProvider,
   useListAiModels,
+  useListSavedAiModels,
   type AiKind,
   type AiProviderDto,
   type AiScope,
@@ -101,6 +102,22 @@ const MODELS_BY_PRESET: Record<string, AiModelOption[]> = {
   ],
   custom: [],
 };
+
+/**
+ * Junta os modelos REAIS do provedor (buscados na API) com os rótulos curados.
+ * Os reais mandam (é a lista atual do provedor); quando um deles bate com um
+ * curado, usa o rótulo bonito ("recomendado", "vê imagens"). Sem lista real,
+ * cai nos curados.
+ */
+function mergeModelOptions(
+  real: string[] | null,
+  curated: AiModelOption[],
+  kind: AiKind,
+): AiModelOption[] {
+  if (!real || real.length === 0) return curated;
+  const byId = new Map(curated.map((c) => [c.id, c]));
+  return real.map((id) => byId.get(id) ?? { id, label: id, vision: modelSeesImages(kind, id) });
+}
 
 /** Deriva qual provedor (preset) corresponde ao kind + base URL — para listar os modelos certos. */
 function presetIdFor(kind: AiKind, baseUrl: string): string {
@@ -386,6 +403,8 @@ function AiProviderModal({
   const create = useCreateAiProvider(scope);
   const update = useUpdateAiProvider(scope);
   const testCreds = useTestAiCreds(scope);
+  const listCreds = useListAiModels(scope);
+  const listSaved = useListSavedAiModels(scope);
 
   const [presetId, setPresetId] = useState('claude');
   const [kind, setKind] = useState<AiKind>('anthropic');
@@ -395,9 +414,14 @@ function AiProviderModal({
   const [apiKey, setApiKey] = useState('');
   const [priority, setPriority] = useState(0);
   const [isActive, setIsActive] = useState(true);
+  // Modelos REAIS do provedor (buscados na API) para o seletor.
+  const [realModels, setRealModels] = useState<string[] | null>(null);
+  const modelsTagRef = useRef('');
 
   useEffect(() => {
     if (!open) return;
+    setRealModels(null);
+    modelsTagRef.current = '';
     if (provider) {
       setKind(provider.kind);
       setLabel(provider.label);
@@ -419,6 +443,41 @@ function AiProviderModal({
     }
   }, [open, provider, suggestedPriority]);
 
+  // Editar provedor conectado: busca os modelos reais com a chave JÁ salva
+  // (o front não a tem) — é o que permite trocar de modelo sem redigitar a chave.
+  useEffect(() => {
+    if (!open || !provider || !provider.has_key) return;
+    const tag = `saved:${provider.id}`;
+    if (modelsTagRef.current === tag) return;
+    modelsTagRef.current = tag;
+    listSaved.mutate(provider.id, {
+      onSuccess: (r) => setRealModels(r.ok ? r.models : null),
+      onError: () => setRealModels(null),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, provider]);
+
+  // Nova chave digitada (provedor novo ou troca de chave): lista com a chave.
+  useEffect(() => {
+    if (!open) return;
+    const key = apiKey.trim();
+    if (key.length < 8) return;
+    const tag = `creds:${kind}|${baseUrl.trim()}|${key}`;
+    if (modelsTagRef.current === tag) return;
+    const timer = setTimeout(() => {
+      modelsTagRef.current = tag;
+      listCreds.mutate(
+        { kind, apiKey: key, baseUrl: baseUrl.trim() || undefined },
+        {
+          onSuccess: (r) => setRealModels(r.ok ? r.models : null),
+          onError: () => setRealModels(null),
+        },
+      );
+    }, 600);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, apiKey, kind, baseUrl]);
+
   function applyPreset(id: string) {
     setPresetId(id);
     const p = AI_PRESETS.find((x) => x.id === id);
@@ -429,10 +488,12 @@ function AiProviderModal({
     setBaseUrl(p.baseUrl);
   }
 
-  // Modelos disponíveis para o provedor atual (deriva do kind + base URL).
+  // Modelos disponíveis: os REAIS do provedor (se já buscados) com os rótulos
+  // curados por cima; sem lista real, cai nos curados (kind + base URL).
   const effectivePreset = presetIdFor(kind, baseUrl);
-  const modelOptions = MODELS_BY_PRESET[effectivePreset] ?? [];
+  const modelOptions = mergeModelOptions(realModels, MODELS_BY_PRESET[effectivePreset] ?? [], kind);
   const modelInList = modelOptions.some((m) => m.id === model);
+  const loadingModels = listSaved.isPending || listCreds.isPending;
 
   const canSubmit =
     label.trim().length >= 2 && model.trim().length >= 1 && (isEdit || apiKey.trim().length >= 1);
@@ -543,6 +604,13 @@ function AiProviderModal({
               ))}
               <option value="__custom__">Outro (digitar)…</option>
             </Select>
+            {loadingModels ? (
+              <span className="text-xs text-text-secondary">Buscando os modelos reais do provedor…</span>
+            ) : realModels && realModels.length > 0 ? (
+              <span className="text-xs text-success">
+                {realModels.length} modelos reais do provedor — escolha e salve para trocar.
+              </span>
+            ) : null}
             {!modelInList && (
               <CustomModelField
                 label="Modelo (personalizado)"

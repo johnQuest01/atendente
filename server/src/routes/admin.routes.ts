@@ -108,5 +108,11 @@ router.post(
   validate({ params: aiProviderIdParamSchema }),
   asyncHandler(adminAiProviders.testAiProvider),
 );
+// Modelos reais de um provedor JÁ salvo (troca de modelo sem redigitar a chave).
+router.post(
+  '/ai/providers/:id/models',
+  validate({ params: aiProviderIdParamSchema }),
+  asyncHandler(adminAiProviders.listModelsForSaved),
+);
 
 export default router;

@@ -181,6 +181,16 @@ export function useListAiModels(scope: AiScope) {
   });
 }
 
+/** Modelos reais de um provedor JÁ salvo (usa a chave guardada; para trocar de modelo). */
+export function useListSavedAiModels(scope: AiScope) {
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { data } = await api.post<AiModelsResult>(`${BASE[scope]}/${id}/models`, {});
+      return data;
+    },
+  });
+}
+
 /** Testa um provedor já salvo (usa a chave guardada). */
 export function useTestSavedAiProvider(scope: AiScope) {
   return useMutation({
