@@ -5,7 +5,7 @@ import helmet from 'helmet';
 import { env } from './config/env';
 import { corsOrigin } from './config/cors';
 import { logger } from './config/logger';
-import { checkDbConnection, closePool } from './db';
+import { checkDbConnection, closePool, pool } from './db';
 import { initSocket } from './socket';
 import apiRoutes from './routes';
 import webhookRoutes from './routes/webhook.routes';
@@ -56,9 +56,21 @@ const BOOTED_AT = new Date().toISOString();
 
 app.get('/health', async (_req, res) => {
   const db = await checkDbConnection();
+  // Papel de conexão do runtime: 'app_runtime' quando o RLS está ativo,
+  // 'neondb_owner' quando ainda no dono. Best-effort — não derruba o probe.
+  let dbRole: string | null = null;
+  if (db) {
+    try {
+      const r = await pool.query<{ u: string }>('SELECT current_user AS u');
+      dbRole = r.rows[0]?.u ?? null;
+    } catch {
+      /* ignora */
+    }
+  }
   res.status(db ? 200 : 503).json({
     status: db ? 'ok' : 'degraded',
     db,
+    dbRole,
     // O Render injeta o commit publicado; em dev fica 'dev'.
     commit: (process.env.RENDER_GIT_COMMIT ?? 'dev').slice(0, 7),
     bootedAt: BOOTED_AT,
