@@ -10,6 +10,7 @@ export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [inviteCode, setInviteCode] = useState('');
 
   if (isAuthenticated) return <Navigate to="/" replace />;
 
@@ -19,6 +20,20 @@ export default function Login() {
     const ok = await login(email.trim(), password);
     setLoading(false);
     if (ok) navigate('/', { replace: true });
+  }
+
+  /**
+   * Criar conta por token: leva para a página de convite, que valida o token e
+   * abre o cadastro. Aceita o token puro OU o link inteiro (extrai o que vem
+   * depois de /convite/), para o convidado poder colar qualquer um dos dois.
+   */
+  function goToRegister(e: FormEvent) {
+    e.preventDefault();
+    const raw = inviteCode.trim();
+    if (!raw) return;
+    const match = raw.match(/\/convite\/([^/?#\s]+)/i);
+    const token = match ? match[1] : raw;
+    navigate(`/convite/${encodeURIComponent(token)}`);
   }
 
   return (
@@ -62,8 +77,41 @@ export default function Login() {
           </Button>
         </form>
 
+        <div className="my-5 flex items-center gap-3">
+          <span className="h-px flex-1 bg-border" />
+          <span className="text-xs text-text-secondary">ou</span>
+          <span className="h-px flex-1 bg-border" />
+        </div>
+
+        <form
+          onSubmit={goToRegister}
+          className="glass flex flex-col gap-3 rounded-3xl p-6 shadow-card-hover"
+        >
+          <div>
+            <h2 className="text-sm font-bold text-text-primary">Criar conta com token</h2>
+            <p className="text-xs text-text-secondary">
+              Recebeu um token de acesso? Cole abaixo para criar sua conta e começar o teste.
+            </p>
+          </div>
+          <Input
+            label="Token de acesso"
+            placeholder="Cole aqui o token que você recebeu"
+            value={inviteCode}
+            onChange={(e) => setInviteCode(e.target.value)}
+          />
+          <Button
+            type="submit"
+            variant="secondary"
+            size="lg"
+            fullWidth
+            disabled={!inviteCode.trim()}
+          >
+            Criar conta
+          </Button>
+        </form>
+
         <p className="mt-6 text-center text-xs text-text-secondary">
-          Acesso restrito à equipe de atendimento.
+          O acesso é só por convite — peça um token ao administrador.
         </p>
       </div>
     </div>
