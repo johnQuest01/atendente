@@ -6,6 +6,7 @@ import {
   classifyHttpError,
   classifyNetworkError,
   isTruncatedFinishReason,
+  isUnsupportedTemperature,
   type AiAdapter,
   type ChatMessage,
 } from '../types';
@@ -53,6 +54,17 @@ function classifySdkError(err: unknown): AiProviderError {
   return classifyNetworkError(err);
 }
 
+/** O erro do SDK é a recusa de `temperature` (modelos novos)? */
+function temperatureRejected(err: unknown): boolean {
+  if (err && typeof err === 'object' && 'status' in err) {
+    const status = Number((err as { status?: unknown }).status);
+    const e = err as { error?: unknown; message?: unknown };
+    const body = JSON.stringify(e.error ?? e.message ?? '');
+    return isUnsupportedTemperature(status, body);
+  }
+  return false;
+}
+
 export const anthropicAdapter: AiAdapter = {
   kind: 'anthropic',
 
@@ -63,14 +75,25 @@ export const anthropicAdapter: AiAdapter = {
       timeout: 45_000,
     });
     const vision = modelSupportsVision('anthropic', creds.model);
+    const params = {
+      model: creds.model,
+      max_tokens: req.maxTokens,
+      system: req.system,
+      messages: await toAnthropicMessages(req.messages, vision),
+    };
     try {
-      const response = await client.messages.create({
-        model: creds.model,
-        max_tokens: req.maxTokens,
-        temperature: req.temperature,
-        system: req.system,
-        messages: await toAnthropicMessages(req.messages, vision),
-      });
+      let response;
+      try {
+        response = await client.messages.create({ ...params, temperature: req.temperature });
+      } catch (err) {
+        // Modelos novos (opus-5, sonnet-5, fable-5) depreciaram `temperature`:
+        // a API responde 400. Refaz a chamada SEM o parâmetro em vez de falhar.
+        if (temperatureRejected(err)) {
+          response = await client.messages.create(params);
+        } else {
+          throw err;
+        }
+      }
       const text = response.content
         .filter((b): b is Anthropic.TextBlock => b.type === 'text')
         .map((b) => b.text)

@@ -4,6 +4,7 @@ import {
   classifyHttpError,
   classifyNetworkError,
   isTruncatedFinishReason,
+  isUnsupportedTemperature,
   type AiAdapter,
   type ChatMessage,
 } from '../types';
@@ -63,22 +64,27 @@ export const openaiAdapter: AiAdapter = {
     const base = (creds.baseUrl || DEFAULT_BASE).replace(/\/+$/, '');
     const vision = modelSupportsVision('openai', creds.model, creds.baseUrl);
     const messages = await toOpenAiMessages(req.system, req.messages, vision);
-    let res: Response;
-    try {
-      res = await fetch(`${base}/chat/completions`, {
+
+    const send = (withTemp: boolean): Promise<Response> => {
+      const payload: Record<string, unknown> = { model: creds.model, max_tokens: req.maxTokens, messages };
+      if (withTemp) payload.temperature = req.temperature;
+      return fetch(`${base}/chat/completions`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${creds.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: creds.model,
-          max_tokens: req.maxTokens,
-          temperature: req.temperature,
-          messages,
-        }),
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${creds.apiKey}` },
+        body: JSON.stringify(payload),
         signal: AbortSignal.timeout(45_000),
       });
+    };
+
+    let res: Response;
+    try {
+      res = await send(true);
+      // Modelos de raciocínio (GPT-5/o-series) depreciaram `temperature`: se a
+      // API recusar por causa dela, refaz sem o parâmetro.
+      if (!res.ok && res.status === 400) {
+        const peek = await res.clone().text().catch(() => '');
+        if (isUnsupportedTemperature(res.status, peek)) res = await send(false);
+      }
     } catch (err) {
       throw classifyNetworkError(err);
     }

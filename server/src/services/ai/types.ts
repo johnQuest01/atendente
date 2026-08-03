@@ -89,6 +89,19 @@ export function isTruncatedFinishReason(reason: string | null | undefined): bool
   return r === 'max_tokens' || r === 'length' || r === 'max_output_tokens';
 }
 
+/**
+ * A API recusou o parâmetro `temperature`? Os modelos mais novos (ex.: Claude
+ * opus-5/sonnet-5/fable-5 e os GPT de raciocínio) DEPRECIARAM `temperature` e
+ * respondem 400 quando ele é enviado. Nesse caso, o adaptador refaz a chamada
+ * SEM o parâmetro, em vez de falhar.
+ */
+export function isUnsupportedTemperature(status: number, body: string): boolean {
+  if (status !== 400) return false;
+  const b = body.toLowerCase();
+  if (!b.includes('temperature')) return false;
+  return /deprecat|unsupported|not supported|does not support|only the default|no longer/.test(b);
+}
+
 /** Converte uma resposta HTTP de erro num AiProviderError classificado. */
 export function classifyHttpError(status: number, body: string): AiProviderError {
   const lower = body.toLowerCase();
