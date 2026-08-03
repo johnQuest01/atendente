@@ -1,6 +1,6 @@
 import { env } from '../../config/env';
 import { logger } from '../../config/logger';
-import { listActiveAiProviders, updateAiRuntime } from '../../db/queries/ai_providers';
+import { countAiProviders, listActiveAiProviders, updateAiRuntime } from '../../db/queries/ai_providers';
 import { getTenantById } from '../../db/queries/tenants';
 import { currentYm, getAiUsage, incrementAiUsage } from '../../db/queries/ai_usage';
 import { anthropicAdapter } from './providers/anthropic';
@@ -124,17 +124,29 @@ export async function resolveChain(tenantId?: string | null): Promise<ResolvedCh
     logger.warn('Falha ao carregar provedores de IA do banco; tentando fallback do .env.', err);
   }
 
+  // Fallback do .env: SÓ numa instalação nova (nenhum provedor cadastrado). Se o
+  // dono já cadastrou provedores e desativou todos, respeitamos a escolha (sem
+  // IA) em vez de "ressuscitar" o Claude do .env por baixo dos panos.
   if (providers.length === 0 && env.hasAnthropic) {
-    providers = [
-      {
-        id: ENV_PROVIDER_ID,
-        kind: 'anthropic',
-        label: 'Claude (.env)',
-        priority: 0,
-        creds: { apiKey: env.ANTHROPIC_API_KEY as string, model: env.CLAUDE_MODEL },
-      },
-    ];
-    source = 'env';
+    let configured = 0;
+    try {
+      configured =
+        (tenantId ? await countAiProviders(tenantId) : 0) + (await countAiProviders(null));
+    } catch {
+      configured = 0;
+    }
+    if (configured === 0) {
+      providers = [
+        {
+          id: ENV_PROVIDER_ID,
+          kind: 'anthropic',
+          label: 'Claude (.env)',
+          priority: 0,
+          creds: { apiKey: env.ANTHROPIC_API_KEY as string, model: env.CLAUDE_MODEL },
+        },
+      ];
+      source = 'env';
+    }
   }
 
   // O teto só importa quando a plataforma paga (global/env) e há empresa.
