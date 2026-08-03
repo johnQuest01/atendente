@@ -10,10 +10,12 @@ import { NotFoundError } from '../utils/errors';
 
 export const idParamSchema = z.object({ id: z.string().uuid() });
 
+const CONTENT_TYPES = ['audio', 'text', 'product', 'claude', 'reminders_today'] as const;
+
 export const createKeywordSchema = z.object({
   keyword: z.string().min(1).max(100),
   intent: z.string().min(1).max(100),
-  content_type: z.enum(['audio', 'text', 'product', 'claude']),
+  content_type: z.enum(CONTENT_TYPES),
   content_id: z.string().uuid().nullable().optional(),
   priority: z.coerce.number().int().min(1).default(1),
 });
@@ -21,7 +23,7 @@ export const createKeywordSchema = z.object({
 export const updateKeywordSchema = z.object({
   keyword: z.string().min(1).max(100).optional(),
   intent: z.string().min(1).max(100).optional(),
-  content_type: z.enum(['audio', 'text', 'product', 'claude']).optional(),
+  content_type: z.enum(CONTENT_TYPES).optional(),
   content_id: z.string().uuid().nullable().optional(),
   priority: z.coerce.number().int().min(1).optional(),
   is_active: z.boolean().optional(),

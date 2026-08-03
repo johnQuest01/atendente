@@ -259,15 +259,94 @@ const QUERY_TITLE: Record<string, string> = {
   todos: 'TODOS OS LEMBRETES',
 };
 
-function renderList(reminders: Reminder[], title: string, tz: string): string {
-  if (reminders.length === 0) return `Nenhum compromisso ${title.toLowerCase()}.`;
-  const lines = reminders.map((r, i) => {
+/** Teto de mensagens individuais, para uma consulta grande não inundar o chat. */
+const LIST_SEND_CAP = 15;
+
+/**
+ * Envia os compromissos UM POR MENSAGEM (o dono pediu separado), após um
+ * cabeçalho curto. A numeração segue a `lastList`, então CONCLUIR/CANCELAR N
+ * continuam funcionando. Acima do teto, resume o excedente.
+ */
+async function sendReminderList(
+  tenantId: string,
+  phone: string,
+  reminders: Reminder[],
+  title: string,
+  tz: string,
+): Promise<void> {
+  if (reminders.length === 0) {
+    const label = /\d/.test(title) ? `em ${title}` : title.toLowerCase();
+    await reply(tenantId, phone, `Nenhum compromisso ${label}.`);
+    return;
+  }
+  const total = reminders.length;
+  await reply(tenantId, phone, `*${title}* — ${total} compromisso${total > 1 ? 's' : ''}:`);
+  const shown = reminders.slice(0, LIST_SEND_CAP);
+  for (let i = 0; i < shown.length; i++) {
+    const r = shown[i];
     const when = formatForOwner(new Date(r.next_fire_at), tz);
-    const repeat = r.recurrence ? ` · repete ${describeRecurrence(r.recurrence)}` : '';
-    const lead = r.lead_minutes ? ` · aviso ${describeLead(r.lead_minutes)}` : '';
-    return `${i + 1}. ${r.task}\n   ${when}${repeat}${lead}`;
-  });
-  return [`*${title}*`, '', ...lines, '', 'Para fechar: CONCLUIR N ou CANCELAR N.'].join('\n');
+    const repeat = r.recurrence ? `\nRepete: ${describeRecurrence(r.recurrence)}` : '';
+    const lead = r.lead_minutes ? `\nAviso: ${describeLead(r.lead_minutes)}` : '';
+    await reply(tenantId, phone, `${i + 1}. ${r.task}\n${when}${repeat}${lead}`);
+  }
+  if (total > LIST_SEND_CAP) {
+    await reply(tenantId, phone, `…e mais ${total - LIST_SEND_CAP}. Mande TODOS para a lista completa.`);
+  }
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+/**
+ * Consulta por DATA específica: "dia 20", "20/12", "20/12/2026". Retorna o
+ * intervalo daquele dia no fuso do dono, ou null se a frase tiver mais conteúdo
+ * que a data (aí é cadastro, não consulta — ex.: "20/12 pagar fornecedor").
+ */
+function detectDateQuery(normalized: string, tz: string): { filter: ListRemindersFilter; title: string } | null {
+  if (STRONG_CREATE.test(normalized)) return null;
+
+  const slash = normalized.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
+  const diaN = normalized.match(/\bdia\s+(\d{1,2})\b/);
+  if (!slash && !diaN) return null;
+
+  // Se, tirando a data e as palavras de ligação, sobrar texto, é um CADASTRO.
+  const rest = normalized
+    .replace(/\b\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/g, ' ')
+    .replace(/\bdia\s+\d{1,2}\b/g, ' ')
+    .replace(/\b(no|na|em|o|a|que|tem|para|pra|dos?|das?|de|e|meus?|minha|compromissos?|lembretes?|agenda|tarefas?)\b/g, ' ')
+    .replace(/[?!.]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (rest.length > 0) return null;
+
+  const wc = toWallClock(new Date(), tz);
+  let day: number;
+  let month: number;
+  let year: number;
+  if (slash) {
+    day = Number(slash[1]);
+    month = Number(slash[2]);
+    const y = slash[3];
+    year = y ? (y.length === 2 ? 2000 + Number(y) : Number(y)) : wc.year;
+  } else {
+    day = Number(diaN![1]);
+    month = wc.month;
+    year = wc.year;
+    // "dia 20" já passou neste mês → assume o próximo mês.
+    if (day < wc.day) {
+      month += 1;
+      if (month > 12) {
+        month = 1;
+        year += 1;
+      }
+    }
+  }
+  if (day < 1 || day > 31 || month < 1 || month > 12) return null;
+
+  const from = fromWallClock({ year, month, day, hour: 0, minute: 0 }, tz);
+  const until = fromWallClock({ year, month, day: day + 1, hour: 0, minute: 0 }, tz);
+  return { filter: { from, until }, title: `${pad2(day)}/${pad2(month)}` };
 }
 
 const CREATE_TRIGGERS = /\b(lembr|anota|agenda|marca|avisa|nao me deixa esquecer|não me deixa esquecer)/i;
@@ -391,9 +470,18 @@ export async function handleOwnerMessage(
     if (filter) {
       const reminders = await listReminders(tenantId, phone, filter);
       setState(tenantId, phone, { lastList: reminders.map((r) => r.id) });
-      await reply(tenantId, phone, renderList(reminders, QUERY_TITLE[queryKey] ?? queryKey.toUpperCase(), tz));
+      await sendReminderList(tenantId, phone, reminders, QUERY_TITLE[queryKey] ?? queryKey.toUpperCase(), tz);
       return true;
     }
+  }
+
+  // 2.1. Consulta por DATA específica ("dia 20", "20/12"). Sem IA.
+  const dateQuery = detectDateQuery(normalized, tz);
+  if (dateQuery) {
+    const reminders = await listReminders(tenantId, phone, dateQuery.filter);
+    setState(tenantId, phone, { lastList: reminders.map((r) => r.id) });
+    await sendReminderList(tenantId, phone, reminders, dateQuery.title, tz);
+    return true;
   }
 
   // 2.5. Disparo por palavra-chave CADASTRADA (content_type='reminders_today').
@@ -404,7 +492,7 @@ export async function handleOwnerMessage(
     if (!(await isReminderOwner(tenantId, phone))) return true;
     const todays = await getTodayReminders(tenantId, phone);
     setState(tenantId, phone, { lastList: todays.map((r) => r.id) });
-    await reply(tenantId, phone, renderList(todays, QUERY_TITLE.hoje, tz));
+    await sendReminderList(tenantId, phone, todays, QUERY_TITLE.hoje, tz);
     return true;
   }
 
