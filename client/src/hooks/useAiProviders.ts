@@ -191,12 +191,15 @@ export function useListSavedAiModels(scope: AiScope) {
   });
 }
 
-/** Testa um provedor já salvo (usa a chave guardada). */
+/** Testa um provedor já salvo (usa a chave guardada). Atualiza o status na lista. */
 export function useTestSavedAiProvider(scope: AiScope) {
+  const invalidate = useInvalidate(scope);
   return useMutation({
     mutationFn: async (id: string) => {
       const { data } = await api.post<TestResult>(`${BASE[scope]}/${id}/test`, {});
       return data;
     },
+    // O teste grava last_status no servidor; refetch pra o selo refletir na hora.
+    onSuccess: invalidate,
   });
 }

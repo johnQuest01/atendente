@@ -219,7 +219,9 @@ function statusBadge(p: AiProviderDto) {
   if (p.in_cooldown) return <Badge tone="warning">Em cooldown</Badge>;
   if (p.last_status === 'ok') return <Badge tone="success">OK</Badge>;
   if (p.last_status) return <Badge tone="danger">{p.last_status}</Badge>;
-  return <Badge tone="neutral">Não usada</Badge>;
+  // Ativa, mas ainda não processou/testou nada. "Ativa" é mais claro que
+  // "Não usada" (que dava a impressão de que o modelo não valia).
+  return <Badge tone="primary">Ativa</Badge>;
 }
 
 /** Aviso de qual corrente está ativa (relevante para a empresa). */

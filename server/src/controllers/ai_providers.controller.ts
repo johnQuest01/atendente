@@ -7,6 +7,7 @@ import {
   getAiProviderById,
   listAiProviders,
   updateAiProvider,
+  updateAiRuntime,
   type AiProvider,
 } from '../db/queries/ai_providers';
 import { getTenantById } from '../db/queries/tenants';
@@ -198,6 +199,14 @@ export function makeAiProviderControllers(scopeOf: ScopeResolver): AiProviderCon
         baseUrl: provider.base_url,
         model: provider.model,
       });
+      // Persiste o resultado do teste: some o "não usada" (vira OK) ou mostra o
+      // erro na hora, sem precisar esperar uma mensagem real do cliente.
+      await updateAiRuntime(id, {
+        status: result.ok ? 'ok' : 'error',
+        error: result.ok ? null : result.detail,
+        cooldownUntil: null,
+      });
+      invalidateAiCache();
       res.json(result);
     },
 
