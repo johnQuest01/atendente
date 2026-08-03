@@ -46,6 +46,8 @@ export interface PersonaPreviewInput {
 export interface PersonaPreviewResult {
   reply: string | null;
   providerLabel: string | null;
+  /** Modelo real que respondeu (ex.: "claude-opus-4-8"). */
+  model: string | null;
   detail: string | null;
 }
 

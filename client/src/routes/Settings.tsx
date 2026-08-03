@@ -422,7 +422,10 @@ function PersonaCard() {
                 <div className="mb-1 flex items-center gap-2">
                   <Badge tone="success">Resposta da IA</Badge>
                   {preview.data.providerLabel && (
-                    <span className="text-[11px] text-text-secondary">via {preview.data.providerLabel}</span>
+                    <span className="text-[11px] text-text-secondary">
+                      via {preview.data.providerLabel}
+                      {preview.data.model ? ` · ${preview.data.model}` : ''}
+                    </span>
                   )}
                 </div>
                 <p className="whitespace-pre-wrap text-sm leading-snug text-text-primary">

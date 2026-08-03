@@ -246,6 +246,8 @@ export interface PreviewReplyInput extends SystemPromptInput {
 export interface PreviewReplyResult {
   reply: string | null;
   providerLabel: string | null;
+  /** Modelo real que respondeu (para confirmar qual está em uso). */
+  model: string | null;
 }
 
 /**
@@ -274,7 +276,11 @@ export async function previewReply(
   const result = await complete({ system, messages, maxTokens, temperature }, tenantId, {
     meter: false,
   });
-  return { reply: result?.text || null, providerLabel: result?.providerLabel ?? null };
+  return {
+    reply: result?.text || null,
+    providerLabel: result?.providerLabel ?? null,
+    model: result?.model ?? null,
+  };
 }
 
 export interface ExtractedClientInfo {

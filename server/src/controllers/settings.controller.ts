@@ -133,6 +133,7 @@ export async function previewPersona(req: Request, res: Response): Promise<void>
     res.json({
       reply: parsed?.confirmationText ?? null,
       providerLabel: null,
+      model: null,
       detail: parsed
         ? null
         : 'Não consegui interpretar um lembrete nessa frase (ou não há IA ativa). ' +
@@ -165,6 +166,7 @@ export async function previewPersona(req: Request, res: Response): Promise<void>
   res.json({
     reply: result.reply,
     providerLabel: result.providerLabel,
+    model: result.model,
     detail: result.reply
       ? null
       : 'A IA não respondeu. Confira se há um provedor ativo e com créditos em Configurações → Inteligência Artificial.',

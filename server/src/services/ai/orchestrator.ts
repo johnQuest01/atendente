@@ -44,6 +44,8 @@ export interface CompleteResult {
   text: string;
   providerId: string;
   providerLabel: string;
+  /** Modelo REAL que respondeu (ex.: "claude-opus-4-8") — confere a troca de modelo. */
+  model: string;
 }
 
 /** Quanto tempo um provedor fica de fora apos cada tipo de falha. */
@@ -289,7 +291,7 @@ export async function complete(
       if (triedLabels.length > 0) {
         logger.warn(`IA failover: respondido por "${provider.label}" após falha de: ${triedLabels.join(', ')}.`);
       }
-      result = { text: r.text, providerId: provider.id, providerLabel: provider.label };
+      result = { text: r.text, providerId: provider.id, providerLabel: provider.label, model: provider.creds.model };
       break;
     }
     if (!r.ok && 'err' in r) {
@@ -305,7 +307,7 @@ export async function complete(
     const r = await completeAvoidingTruncation(provider, req);
     if (r.ok && r.text) {
       clearCooldown(provider);
-      result = { text: r.text, providerId: provider.id, providerLabel: provider.label };
+      result = { text: r.text, providerId: provider.id, providerLabel: provider.label, model: provider.creds.model };
     } else if (!r.ok && 'err' in r) {
       setCooldown(provider, r.err.kind, r.err.message, now);
     }
