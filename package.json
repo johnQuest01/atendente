@@ -1,8 +1,8 @@
 {
-  "name": "mayra-ai-sales",
+  "name": "atendente",
   "version": "1.0.0",
   "private": true,
-  "description": "Sistema de atendimento e vendas automatizado via WhatsApp (B2B atacado) com IA humanizada e painel PWA.",
+  "description": "Atendente de IA para WhatsApp (B2B atacado) com painel PWA e assistente pessoal de lembretes.",
   "workspaces": [
     "client",
     "server"

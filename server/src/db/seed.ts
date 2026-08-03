@@ -22,12 +22,12 @@ async function ensureDefaultTenant(): Promise<void> {
 }
 
 async function seedAdmin(): Promise<void> {
-  const existing = await queryOne<User>('SELECT id FROM users WHERE email = $1', [
-    env.SEED_ADMIN_EMAIL,
-  ]);
-
-  if (existing) {
-    logger.info(`Usuário admin já existe (${env.SEED_ADMIN_EMAIL}). Nada a fazer.`);
+  // Bootstrap: o admin padrão só é criado quando o sistema ainda NÃO tem nenhum
+  // usuário. Depois que já existe alguém (renomeado, promovido a superadmin,
+  // etc.), o seed não deve ressuscitar a conta padrão a cada deploy.
+  const anyUser = await queryOne<User>('SELECT id FROM users LIMIT 1');
+  if (anyUser) {
+    logger.info('Já existe ao menos um usuário — seed do admin padrão pulado.');
     return;
   }
 

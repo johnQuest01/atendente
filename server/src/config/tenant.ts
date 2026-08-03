@@ -1,7 +1,7 @@
 /**
  * Tenant padrao da Fase 1 do multi-tenancy.
  *
- * Toda a operacao atual (a empresa da Mayra) pertence a este tenant. O UUID e
+ * Toda a operacao atual (a empresa principal) pertence a este tenant. O UUID e
  * fixo e identico ao inserido na migration 014 (`tenants`). Usado:
  *  - no seed (vincula o admin a esta empresa);
  *  - no webhook (Fase 1 ha um unico WhatsApp global -> todo inbound e deste tenant);
