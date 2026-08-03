@@ -25,7 +25,11 @@ import { AppError, NotFoundError } from '../utils/errors';
  */
 
 const kindEnum = z.enum(['anthropic', 'openai', 'gemini']);
-const optionalUrl = z.union([z.string().trim().url('URL inválida.'), z.literal('')]).optional();
+// Aceita URL válida, string vazia, null (limpar a URL ao editar) ou ausente.
+// Sem o null, editar um provedor sem base URL (ex.: Anthropic) dava "Dados inválidos".
+const optionalUrl = z
+  .union([z.string().trim().url('URL inválida.'), z.literal(''), z.null()])
+  .optional();
 
 function maskKey(key: string | null): string | null {
   if (!key) return null;
