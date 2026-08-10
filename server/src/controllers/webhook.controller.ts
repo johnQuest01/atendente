@@ -9,6 +9,7 @@ import {
   findOrCreateOpenConversation,
   getRecentMessagesForAI,
   isHumanPaused,
+  reopenConversationOnInbound,
   setHumanPausedUntil,
 } from '../db/queries/conversations';
 import { listProducts } from '../db/queries/products';
@@ -20,7 +21,12 @@ import {
   inboundMessageExists,
   providerMessageExists,
 } from '../db/queries/messages';
-import { isAgentEnabled, getAiPersona } from '../db/queries/settings';
+import {
+  isAgentEnabled,
+  getAiPersona,
+  getAiTemperature,
+  getAiMaxTokens,
+} from '../db/queries/settings';
 import { isPhoneBlocked } from '../db/queries/blocked';
 import { isReminderOwner } from '../db/queries/reminders';
 import { handleOwnerMessage } from '../services/reminders/handler.service';
@@ -28,6 +34,7 @@ import { isTenantBlocked } from '../middleware/tenantAccess.middleware';
 import { emitNewMessage, emitNewConversation, emitConversationUpdated } from '../socket';
 import { matchIntent, getTriggerPhrases } from '../services/matcher.service';
 import { extractClientInfo, generateReply, hasVisionProvider, isAiConfigured } from '../services/ai.service';
+import { extractAndStoreMemories } from '../services/memory.service';
 import { extractVideoFrames } from '../services/ai/video-frames';
 import type { ChatImage } from '../services/ai/types';
 import {
@@ -43,6 +50,7 @@ import {
   dispatchText,
 } from '../services/dispatch.service';
 import {
+  getWhatsappByConnection,
   getTenantWhatsapp,
   parseInbound,
   parseStatusUpdate,
@@ -50,8 +58,26 @@ import {
 } from '../services/whatsapp.service';
 import {
   getConnectionByWebhookToken,
+  type WhatsappConnection,
   type WhatsappProviderName,
 } from '../db/queries/whatsapp_connections';
+
+/** IA efetiva da conexão (campos NULL herdam o padrão da empresa). */
+async function resolveConnectionAi(tenantId: string, conn: WhatsappConnection | null) {
+  const [tenantPersona, tenantTemp, tenantMax, tenantAgent] = await Promise.all([
+    getAiPersona(tenantId),
+    getAiTemperature(tenantId),
+    getAiMaxTokens(tenantId),
+    isAgentEnabled(tenantId),
+  ]);
+  return {
+    systemPrompt:
+      conn?.ai_persona && conn.ai_persona.trim() ? conn.ai_persona.trim() : tenantPersona,
+    temperature: conn?.ai_temperature ?? tenantTemp,
+    maxTokens: conn?.ai_max_tokens ?? tenantMax,
+    agentEnabled: conn?.agent_enabled ?? tenantAgent,
+  };
+}
 
 /**
  * Orquestrador principal da IA. Recebe mensagens do provedor de WhatsApp
@@ -97,17 +123,19 @@ export async function handleWhatsappWebhook(req: Request, res: Response): Promis
   const body = (req.body ?? {}) as Record<string, unknown>;
   const webhookToken = req.params.webhookToken as string | undefined;
 
-  // Resolve A QUAL EMPRESA pertence este webhook e qual provedor parsear.
+  // Resolve A QUAL EMPRESA + INSTÂNCIA pertence este webhook.
   let tenantId: string;
   let provider: WhatsappProviderName;
+  let connection: WhatsappConnection | null = null;
 
   if (webhookToken) {
-    // Rota por empresa: o token opaco da URL identifica a conexão.
+    // Rota por instância: o token opaco da URL identifica a conexão.
     const conn = await getConnectionByWebhookToken(webhookToken);
     if (!conn || !conn.is_active) {
       res.status(404).json({ error: { code: 'NOT_FOUND', message: 'Conexão de webhook não encontrada.' } });
       return;
     }
+    connection = conn;
     tenantId = conn.tenant_id;
     provider = conn.provider;
   } else {
@@ -165,9 +193,19 @@ export async function handleWhatsappWebhook(req: Request, res: Response): Promis
 
   const inbound = parseInbound(provider, body);
   if (!inbound) {
+    const mediaKeys = ['sticker', 'image', 'audio', 'video', 'document', 'text', 'reaction']
+      .filter((k) => k in body)
+      .join(',') || 'nenhuma';
+    logger.info(
+      `Webhook ignorado (payload não é mensagem suportada) provider=${provider} ` +
+        `media=${mediaKeys} keys=${Object.keys(body).slice(0, 16).join(',')}`,
+    );
     res.status(200).json({ ok: true, ignored: true });
     return;
   }
+  logger.info(
+    `Webhook mensagem: fromMe=${inbound.fromMe} type=${inbound.type} phone=${inbound.phone} id=${inbound.providerMessageId ?? 'n/d'}`,
+  );
 
   // Número bloqueado: ignora totalmente (não salva, não responde, não exibe).
   if (await isPhoneBlocked(tenantId, inbound.phone)) {
@@ -181,14 +219,14 @@ export async function handleWhatsappWebhook(req: Request, res: Response): Promis
 
   // fromMe: eco do bot (já temos o id) vs digitação humana no celular.
   if (inbound.fromMe) {
-    void runWithTenant(tenantId, () => processFromMe(tenantId, inbound)).catch((err) => {
+    void runWithTenant(tenantId, () => processFromMe(tenantId, inbound, connection)).catch((err) => {
       logger.error('Erro ao processar mensagem fromMe', err);
     });
     return;
   }
 
   // Processamento no escopo do tenant resolvido (ativa o RLS — BUG 1).
-  void runWithTenant(tenantId, () => processInbound(tenantId, inbound)).catch((err) => {
+  void runWithTenant(tenantId, () => processInbound(tenantId, inbound, connection)).catch((err) => {
     logger.error('Erro ao processar mensagem inbound', err);
   });
 }
@@ -199,21 +237,34 @@ export async function handleWhatsappWebhook(req: Request, res: Response): Promis
  * - Caso contrário, é operador humano no celular: persiste e pausa a IA
  *   nesta conversa (status waiting) para não atropelar o atendimento.
  */
-async function processFromMe(tenantId: string, inbound: NormalizedInbound): Promise<void> {
+async function processFromMe(
+  tenantId: string,
+  inbound: NormalizedInbound,
+  connection: WhatsappConnection | null,
+): Promise<void> {
   if (inbound.providerMessageId && (await providerMessageExists(tenantId, inbound.providerMessageId))) {
     logger.info(`fromMe ignorado (já registrado pela automação): ${inbound.providerMessageId}`);
     return;
   }
 
-  const client = await findOrCreateClient(tenantId, inbound.phone, inbound.senderName);
-  const existing = await findOpenConversationByClient(tenantId, client.id);
-  const conversation = existing ?? (await findOrCreateOpenConversation(tenantId, client.id));
+  const connectionId = connection?.id ?? null;
+  const client = await findOrCreateClient(tenantId, inbound.phone, inbound.senderName, {
+    lid: inbound.lid,
+    phoneIsLid: inbound.phoneIsLid,
+  });
+  const existing = await findOpenConversationByClient(tenantId, client.id, connectionId);
+  const conversation =
+    existing ?? (await findOrCreateOpenConversation(tenantId, client.id, connectionId));
   if (!existing) emitNewConversation(tenantId, conversation);
 
+  const isSticker =
+    inbound.type === 'image' &&
+    (inbound.fileName === 'sticker.webp' || (inbound.mediaMime ?? '').includes('webp'));
   const content =
     inbound.type === 'text'
       ? inbound.text || null
-      : inbound.text || `[${inbound.type} enviado pelo operador]`;
+      : inbound.text ||
+        (isSticker ? '[figurinha enviada pelo operador]' : `[${inbound.type} enviado pelo operador]`);
 
   const outboundMsg = await insertMessage(tenantId, {
     conversationId: conversation.id,
@@ -241,9 +292,15 @@ async function processFromMe(tenantId: string, inbound: NormalizedInbound): Prom
  * re-hospedagem) seguir igual ao da Evolution. Best-effort: falhou, a mensagem
  * é processada sem a mídia.
  */
-async function hydrateProviderMedia(tenantId: string, inbound: NormalizedInbound): Promise<void> {
+async function hydrateProviderMedia(
+  tenantId: string,
+  inbound: NormalizedInbound,
+  connection: WhatsappConnection | null,
+): Promise<void> {
   if (!inbound.mediaId || inbound.mediaBase64 || inbound.mediaUrl) return;
-  const wa = await getTenantWhatsapp(tenantId);
+  const wa = connection
+    ? await getWhatsappByConnection(tenantId, connection.id)
+    : await getTenantWhatsapp(tenantId);
   if (!wa.downloadMedia) return;
   const media = await wa.downloadMedia(inbound.mediaId).catch((err) => {
     logger.warn('Falha ao baixar mídia do provedor', err);
@@ -254,7 +311,11 @@ async function hydrateProviderMedia(tenantId: string, inbound: NormalizedInbound
   inbound.mediaMime = inbound.mediaMime ?? media.mime;
 }
 
-async function processInbound(tenantId: string, inbound: NormalizedInbound): Promise<void> {
+async function processInbound(
+  tenantId: string,
+  inbound: NormalizedInbound,
+  connection: WhatsappConnection | null,
+): Promise<void> {
   // Idempotência: a Z-API pode reenviar o mesmo webhook (retries). Se já
   // registramos esta mensagem, não processamos de novo (evita resposta
   // automática duplicada e custo desnecessário de IA).
@@ -263,6 +324,9 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
     return;
   }
 
+  const connectionId = connection?.id ?? null;
+  const aiCfg = await resolveConnectionAi(tenantId, connection);
+
   // Assistente pessoal do dono (lembretes). Entra ANTES de findOrCreateClient
   // para o dono não virar cliente nem abrir conversa comercial no painel.
   // Aceita texto ou áudio — o handler transcreve internamente.
@@ -270,32 +334,40 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
     (inbound.type === 'text' || inbound.type === 'audio') &&
     (await isReminderOwner(tenantId, inbound.phone))
   ) {
-    await hydrateProviderMedia(tenantId, inbound);
-    const handled = await handleOwnerMessage(tenantId, inbound);
+    await hydrateProviderMedia(tenantId, inbound, connection);
+    const handled = await handleOwnerMessage(tenantId, inbound, connectionId);
     if (handled) return;
   }
 
-  await hydrateProviderMedia(tenantId, inbound);
+  await hydrateProviderMedia(tenantId, inbound, connection);
 
-  const client = await findOrCreateClient(tenantId, inbound.phone, inbound.senderName);
+  const client = await findOrCreateClient(tenantId, inbound.phone, inbound.senderName, {
+    lid: inbound.lid,
+    phoneIsLid: inbound.phoneIsLid,
+  });
+  logger.info(
+    `Cliente resolvido: id=${client.id} phone=${client.phone} lid=${client.whatsapp_lid ?? 'n/d'} ` +
+      `(webhook phone=${inbound.phone} phoneIsLid=${inbound.phoneIsLid} lid=${inbound.lid ?? 'n/d'})`,
+  );
 
-  const existing = await findOpenConversationByClient(tenantId, client.id);
-  const conversation = existing ?? (await findOrCreateOpenConversation(tenantId, client.id));
+  const existing = await findOpenConversationByClient(tenantId, client.id, connectionId);
+  const conversation =
+    existing ?? (await findOrCreateOpenConversation(tenantId, client.id, connectionId));
   if (!existing) emitNewConversation(tenantId, conversation);
 
-  // Quatro travas, da mais ampla para a mais específica: acesso da empresa,
-  // chave geral do agente, pausa por intervenção humana e o ajuste por contato.
-  const agentEnabled = await isAgentEnabled(tenantId);
+  // Travas: agente da conexão (ou tenant), pausa humana, empresa e contato.
   const humanTakeover = isHumanPaused(conversation);
   const tenantBlocked = await isTenantBlocked(tenantId);
   const clientAiOff = client.ai_enabled === false;
-  const autoReply = agentEnabled && !humanTakeover && !tenantBlocked && !clientAiOff;
+  const autoReply = aiCfg.agentEnabled && !humanTakeover && !tenantBlocked && !clientAiOff;
 
   // Tique azul IMEDIATO: assim que a IA "vê" a mensagem, marcamos como lida —
   // sem esperar transcrição nem geração de resposta. Best-effort, não bloqueia.
   // (Só quando o agente está ligado; desligado, quem "lê" é o humano.)
   if (autoReply && inbound.providerMessageId) {
-    const wa = await getTenantWhatsapp(tenantId);
+    const wa = connection
+      ? await getWhatsappByConnection(tenantId, connection.id)
+      : await getTenantWhatsapp(tenantId);
     void wa.markAsRead(inbound.phone, inbound.providerMessageId).catch((err) =>
       logger.warn('Falha ao marcar mensagem como lida (tique azul)', err),
     );
@@ -349,6 +421,10 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
   });
   emitNewMessage(tenantId, conversation.id, inboundMsg);
 
+  // Volta para "Abertas" se estava em Aguardando (você tinha respondido no celular).
+  const reopened = await reopenConversationOnInbound(tenantId, conversation.id);
+  if (reopened) emitConversationUpdated(tenantId, reopened);
+
   // Agente desligado, conversa assumida por humano ou acesso encerrado:
   // registra a mensagem no painel, mas não responde.
   if (!autoReply) {
@@ -370,7 +446,7 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
   // catálogo (ex.: cliente manda foto de um produto perguntando se temos).
   // Pulamos o casamento por palavra-chave — aqui a mídia é o conteúdo principal.
   if (inbound.type === 'image' || inbound.type === 'video') {
-    await replyToVisualMedia(tenantId, ctx, inbound, mediaUrl, mediaMime).catch((err) =>
+    await replyToVisualMedia(tenantId, ctx, inbound, mediaUrl, mediaMime, aiCfg).catch((err) =>
       logger.warn('Falha ao responder mídia visual', err),
     );
     return;
@@ -418,18 +494,21 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
 
   // Fallback: a IA precisa do histórico + catálogo de produtos disponíveis.
   const history = await getRecentMessagesForAI(tenantId, conversation.id, 20);
+  const waConnectionId = conversation.connection_id ?? null;
 
   // Coleta de dados do cliente em segundo plano (não bloqueia a resposta).
-  if (await isAiConfigured(tenantId)) {
+  if (await isAiConfigured(tenantId, waConnectionId)) {
     void enrichClientFromConversation(tenantId, client, history).catch((err) =>
       logger.warn('Falha ao enriquecer cliente', err),
     );
+    void extractAndStoreMemories(tenantId, client, history).catch((err) =>
+      logger.warn('Falha ao extrair memórias do cliente', err),
+    );
   }
 
-  const [products, scripts, systemPrompt] = await Promise.all([
+  const [products, scripts] = await Promise.all([
     listProducts(tenantId, true),
     listScripts(tenantId, true),
-    getAiPersona(tenantId),
   ]);
   const reply = await generateReply(
     {
@@ -438,7 +517,10 @@ async function processInbound(tenantId: string, inbound: NormalizedInbound): Pro
       products,
       scripts,
       storeName: env.STORE_NAME,
-      systemPrompt,
+      systemPrompt: aiCfg.systemPrompt,
+      temperature: aiCfg.temperature,
+      maxTokens: aiCfg.maxTokens,
+      connectionId: waConnectionId,
     },
     tenantId,
   );
@@ -461,9 +543,12 @@ async function replyToVisualMedia(
   inbound: NormalizedInbound,
   persistedUrl: string | null,
   persistedMime: string | null,
+  aiCfg: { systemPrompt: string; temperature: number; maxTokens: number },
 ): Promise<void> {
+  const waConnectionId = ctx.conversation.connection_id ?? null;
+
   // Sem nenhum provedor com visão na cadeia: não adianta mandar a mídia.
-  if (!(await hasVisionProvider(tenantId))) {
+  if (!(await hasVisionProvider(tenantId, waConnectionId))) {
     const msg =
       inbound.type === 'video'
         ? 'Recebi seu vídeo! 🎬 Pra eu te ajudar com precisão, me conta por mensagem o que você procura (ou manda uma foto).'
@@ -493,10 +578,9 @@ async function replyToVisualMedia(
   }
 
   const history = await getRecentMessagesForAI(tenantId, ctx.conversation.id, 20);
-  const [products, scripts, systemPrompt] = await Promise.all([
+  const [products, scripts] = await Promise.all([
     listProducts(tenantId, true),
     listScripts(tenantId, true),
-    getAiPersona(tenantId),
   ]);
   const reply = await generateReply(
     {
@@ -505,8 +589,11 @@ async function replyToVisualMedia(
       products,
       scripts,
       storeName: env.STORE_NAME,
-      systemPrompt,
+      systemPrompt: aiCfg.systemPrompt,
+      temperature: aiCfg.temperature,
+      maxTokens: aiCfg.maxTokens,
       attachImages: images,
+      connectionId: waConnectionId,
     },
     tenantId,
   );

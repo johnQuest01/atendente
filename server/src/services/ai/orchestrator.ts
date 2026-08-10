@@ -100,10 +100,14 @@ function toResolved(rows: Awaited<ReturnType<typeof listActiveAiProviders>>): Re
  *   1. provedores ATIVOS da empresa (BYO) — se houver, usa só eles (custo da empresa);
  *   2. senão, provedores GLOBAIS da plataforma;
  *   3. senão, fallback do .env (Claude).
+ * `connectionId` filtra IAs ligadas àquela instância WhatsApp (+ as de “todas”).
  * `tenantId` undefined/null pula o passo 1 (usado em checagens globais/startup).
  */
-export async function resolveChain(tenantId?: string | null): Promise<ResolvedChain> {
-  const key = tenantId ?? GLOBAL_CACHE_KEY;
+export async function resolveChain(
+  tenantId?: string | null,
+  connectionId?: string | null,
+): Promise<ResolvedChain> {
+  const key = `${tenantId ?? GLOBAL_CACHE_KEY}|${connectionId ?? ''}`;
   const now = Date.now();
   const cached = chainCache.get(key);
   if (cached && now - cached.at < CHAIN_TTL_MS) return cached.chain;
@@ -113,7 +117,7 @@ export async function resolveChain(tenantId?: string | null): Promise<ResolvedCh
 
   try {
     if (tenantId) {
-      providers = toResolved(await listActiveAiProviders(tenantId));
+      providers = toResolved(await listActiveAiProviders(tenantId, connectionId));
       if (providers.length > 0) source = 'tenant';
     }
     if (providers.length === 0) {
@@ -166,8 +170,11 @@ export async function resolveChain(tenantId?: string | null): Promise<ResolvedCh
 }
 
 /** Ha pelo menos um provedor de IA utilizavel para esta empresa? (barato — cache.) */
-export async function isAiConfigured(tenantId?: string | null): Promise<boolean> {
-  return (await resolveChain(tenantId)).providers.length > 0;
+export async function isAiConfigured(
+  tenantId?: string | null,
+  connectionId?: string | null,
+): Promise<boolean> {
+  return (await resolveChain(tenantId, connectionId)).providers.length > 0;
 }
 
 /**
@@ -175,8 +182,11 @@ export async function isAiConfigured(tenantId?: string | null): Promise<boolean>
  * imagens? Usado para decidir se vale a pena mandar a foto/vídeo do cliente
  * para a IA ou se respondemos pedindo uma descrição em texto. (barato — cache.)
  */
-export async function hasVisionProvider(tenantId?: string | null): Promise<boolean> {
-  const chain = await resolveChain(tenantId);
+export async function hasVisionProvider(
+  tenantId?: string | null,
+  connectionId?: string | null,
+): Promise<boolean> {
+  const chain = await resolveChain(tenantId, connectionId);
   return chain.providers.some((p) => modelSupportsVision(p.kind, p.creds.model, p.creds.baseUrl));
 }
 
@@ -256,6 +266,8 @@ async function completeAvoidingTruncation(
 export interface CompleteOptions {
   /** Conta esta resposta no teto mensal da empresa (apenas quando a plataforma paga). */
   meter?: boolean;
+  /** Instância WhatsApp que está atendendo — escolhe IAs ligadas a ela. */
+  connectionId?: string | null;
 }
 
 /**
@@ -268,7 +280,7 @@ export async function complete(
   tenantId?: string | null,
   opts: CompleteOptions = {},
 ): Promise<CompleteResult | null> {
-  const chain = await resolveChain(tenantId);
+  const chain = await resolveChain(tenantId, opts.connectionId);
   if (chain.providers.length === 0) return null;
 
   const platformPays = chain.source !== 'tenant';
@@ -345,11 +357,14 @@ export interface ChainStatusItem {
   inCooldown: boolean;
 }
 
-export async function getChainStatus(tenantId?: string | null): Promise<{
+export async function getChainStatus(
+  tenantId?: string | null,
+  connectionId?: string | null,
+): Promise<{
   source: ChainSource | null;
   items: ChainStatusItem[];
 }> {
-  const chain = await resolveChain(tenantId);
+  const chain = await resolveChain(tenantId, connectionId);
   const now = Date.now();
   return {
     source: chain.source,

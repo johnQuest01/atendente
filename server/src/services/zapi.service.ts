@@ -21,6 +21,33 @@ export interface ZapiConnection {
 export interface ProviderStatus {
   ok: boolean;
   detail: string;
+  phone?: string | null;
+}
+
+function onlyDigits(value: string): string {
+  return value.replace(/\D/g, '');
+}
+
+/**
+ * Telefone real pareado na instância (GET /device).
+ * Ex.: "5511999999999"
+ */
+export async function fetchDevicePhone(conn: ZapiConnection): Promise<string | null> {
+  if (!isConfigured(conn)) return null;
+  try {
+    const res = await fetch(`${baseUrl(conn)}/device`, {
+      headers: headers(conn),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json().catch(() => ({}))) as { phone?: string | number };
+    const raw = data.phone != null ? String(data.phone) : '';
+    const phone = onlyDigits(raw);
+    return phone.length >= 10 ? phone : null;
+  } catch (err) {
+    logger.warn('Z-API /device falhou ao obter telefone.', err);
+    return null;
+  }
 }
 
 function isConfigured(conn: ZapiConnection): boolean {
@@ -99,9 +126,20 @@ export async function getConnectionStatus(conn: ZapiConnection): Promise<Provide
       error?: string;
     };
     const connected = Boolean(data.connected) && data.smartphoneConnected !== false;
-    return connected
-      ? { ok: true, detail: 'Conectado e celular pareado.' }
-      : { ok: false, detail: data.error || 'Celular desconectado — reconecte a Z-API (leia o QR Code).' };
+    if (!connected) {
+      return {
+        ok: false,
+        detail: data.error || 'Celular desconectado — reconecte a Z-API (leia o QR Code).',
+      };
+    }
+    const phone = await fetchDevicePhone(conn);
+    return {
+      ok: true,
+      detail: phone
+        ? `Conectado · ${phone}`
+        : 'Conectado e celular pareado.',
+      phone,
+    };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, detail: msg.includes('timeout') ? 'Tempo esgotado ao consultar a Z-API.' : msg };
@@ -175,6 +213,63 @@ export function sendText(conn: ZapiConnection, phone: string, message: string): 
     message,
     delayTyping: typingSecondsFor(message),
   });
+}
+
+/**
+ * Corrige (edita) um texto já enviado no WhatsApp.
+ * Limite do WhatsApp: até ~7 dias. Campo: editMessageId.
+ */
+export function editText(
+  conn: ZapiConnection,
+  phone: string,
+  messageId: string,
+  message: string,
+): Promise<string | null> {
+  return post(conn, 'send-text', {
+    phone,
+    message,
+    editMessageId: messageId,
+  });
+}
+
+/**
+ * Apaga mensagem no chat do WhatsApp.
+ * `owner=true` = você enviou; `false` = veio do contato.
+ * Sem `deleteForMe` (ou false) = apaga para todos; true = só para você.
+ */
+export async function deleteMessage(
+  conn: ZapiConnection,
+  phone: string,
+  messageId: string,
+  owner: boolean,
+  deleteForMe = false,
+): Promise<{ ok: boolean; detail: string }> {
+  if (!isConfigured(conn)) {
+    return { ok: false, detail: 'Z-API não configurada.' };
+  }
+  const params = new URLSearchParams({
+    messageId,
+    phone,
+    owner: owner ? 'true' : 'false',
+  });
+  if (deleteForMe) params.set('deleteForMe', 'true');
+
+  try {
+    const res = await fetch(`${baseUrl(conn)}/messages?${params.toString()}`, {
+      method: 'DELETE',
+      headers: headers(conn),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok || res.status === 204) {
+      return { ok: true, detail: deleteForMe ? 'Apagada só para você.' : 'Apagada para todos.' };
+    }
+    const text = await res.text().catch(() => '');
+    logger.warn(`Z-API delete message HTTP ${res.status}: ${text}`);
+    return { ok: false, detail: text.slice(0, 180) || `HTTP ${res.status}` };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, detail: msg };
+  }
 }
 
 /** Envia audio (URL .ogg). `audio` pode ser URL publica ou base64. */

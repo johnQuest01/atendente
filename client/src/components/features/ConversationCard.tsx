@@ -11,6 +11,15 @@ const previewByType: Record<string, string> = {
   document: '📎 Documento',
 };
 
+function messagePreview(conversation: ConversationListItem): string {
+  const last = conversation.last_message ?? '';
+  if (/figurinha/i.test(last) || /sticker\.webp/i.test(last)) return '🎭 Figurinha';
+  if (conversation.last_message_type && conversation.last_message_type !== 'text') {
+    return previewByType[conversation.last_message_type] ?? '...';
+  }
+  return last || 'Sem mensagens ainda';
+}
+
 // Gradientes para os avatares — cor consistente por contato (hash do texto).
 const AVATAR_GRADIENTS = [
   'from-[#7C5CFF] to-[#5631E6]',
@@ -36,10 +45,7 @@ interface ConversationCardProps {
 
 export function ConversationCard({ conversation, onLongPress }: ConversationCardProps) {
   const name = conversation.client_name ?? conversation.company_name ?? conversation.client_phone;
-  const preview =
-    conversation.last_message_type && conversation.last_message_type !== 'text'
-      ? previewByType[conversation.last_message_type] ?? '...'
-      : conversation.last_message ?? 'Sem mensagens ainda';
+  const preview = messagePreview(conversation);
   const hasUnread = conversation.unread_count > 0;
 
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -100,6 +106,11 @@ export function ConversationCard({ conversation, onLongPress }: ConversationCard
             {formatRelative(conversation.last_message_at)}
           </span>
         </div>
+        {(conversation.connection_phone || conversation.connection_label) && (
+          <p className="truncate text-[11px] text-text-secondary">
+            {conversation.connection_phone || conversation.connection_label}
+          </p>
+        )}
         <div className="flex items-center justify-between gap-2">
           <p className={cn('truncate text-sm', hasUnread ? 'font-medium text-text-primary' : 'text-text-secondary')}>
             {preview}

@@ -17,6 +17,7 @@ import type {
   WhatsAppProvider,
 } from './whatsapp/types';
 import {
+  getConnectionById,
   getConnectionByTenant,
   type WhatsappConnection,
   type WhatsappProviderName,
@@ -25,15 +26,10 @@ import {
 export type { NormalizedInbound, NormalizedStatus, ProviderStatus, WhatsAppProvider };
 
 /**
- * Facade de WhatsApp MULTI-TENANT. Cada empresa (tenant) tem a propria conexao
- * (instancia Z-API/Evolution), guardada no banco com credenciais cifradas.
- *
- * `getTenantWhatsapp(tenantId)` resolve a conexao do tenant (com cache curto) e
- * devolve um objeto com as funcoes de envio ja vinculadas a essa conexao. O
- * resto do sistema (dispatch, webhook) depende apenas deste modulo.
- *
- * Continuidade: o tenant padrao (operacao atual) cai nas credenciais do .env
- * quando ainda nao houver conexao cadastrada no banco.
+ * Facade de WhatsApp MULTI-TENANT + MULTI-INSTÂNCIA. Cada empresa pode ter N
+ * conexões (Z-API / Evolution / Meta). `getWhatsappByConnection` resolve uma
+ * instância específica; `getTenantWhatsapp` usa a primeira ativa (legado /
+ * health / lembretes sem contexto de conexão).
  */
 
 const ZAPI_DEFAULT_BASE = 'https://api.z-api.io/instances';
@@ -112,21 +108,41 @@ function resolveFromEnv(): ResolvedConnection | null {
 const cache = new Map<string, { at: number; resolved: ResolvedConnection | null }>();
 const CACHE_TTL_MS = 30_000;
 
-/** Limpa o cache da conexao de um tenant (chamar apos salvar credenciais). */
-export function invalidateTenantWhatsapp(tenantId: string): void {
-  cache.delete(tenantId);
+function cacheKey(tenantId: string, connectionId?: string | null): string {
+  return connectionId ? `${tenantId}:c:${connectionId}` : `${tenantId}:default`;
 }
 
-async function resolveForTenant(tenantId: string): Promise<ResolvedConnection | null> {
-  const cached = cache.get(tenantId);
+/** Limpa o cache da conexao de um tenant (chamar apos salvar credenciais). */
+export function invalidateTenantWhatsapp(tenantId: string, connectionId?: string | null): void {
+  if (connectionId) {
+    cache.delete(cacheKey(tenantId, connectionId));
+    cache.delete(cacheKey(tenantId));
+    return;
+  }
+  for (const key of cache.keys()) {
+    if (key.startsWith(`${tenantId}:`)) cache.delete(key);
+  }
+}
+
+async function resolveForTenant(
+  tenantId: string,
+  connectionId?: string | null,
+): Promise<ResolvedConnection | null> {
+  const key = cacheKey(tenantId, connectionId);
+  const cached = cache.get(key);
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.resolved;
 
-  const conn = await getConnectionByTenant(tenantId);
+  let conn: WhatsappConnection | null = null;
+  if (connectionId) {
+    conn = await getConnectionById(tenantId, connectionId);
+  } else {
+    conn = await getConnectionByTenant(tenantId);
+  }
   let resolved: ResolvedConnection | null = conn && conn.is_active ? resolveFromDb(conn) : null;
   // Continuidade: tenant padrao sem conexao no banco usa as credenciais do .env.
-  if (!resolved && tenantId === DEFAULT_TENANT_ID) resolved = resolveFromEnv();
+  if (!resolved && !connectionId && tenantId === DEFAULT_TENANT_ID) resolved = resolveFromEnv();
 
-  cache.set(tenantId, { at: Date.now(), resolved });
+  cache.set(key, { at: Date.now(), resolved });
   return resolved;
 }
 
@@ -134,19 +150,21 @@ async function resolveForTenant(tenantId: string): Promise<ResolvedConnection | 
 // Interface de envio vinculada a uma empresa
 // ---------------------------------------------------------------------------
 
-/** Facade por tenant: WhatsAppProvider + metadados de configuração. */
+/** Facade por tenant/conexão: WhatsAppProvider + metadados de configuração. */
 export interface TenantWhatsapp extends WhatsAppProvider {
   provider: WhatsappProviderName;
   configured: boolean;
+  connectionId: string | null;
 }
 
-function build(resolved: ResolvedConnection | null): TenantWhatsapp {
+function build(resolved: ResolvedConnection | null, connectionId: string | null): TenantWhatsapp {
   if (resolved?.provider === 'metacloud' && resolved.metacloud) {
     const c = resolved.metacloud;
     const provider = createMetaCloudProvider(c);
     return {
       provider: 'metacloud',
       configured: Boolean(c.accessToken && c.phoneNumberId),
+      connectionId,
       ...provider,
     };
   }
@@ -155,6 +173,7 @@ function build(resolved: ResolvedConnection | null): TenantWhatsapp {
     return {
       provider: 'evolution',
       configured: Boolean(c.apiKey && c.instance),
+      connectionId,
       sendText: (phone, message) => evolution.sendText(c, phone, message),
       sendAudio: (phone, audioUrl) => evolution.sendAudio(c, phone, audioUrl),
       sendImage: (phone, imageUrl, caption) => evolution.sendImage(c, phone, imageUrl, caption),
@@ -173,6 +192,7 @@ function build(resolved: ResolvedConnection | null): TenantWhatsapp {
   return {
     provider: 'zapi',
     configured: Boolean(c.instanceId && c.token),
+    connectionId,
     sendText: (phone, message) => zapi.sendText(c, phone, message),
     sendAudio: (phone, audioUrl) => zapi.sendAudio(c, phone, audioUrl),
     sendImage: (phone, imageUrl, caption) => zapi.sendImage(c, phone, imageUrl, caption),
@@ -180,13 +200,38 @@ function build(resolved: ResolvedConnection | null): TenantWhatsapp {
     markAsRead: (phone, messageId) => zapi.markAsRead(c, phone, messageId),
     getConnectionStatus: () => zapi.getConnectionStatus(c),
     configureWebhook: (url) => zapi.configureWebhooks(c, url),
+    deleteMessage: (phone, messageId, owner, deleteForMe) =>
+      zapi.deleteMessage(c, phone, messageId, owner, deleteForMe),
+    editText: (phone, messageId, message) => zapi.editText(c, phone, messageId, message),
   };
 }
 
-/** Resolve o WhatsApp da empresa (DB ou .env de fallback) com cache curto. */
+/** Resolve o WhatsApp da empresa (primeira conexão ativa, ou .env). */
 export async function getTenantWhatsapp(tenantId: string): Promise<TenantWhatsapp> {
-  const resolved = await resolveForTenant(tenantId);
-  return build(resolved);
+  const conn = await getConnectionByTenant(tenantId);
+  const resolved = await resolveForTenant(tenantId, conn?.id);
+  return build(resolved, conn?.id ?? null);
+}
+
+/** Resolve uma instância específica da empresa. */
+export async function getWhatsappByConnection(
+  tenantId: string,
+  connectionId: string,
+): Promise<TenantWhatsapp> {
+  const resolved = await resolveForTenant(tenantId, connectionId);
+  return build(resolved, connectionId);
+}
+
+/**
+ * Resolve WhatsApp pela conversa (connection_id) com fallback para a primeira
+ * conexão da empresa — usado no dispatch de respostas.
+ */
+export async function getWhatsappForConversation(
+  tenantId: string,
+  connectionId: string | null | undefined,
+): Promise<TenantWhatsapp> {
+  if (connectionId) return getWhatsappByConnection(tenantId, connectionId);
+  return getTenantWhatsapp(tenantId);
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +240,36 @@ export async function getTenantWhatsapp(tenantId: string): Promise<TenantWhatsap
 
 function onlyDigits(value: string): string {
   return value.replace(/\D/g, '');
+}
+
+function stripLidSuffix(value: string): string {
+  return value.replace(/@lid$/i, '').trim();
+}
+
+/** Extrai dígitos do @lid (chatLid / senderLid / phone com sufixo). */
+function extractZapiLid(body: Record<string, unknown>): string | null {
+  for (const key of ['chatLid', 'senderLid'] as const) {
+    const raw = body[key];
+    if (typeof raw === 'string' && raw.trim()) {
+      const digits = onlyDigits(stripLidSuffix(raw));
+      if (digits) return digits;
+    }
+  }
+  const phoneRaw = typeof body.phone === 'string' ? body.phone : '';
+  if (phoneRaw.toLowerCase().includes('@lid')) {
+    const digits = onlyDigits(stripLidSuffix(phoneRaw));
+    return digits || null;
+  }
+  return null;
+}
+
+function detectPhoneIsLid(phoneDigits: string, lid: string | null, phoneRaw: string): boolean {
+  if (phoneRaw.toLowerCase().includes('@lid')) return true;
+  if (lid && phoneDigits === lid) return true;
+  // LIDs costumam ter 14+ dígitos; E.164 BR fica em 12–13 (55…).
+  if (phoneDigits.length >= 14 && !phoneDigits.startsWith('55')) return true;
+  if (phoneDigits.length >= 15) return true;
+  return false;
 }
 
 /** Extrai uma atualizacao de status (entrega/leitura), se houver. */
@@ -238,14 +313,17 @@ export function parseInbound(
 }
 
 function parseZapiInbound(body: Record<string, unknown>): NormalizedInbound | null {
-  const phone = body.phone as string | undefined;
-  if (!phone) return null;
+  const phoneRaw = body.phone as string | undefined;
+  if (!phoneRaw) return null;
 
   const fromMe = Boolean(body.fromMe);
   const text = body.text as { message?: string } | undefined;
   const image = body.image as { imageUrl?: string; caption?: string; mimeType?: string } | undefined;
   const audio = body.audio as { audioUrl?: string; url?: string; mimeType?: string } | undefined;
   const video = body.video as { videoUrl?: string; caption?: string; mimeType?: string } | undefined;
+  const sticker = body.sticker as
+    | { stickerUrl?: string; url?: string; mimeType?: string }
+    | undefined;
   const document = body.document as
     | { documentUrl?: string; fileName?: string; title?: string; mimeType?: string; caption?: string }
     | undefined;
@@ -258,6 +336,13 @@ function parseZapiInbound(body: Record<string, unknown>): NormalizedInbound | nu
   if (text?.message) {
     type = 'text';
     content = text.message;
+  } else if (sticker) {
+    // Figurinha (estática ou animada WebP) — tratamos como imagem no painel.
+    type = 'image';
+    content = '';
+    mediaUrl = sticker.stickerUrl ?? sticker.url ?? null;
+    mediaMime = sticker.mimeType ?? 'image/webp';
+    fileName = 'sticker.webp';
   } else if (image) {
     type = 'image';
     content = image.caption ?? '';
@@ -283,12 +368,18 @@ function parseZapiInbound(body: Record<string, unknown>): NormalizedInbound | nu
     return null;
   }
 
+  const phone = onlyDigits(stripLidSuffix(phoneRaw));
+  const lid = extractZapiLid(body) || (detectPhoneIsLid(phone, null, phoneRaw) ? phone : null);
+  const phoneIsLid = detectPhoneIsLid(phone, lid, phoneRaw);
+
   return {
-    phone: onlyDigits(phone),
+    phone,
+    lid,
+    phoneIsLid,
     text: content,
     type,
     providerMessageId: (body.messageId as string | undefined) ?? null,
-    senderName: (body.senderName as string | undefined) ?? null,
+    senderName: (body.senderName as string | undefined) ?? (body.chatName as string | undefined) ?? null,
     fromMe,
     mediaUrl,
     mediaMime,
@@ -310,6 +401,7 @@ function parseEvolutionInbound(body: Record<string, unknown>): NormalizedInbound
       conversation?: string;
       extendedTextMessage?: { text?: string };
       imageMessage?: { caption?: string; mimetype?: string; url?: string };
+      stickerMessage?: { mimetype?: string; url?: string; isAnimated?: boolean };
       videoMessage?: { caption?: string; mimetype?: string; url?: string };
       audioMessage?: { url?: string; mimetype?: string };
       documentMessage?: { caption?: string; mimetype?: string; fileName?: string; title?: string; url?: string };
@@ -335,6 +427,13 @@ function parseEvolutionInbound(body: Record<string, unknown>): NormalizedInbound
   if (message.conversation || message.extendedTextMessage?.text) {
     type = 'text';
     content = message.conversation ?? message.extendedTextMessage?.text ?? '';
+  } else if (message.stickerMessage) {
+    type = 'image';
+    content = '';
+    mediaUrl = message.stickerMessage.url ?? null;
+    mediaBase64 = base64;
+    mediaMime = message.stickerMessage.mimetype ?? 'image/webp';
+    fileName = 'sticker.webp';
   } else if (message.imageMessage) {
     type = 'image';
     content = message.imageMessage.caption ?? '';
@@ -364,8 +463,13 @@ function parseEvolutionInbound(body: Record<string, unknown>): NormalizedInbound
     return null;
   }
 
+  const jidUser = remoteJid.split('@')[0] ?? '';
+  const isLidJid = remoteJid.includes('@lid') || remoteJid.endsWith('@lid');
+  const phone = onlyDigits(jidUser);
   return {
-    phone: onlyDigits(remoteJid.split('@')[0]),
+    phone,
+    lid: isLidJid ? phone : null,
+    phoneIsLid: isLidJid,
     text: content,
     type,
     providerMessageId: data.key?.id ?? null,

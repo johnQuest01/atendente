@@ -6,7 +6,10 @@ export function BottomNav() {
   const items = NAV_ITEMS.filter((i) => i.primary);
 
   return (
-    <nav className="safe-bottom fixed inset-x-0 bottom-0 z-30 px-3 pb-3 md:hidden">
+    <nav
+      data-bottom-nav="1"
+      className="safe-bottom fixed inset-x-0 bottom-0 z-50 px-3 pb-3 md:hidden"
+    >
       <ul className="glass mx-auto flex max-w-md items-stretch justify-around rounded-2xl px-1.5 py-1.5 shadow-nav">
         {items.map(({ to, label, icon: Icon }) => (
           <li key={to} className="flex-1">

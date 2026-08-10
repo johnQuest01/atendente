@@ -48,11 +48,12 @@ export const TextArea = forwardRef<HTMLTextAreaElement, TextAreaProps>(function 
 
 interface SelectProps extends SelectHTMLAttributes<HTMLSelectElement> {
   label?: string;
+  hint?: string;
   children: ReactNode;
 }
 
 export const Select = forwardRef<HTMLSelectElement, SelectProps>(
-  function Select({ label, className, children, ...rest }, ref) {
+  function Select({ label, hint, className, children, ...rest }, ref) {
     return (
       <label className="block">
         {label && (
@@ -61,6 +62,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
         <select ref={ref} className={cn(baseField, 'appearance-none', className)} {...rest}>
           {children}
         </select>
+        {hint && <span className="mt-1 block text-xs text-text-secondary">{hint}</span>}
       </label>
     );
   },

@@ -33,6 +33,7 @@ export interface Client {
 export interface Conversation {
   id: string;
   client_id: string;
+  connection_id?: string | null;
   status: ConversationStatus;
   assigned_to: string | null;
   started_at: string;
@@ -46,6 +47,8 @@ export interface ConversationListItem extends Conversation {
   client_name: string | null;
   client_phone: string;
   company_name: string | null;
+  connection_label?: string | null;
+  connection_phone?: string | null;
   last_message: string | null;
   last_message_type: MessageType | null;
   last_message_at: string | null;

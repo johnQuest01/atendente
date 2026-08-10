@@ -1,6 +1,7 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import type { MessageLog } from '@/types';
 import { AudioPlayer } from '@/components/ui/AudioPlayer';
+import { ImageLightbox } from '@/components/features/ImageLightbox';
 import { formatTime } from '@/utils/formatters';
 import { cn } from '@/utils/cn';
 
@@ -27,12 +28,22 @@ export function MessageBubble({
   const isUrl = (s: string | null): boolean => !!s && /^https?:\/\//i.test(s);
   const mediaSrc: string | undefined =
     message.media_url ?? (isUrl(message.content) ? (message.content as string) : undefined);
-  const caption =
+  const rawCaption =
     message.content && message.content !== message.media_url && !isUrl(message.content)
       ? message.content
       : null;
+  const isSticker =
+    message.type === 'image' &&
+    (/webp|gif/i.test(message.media_mime ?? '') ||
+      /figurinha/i.test(rawCaption ?? '') ||
+      rawCaption === '[image enviado pelo operador]');
+  const caption =
+    rawCaption && !/^\[(figurinha|image) enviado pelo operador\]$/i.test(rawCaption)
+      ? rawCaption
+      : null;
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressedRef = useRef(false);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
 
   function startPress() {
     longPressedRef.current = false;
@@ -83,9 +94,11 @@ export function MessageBubble({
       <div
         className={cn(
           'max-w-[78%] rounded-2xl px-3 py-2 shadow-sm',
-          outbound
-            ? 'rounded-br-md bg-primary text-white'
-            : 'rounded-bl-md bg-surface text-text-primary',
+          isSticker && 'bg-transparent px-1 py-1 shadow-none',
+          !isSticker &&
+            (outbound
+              ? 'rounded-br-md bg-primary text-white'
+              : 'rounded-bl-md bg-surface text-text-primary'),
           selected && 'ring-2 ring-primary',
         )}
       >
@@ -107,13 +120,47 @@ export function MessageBubble({
         )}
 
         {message.type === 'image' && mediaSrc && (
-          <img
-            src={mediaSrc}
-            alt={caption ?? 'Imagem'}
-            className="max-h-64 w-full rounded-xl object-cover"
-            loading="lazy"
-            draggable={false}
-          />
+          <>
+            <button
+              type="button"
+              className="block w-full overflow-hidden rounded-xl text-left"
+              aria-label="Ampliar imagem"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (selectionMode) {
+                  onToggleSelect?.(message.id);
+                  return;
+                }
+                if (longPressedRef.current) {
+                  longPressedRef.current = false;
+                  return;
+                }
+                setLightboxOpen(true);
+              }}
+            >
+              <img
+                src={mediaSrc}
+                alt={caption ?? (isSticker ? 'Figurinha' : 'Imagem')}
+                className={cn(
+                  'cursor-zoom-in',
+                  isSticker
+                    ? 'max-h-44 max-w-[11rem] object-contain'
+                    : 'max-h-64 w-full rounded-xl object-cover',
+                )}
+                loading="lazy"
+                draggable={false}
+              />
+            </button>
+            <ImageLightbox
+              src={mediaSrc}
+              alt={caption ?? (isSticker ? 'Figurinha' : 'Imagem')}
+              open={lightboxOpen}
+              onClose={() => setLightboxOpen(false)}
+            />
+          </>
+        )}
+        {message.type === 'image' && !mediaSrc && (
+          <p className="text-[13px] italic opacity-80">{isSticker ? '🎭 Figurinha' : '🖼️ Imagem'}</p>
         )}
 
         {message.type === 'video' && mediaSrc && (
@@ -151,7 +198,7 @@ export function MessageBubble({
         <div
           className={cn(
             'mt-1 flex items-center justify-end gap-1 text-[10px]',
-            outbound ? 'text-white/70' : 'text-text-secondary',
+            isSticker || !outbound ? 'text-text-secondary' : 'text-white/70',
           )}
         >
           <span>{formatTime(message.sent_at)}</span>

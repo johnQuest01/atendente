@@ -2,24 +2,36 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { PageHeader } from '@/components/layout/AppShell';
+import { ChatViewport } from '@/components/layout/ChatViewport';
 import { MessageBubble } from '@/components/features/MessageBubble';
 import { Spinner, ErrorState } from '@/components/ui/States';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { Toggle } from '@/components/ui/Toggle';
 import { AudioPlayer } from '@/components/ui/AudioPlayer';
-import { BackIcon, SendIcon, AudioIcon, ProductIcon, TrashIcon, BlockIcon } from '@/components/ui/Icons';
+import {
+  BackIcon,
+  SendIcon,
+  AudioIcon,
+  ProductIcon,
+  TrashIcon,
+  BlockIcon,
+  EditIcon,
+} from '@/components/ui/Icons';
 import {
   useClearConversation,
   useConversationDetail,
   useSetClientAi,
   useDeleteMessages,
+  useEditMessage,
   useSendAudioToConversation,
   useSendMessage,
   useSendProductToConversation,
+  type ConversationDetail,
 } from '@/hooks/useConversations';
 import { useAudios } from '@/hooks/useAudios';
 import { useProducts } from '@/hooks/useProducts';
+import { useConversationMemories, useDeleteMemory } from '@/hooks/useMemories';
 import { useAddBlocked } from '@/hooks/useBlocked';
 import { BlockUnlockModal } from '@/components/features/BlockAccess';
 import { useBlockAccess } from '@/store/appStore';
@@ -34,10 +46,13 @@ export default function ConversationDetail() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { data, isLoading, isError, refetch } = useConversationDetail(id);
+  const { data: memoriesData } = useConversationMemories(id);
+  const deleteMemory = useDeleteMemory(id ?? '');
   const sendMessage = useSendMessage(id ?? '');
   const sendAudio = useSendAudioToConversation(id ?? '');
   const sendProduct = useSendProductToConversation(id ?? '');
   const deleteMessages = useDeleteMessages(id ?? '');
+  const editMessage = useEditMessage(id ?? '');
   const clearConversation = useClearConversation(id ?? '');
   const addBlocked = useAddBlocked();
   const blockToken = useBlockAccess((s) => s.token);
@@ -52,7 +67,18 @@ export default function ConversationDetail() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [confirm, setConfirm] = useState<'selected' | 'all' | 'block' | null>(null);
   const [blockUnlockOpen, setBlockUnlockOpen] = useState(false);
+  const [editDraft, setEditDraft] = useState('');
+  const [editTarget, setEditTarget] = useState<MessageLog | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const selectedEditableMessage = useMemo(() => {
+    if (!data || selectedIds.size !== 1) return null;
+    const onlyId = Array.from(selectedIds)[0];
+    const msg = data.messages.find((m) => m.id === onlyId);
+    if (!msg) return null;
+    if (msg.direction !== 'outbound' || msg.type !== 'text' || !msg.zapi_message_id) return null;
+    return msg;
+  }, [data, selectedIds]);
 
   function enterSelection(messageId: string) {
     setSelectionMode(true);
@@ -77,8 +103,8 @@ export default function ConversationDetail() {
     const ids = Array.from(selectedIds);
     if (ids.length === 0) return;
     try {
-      await deleteMessages.mutateAsync(ids);
-      toast(`${ids.length} mensagem(ns) apagada(s).`, 'success');
+      const result = await deleteMessages.mutateAsync({ ids, forEveryone: true });
+      toast(result.detail ?? `${result.deleted} mensagem(ns) apagada(s).`, 'success');
       exitSelection();
     } catch (err) {
       toast(getErrorMessage(err, 'Falha ao apagar.'), 'error');
@@ -90,12 +116,35 @@ export default function ConversationDetail() {
   async function handleClearAll() {
     try {
       await clearConversation.mutateAsync();
-      toast('Histórico da conversa apagado.', 'success');
+      toast('Histórico apagado só no painel (o WhatsApp do cliente não muda).', 'success');
       exitSelection();
     } catch (err) {
       toast(getErrorMessage(err, 'Falha ao limpar histórico.'), 'error');
     } finally {
       setConfirm(null);
+    }
+  }
+
+  function openEditSelected() {
+    if (!selectedEditableMessage) return;
+    setEditTarget(selectedEditableMessage);
+    setEditDraft(selectedEditableMessage.content ?? '');
+  }
+
+  async function handleSaveEdit() {
+    if (!editTarget) return;
+    const next = editDraft.trim();
+    if (!next) {
+      toast('Digite o novo texto.', 'error');
+      return;
+    }
+    try {
+      await editMessage.mutateAsync({ messageId: editTarget.id, text: next });
+      toast('Mensagem corrigida no WhatsApp e no painel.', 'success');
+      setEditTarget(null);
+      exitSelection();
+    } catch (err) {
+      toast(getErrorMessage(err, 'Falha ao corrigir no WhatsApp.'), 'error');
     }
   }
 
@@ -133,9 +182,15 @@ export default function ConversationDetail() {
       () => ({
         'message:new': (...args: unknown[]) => {
           const msg = args[0] as MessageLog | undefined;
-          if (msg?.conversation_id === id) {
-            void qc.invalidateQueries({ queryKey: ['conversation', id] });
-          }
+          if (!msg || msg.conversation_id !== id) return;
+          // Atualiza na hora (sem esperar o refetch) — bolha aparece ao vivo.
+          qc.setQueryData<ConversationDetail>(['conversation', id], (old) => {
+            if (!old) return old;
+            if (old.messages.some((m) => m.id === msg.id)) return old;
+            return { ...old, messages: [...old.messages, msg] };
+          });
+          void qc.invalidateQueries({ queryKey: ['conversation', id] });
+          void qc.invalidateQueries({ queryKey: ['conversations'] });
         },
       }),
       [id, qc],
@@ -159,106 +214,157 @@ export default function ConversationDetail() {
     }
   }
 
-  if (isLoading) return <Spinner label="Abrindo conversa..." />;
-  if (isError || !data) return <ErrorState message="Conversa não encontrada." onRetry={() => void refetch()} />;
+  if (isLoading) {
+    return (
+      <ChatViewport>
+        <div className="flex flex-1 items-center justify-center">
+          <Spinner label="Abrindo conversa..." />
+        </div>
+      </ChatViewport>
+    );
+  }
+  if (isError || !data) {
+    return (
+      <ChatViewport>
+        <div className="flex flex-1 flex-col">
+          <ErrorState message="Conversa não encontrada." onRetry={() => void refetch()} />
+        </div>
+      </ChatViewport>
+    );
+  }
 
   const clientName = data.client?.name ?? data.client?.company_name ?? data.client?.phone ?? 'Cliente';
 
   return (
-    <div className="flex h-full flex-col">
-      {selectionMode ? (
-        <PageHeader
-          title={`${selectedIds.size} selecionada(s)`}
-          subtitle="Toque nas mensagens para marcar"
-          leading={
-            <button onClick={exitSelection} className="tap-scale -ml-1 rounded-full p-1 text-primary" aria-label="Cancelar">
-              <BackIcon width={24} height={24} />
-            </button>
-          }
-          action={
-            <button
-              onClick={() => setConfirm('selected')}
-              disabled={selectedIds.size === 0 || deleteMessages.isPending}
-              className="tap-scale rounded-full p-2 text-danger disabled:opacity-40"
-              aria-label="Apagar selecionadas"
-            >
-              <TrashIcon width={22} height={22} />
-            </button>
-          }
-        />
-      ) : (
-        <PageHeader
-          title={clientName}
-          subtitle={data.client ? formatPhone(data.client.phone) : undefined}
-          leading={
-            <button onClick={() => navigate('/conversas')} className="tap-scale -ml-1 rounded-full p-1 text-primary md:hidden">
-              <BackIcon width={24} height={24} />
-            </button>
-          }
-          action={
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => setConfirm('block')}
-                className="tap-scale rounded-full p-2 text-text-secondary"
-                aria-label="Bloquear este número"
-                title="Bloquear este número"
-              >
-                <BlockIcon width={20} height={20} />
+    <ChatViewport>
+      {/* Topo FIXO: nome + IA/instruções — fora de qualquer scroll. */}
+      <div className="z-30 shrink-0 bg-surface">
+        {selectionMode ? (
+          <PageHeader
+            sticky={false}
+            title={`${selectedIds.size} selecionada(s)`}
+            subtitle="Lixeira = apaga no WhatsApp · lápis = corrigir"
+            leading={
+              <button onClick={exitSelection} className="tap-scale -ml-1 rounded-full p-1 text-primary" aria-label="Cancelar">
+                <BackIcon width={24} height={24} />
               </button>
-              <button
-                onClick={() => setConfirm('all')}
-                className="tap-scale rounded-full p-2 text-text-secondary"
-                aria-label="Limpar histórico"
-                title="Limpar histórico"
-              >
-                <TrashIcon width={20} height={20} />
-              </button>
-              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary-light text-sm font-semibold text-primary">
-                {initials(data.client?.name ?? null, data.client?.phone)}
-              </div>
-            </div>
-          }
-        />
-      )}
-
-      {/* Controle da IA para ESTE contato: desligar sem bloquear o número, e
-          dar instruções que valem só para ele. */}
-      {!selectionMode && data.client && (
-        <div className="flex items-center gap-2 border-b border-border bg-surface px-3 py-2">
-          <span className="text-xs text-text-secondary">IA neste contato</span>
-          <Toggle
-            checked={data.client.ai_enabled !== false}
-            disabled={setClientAi.isPending}
-            onChange={(next) =>
-              setClientAi.mutate(
-                { ai_enabled: next },
-                {
-                  onSuccess: () =>
-                    toast(
-                      next
-                        ? 'IA reativada para este contato.'
-                        : 'IA desligada aqui — as mensagens chegam, mas quem responde é você.',
-                      'success',
-                    ),
-                  onError: (err) => toast(getErrorMessage(err), 'error'),
-                },
-              )
             }
-            label="Ligar ou desligar a IA para este contato"
+            action={
+              <div className="flex items-center gap-1">
+                {selectedEditableMessage && (
+                  <button
+                    onClick={openEditSelected}
+                    className="tap-scale rounded-full p-2 text-primary"
+                    aria-label="Corrigir mensagem"
+                    title="Corrigir no WhatsApp"
+                  >
+                    <EditIcon width={22} height={22} />
+                  </button>
+                )}
+                <button
+                  onClick={() => setConfirm('selected')}
+                  disabled={selectedIds.size === 0 || deleteMessages.isPending}
+                  className="tap-scale rounded-full p-2 text-danger disabled:opacity-40"
+                  aria-label="Apagar para todos"
+                  title="Apagar no WhatsApp (para todos)"
+                >
+                  <TrashIcon width={22} height={22} />
+                </button>
+              </div>
+            }
           />
-          <button
-            onClick={() => {
-              setAiPromptDraft(data.client?.ai_prompt ?? '');
-              setAiPromptOpen(true);
-            }}
-            className="ml-auto rounded-lg border border-border px-2.5 py-1 text-xs font-semibold text-text-secondary transition hover:text-text-primary"
-          >
-            {data.client.ai_prompt ? 'Instruções ✓' : 'Instruções'}
-          </button>
-        </div>
-      )}
+        ) : (
+          <PageHeader
+            sticky={false}
+            title={clientName}
+            subtitle={data.client ? formatPhone(data.client.phone) : undefined}
+            leading={
+              <button onClick={() => navigate('/conversas')} className="tap-scale -ml-1 rounded-full p-1 text-primary md:hidden">
+                <BackIcon width={24} height={24} />
+              </button>
+            }
+            action={
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setConfirm('block')}
+                  className="tap-scale rounded-full p-2 text-text-secondary"
+                  aria-label="Bloquear este número"
+                  title="Bloquear este número"
+                >
+                  <BlockIcon width={20} height={20} />
+                </button>
+                <button
+                  onClick={() => setConfirm('all')}
+                  className="tap-scale rounded-full p-2 text-text-secondary"
+                  aria-label="Limpar histórico"
+                  title="Limpar histórico"
+                >
+                  <TrashIcon width={20} height={20} />
+                </button>
+                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary-light text-sm font-semibold text-primary">
+                  {initials(data.client?.name ?? null, data.client?.phone)}
+                </div>
+              </div>
+            }
+          />
+        )}
 
-      <div className="no-scrollbar flex-1 space-y-2 overflow-y-auto bg-bg px-3 py-4">
+        {!selectionMode && data.client && (
+          <div className="border-b border-border bg-surface px-3 py-2">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-text-secondary">IA neste contato</span>
+              <Toggle
+                checked={data.client.ai_enabled !== false}
+                disabled={setClientAi.isPending}
+                onChange={(next) =>
+                  setClientAi.mutate(
+                    { ai_enabled: next },
+                    {
+                      onSuccess: () =>
+                        toast(
+                          next
+                            ? 'IA reativada para este contato.'
+                            : 'IA desligada aqui — as mensagens chegam, mas quem responde é você.',
+                          'success',
+                        ),
+                      onError: (err) => toast(getErrorMessage(err), 'error'),
+                    },
+                  )
+                }
+                label="Ligar ou desligar a IA para este contato"
+              />
+              <button
+                onClick={() => {
+                  setAiPromptDraft(data.client?.ai_prompt ?? '');
+                  setAiPromptOpen(true);
+                }}
+                className="ml-auto rounded-lg border border-border px-2.5 py-1 text-xs font-semibold text-text-secondary transition hover:text-text-primary"
+              >
+                {data.client.ai_prompt ? 'Instruções ✓' : 'Instruções'}
+              </button>
+            </div>
+            {/* Áudio/Produto no topo — o rodapé fica só com o campo de texto. */}
+            <div className="mt-2 flex gap-2">
+              <QuickAction
+                icon={<AudioIcon width={18} height={18} />}
+                label="Áudio"
+                onClick={() => setSheet('audio')}
+              />
+              <QuickAction
+                icon={<ProductIcon width={18} height={18} />}
+                label="Produto"
+                onClick={() => setSheet('product')}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ÚNICA área com scroll — header e footer ficam fora. */}
+      <div
+        data-chat-scroll="1"
+        className="no-scrollbar min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-y-contain bg-bg px-3 py-4"
+      >
         {data.messages.map((m) => (
           <MessageBubble
             key={m.id}
@@ -269,14 +375,42 @@ export default function ConversationDetail() {
             onToggleSelect={toggleSelect}
           />
         ))}
+        {/* Memórias no fim do scroll (não competem com o topo fixo). */}
+        {!selectionMode && (memoriesData?.memories.length ?? 0) > 0 && (
+          <div className="space-y-1.5 rounded-xl border border-border bg-surface p-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
+              Memória (LGPD — apague se precisar)
+            </p>
+            {memoriesData!.memories.slice(0, 5).map((m) => (
+              <div
+                key={m.id}
+                className="flex items-start justify-between gap-2 rounded-lg bg-bg px-2 py-1.5 text-xs"
+              >
+                <p className="min-w-0 text-text-secondary">
+                  <span className="font-semibold text-text-primary">{m.kind}</span>
+                  {m.is_sensitive ? ' · sensível' : ''}: {m.summary}
+                </p>
+                <button
+                  className="shrink-0 font-semibold text-danger"
+                  disabled={deleteMemory.isPending}
+                  onClick={() =>
+                    deleteMemory.mutate(m.id, {
+                      onSuccess: () => toast('Memória apagada.', 'success'),
+                      onError: (err) => toast(getErrorMessage(err), 'error'),
+                    })
+                  }
+                >
+                  Apagar
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div ref={bottomRef} />
       </div>
 
-      <div className="safe-bottom border-t border-border bg-surface px-3 py-2">
-        <div className="mb-2 flex gap-2">
-          <QuickAction icon={<AudioIcon width={18} height={18} />} label="Áudio" onClick={() => setSheet('audio')} />
-          <QuickAction icon={<ProductIcon width={18} height={18} />} label="Produto" onClick={() => setSheet('product')} />
-        </div>
+      {/* Rodapé FIXO: só digitação (Áudio/Produto ficam no header). */}
+      <div data-chat-composer="1" className="z-30 shrink-0 border-t border-border bg-surface px-3 py-2">
         <form onSubmit={handleSend} className="flex items-end gap-2">
           <textarea
             value={text}
@@ -369,11 +503,11 @@ export default function ConversationDetail() {
       <ProductPickerSheet
         open={sheet === 'product'}
         onClose={() => setSheet(null)}
-        onPick={async (productId) => {
+        onPick={async (productId, withPrice) => {
           setSheet(null);
           try {
-            await sendProduct.mutateAsync(productId);
-            toast('Produto enviado.', 'success');
+            await sendProduct.mutateAsync({ productId, withPrice });
+            toast(withPrice ? 'Produto enviado.' : 'Produto enviado sem preço.', 'success');
           } catch (err) {
             toast(getErrorMessage(err), 'error');
           }
@@ -385,19 +519,19 @@ export default function ConversationDetail() {
         onClose={() => setConfirm(null)}
         title={
           confirm === 'all'
-            ? 'Limpar histórico'
+            ? 'Limpar histórico do painel'
             : confirm === 'block'
               ? 'Bloquear número'
-              : 'Apagar mensagens'
+              : 'Apagar no WhatsApp'
         }
       >
         <div className="flex flex-col gap-4">
           <p className="text-sm text-text-secondary">
             {confirm === 'all'
-              ? 'Isso vai apagar TODAS as mensagens desta conversa. Essa ação não pode ser desfeita.'
+              ? 'Apaga o histórico só neste painel. As mensagens continuam no WhatsApp do cliente.'
               : confirm === 'block'
                 ? `Bloquear ${clientName}? As próximas mensagens dele serão ignoradas: não aparecem no painel e a IA não responde. Você pode desfazer em Configurações.`
-                : `Apagar ${selectedIds.size} mensagem(ns) selecionada(s)? Essa ação não pode ser desfeita.`}
+                : `Apagar ${selectedIds.size} mensagem(ns) para TODOS no WhatsApp e também neste painel? (mensagens antigas ou sem ID podem falhar no WhatsApp)`}
           </p>
           <div className="flex gap-2">
             <Button variant="secondary" fullWidth onClick={() => setConfirm(null)}>
@@ -415,9 +549,39 @@ export default function ConversationDetail() {
                     : handleDeleteSelected
               }
             >
-              {confirm === 'block' ? 'Bloquear' : 'Apagar'}
+              {confirm === 'block' ? 'Bloquear' : confirm === 'all' ? 'Limpar painel' : 'Apagar para todos'}
             </Button>
           </div>
+        </div>
+      </Modal>
+
+      <Modal
+        open={editTarget !== null}
+        onClose={() => setEditTarget(null)}
+        title="Corrigir mensagem"
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setEditTarget(null)} disabled={editMessage.isPending}>
+              Cancelar
+            </Button>
+            <Button loading={editMessage.isPending} onClick={() => void handleSaveEdit()}>
+              Salvar correção
+            </Button>
+          </div>
+        }
+      >
+        <div className="flex flex-col gap-2">
+          <p className="text-xs text-text-secondary">
+            Altera o texto no WhatsApp do cliente e neste painel. Só funciona em mensagens suas
+            enviadas há menos de ~7 dias.
+          </p>
+          <textarea
+            value={editDraft}
+            onChange={(e) => setEditDraft(e.target.value)}
+            rows={5}
+            maxLength={4096}
+            className="no-scrollbar w-full resize-none rounded-xl border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-primary"
+          />
         </div>
       </Modal>
 
@@ -429,7 +593,7 @@ export default function ConversationDetail() {
           void performBlock();
         }}
       />
-    </div>
+    </ChatViewport>
   );
 }
 
@@ -469,17 +633,35 @@ function AudioPickerSheet({ open, onClose, onPick }: { open: boolean; onClose: (
   );
 }
 
-function ProductPickerSheet({ open, onClose, onPick }: { open: boolean; onClose: () => void; onPick: (id: string) => void }) {
+function ProductPickerSheet({
+  open,
+  onClose,
+  onPick,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onPick: (id: string, withPrice: boolean) => void;
+}) {
   const { data } = useProducts();
+  const [withPrice, setWithPrice] = useState(true);
   return (
     <Modal open={open} onClose={onClose} title="Enviar produto">
+      <label className="mb-3 flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-border bg-bg px-3 py-2.5">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-text-primary">Incluir preço na legenda</p>
+          <p className="text-xs text-text-secondary">
+            Desligado: manda foto + nome + mínimo; o valor só aparece se o cliente perguntar.
+          </p>
+        </div>
+        <Toggle checked={withPrice} onChange={setWithPrice} label="Incluir preço na legenda" />
+      </label>
       <div className="grid grid-cols-2 gap-3">
         {(data ?? [])
           .filter((p) => p.is_available)
           .map((p) => (
             <button
               key={p.id}
-              onClick={() => onPick(p.id)}
+              onClick={() => onPick(p.id, withPrice)}
               className="tap-scale overflow-hidden rounded-xl border border-border text-left"
             >
               {p.image_urls[0] ? (
@@ -490,7 +672,9 @@ function ProductPickerSheet({ open, onClose, onPick }: { open: boolean; onClose:
               <p className="truncate p-2 text-xs font-medium">{p.name}</p>
             </button>
           ))}
-        {(data ?? []).length === 0 && <p className="col-span-2 py-6 text-center text-sm text-text-secondary">Nenhum produto cadastrado.</p>}
+        {(data ?? []).length === 0 && (
+          <p className="col-span-2 py-6 text-center text-sm text-text-secondary">Nenhum produto cadastrado.</p>
+        )}
       </div>
     </Modal>
   );

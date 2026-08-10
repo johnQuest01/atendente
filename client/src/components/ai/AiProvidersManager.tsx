@@ -21,8 +21,34 @@ import {
   type AiScope,
   type ChainSource,
 } from '@/hooks/useAiProviders';
+import { useWhatsappConnections, type WhatsappConnectionView } from '@/hooks/useWhatsappConnection';
 import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
+import { formatPhone } from '@/utils/formatters';
+
+/** Número que a IA atende (badge da lista). */
+function formatPhoneBadge(p: AiProviderDto): string {
+  if (!p.connection_id) return 'Todos os números';
+  const phone = p.connection_phone?.trim();
+  if (phone) return formatPhone(phone);
+  return p.connection_label?.trim() || 'Número ainda não detectado';
+}
+
+/** Opção do select: prioriza o telefone real; a instância vem junto via connection_id. */
+function formatPhoneOption(c: WhatsappConnectionView): string {
+  const phone = c.phoneNumber?.trim();
+  const label = c.label?.trim();
+  const status = c.isActive && c.configured ? ' · conectado' : '';
+  if (phone) {
+    const formatted = formatPhone(phone);
+    // Mostra o nome só se for diferente do número (ex.: "Vendas").
+    if (label && label.toLowerCase() !== phone.toLowerCase() && !label.includes(phone)) {
+      return `${formatted} · ${label}${status}`;
+    }
+    return `${formatted}${status}`;
+  }
+  return `${label || 'WhatsApp'} (número ainda não detectado)${status}`;
+}
 
 /**
  * Gestão de provedores de IA reaproveitada em dois lugares (modelo híbrido):
@@ -364,6 +390,11 @@ function AiProviderRow({
             {KIND_LABEL[provider.kind]} · {provider.model}
             {provider.key_masked ? ` · chave ${provider.key_masked}` : ' · sem chave'}
           </p>
+          {scope === 'tenant' && (
+            <p className="mt-0.5 truncate text-xs text-text-secondary">
+              Atende no: <span className="font-medium text-text-primary">{formatPhoneBadge(provider)}</span>
+            </p>
+          )}
         </div>
         <Toggle checked={provider.is_active} onChange={toggleActive} disabled={update.isPending} label="Ativa" />
       </div>
@@ -416,9 +447,19 @@ function AiProviderModal({
   const [apiKey, setApiKey] = useState('');
   const [priority, setPriority] = useState(0);
   const [isActive, setIsActive] = useState(true);
+  /** '' = todos os números; uuid = conexão (número + instância) escolhida. */
+  const [connectionId, setConnectionId] = useState('');
+  const { data: waData, refetch: refetchWa, isFetching: waFetching } = useWhatsappConnections();
+  const waConnections = scope === 'tenant' ? (waData?.connections ?? []) : [];
   // Modelos REAIS do provedor (buscados na API) para o seletor.
   const [realModels, setRealModels] = useState<string[] | null>(null);
   const modelsTagRef = useRef('');
+
+  // Ao abrir o modal, atualiza números reais das instâncias (Z-API /device).
+  useEffect(() => {
+    if (!open || scope !== 'tenant') return;
+    void refetchWa();
+  }, [open, scope, refetchWa]);
 
   useEffect(() => {
     if (!open) return;
@@ -432,6 +473,7 @@ function AiProviderModal({
       setApiKey('');
       setPriority(provider.priority);
       setIsActive(provider.is_active);
+      setConnectionId(provider.connection_id ?? '');
     } else {
       const p = AI_PRESETS[0];
       setPresetId(p.id);
@@ -442,8 +484,11 @@ function AiProviderModal({
       setApiKey('');
       setPriority(suggestedPriority);
       setIsActive(true);
+      // Preferência: número já conectado; senão o primeiro cadastrado.
+      const connected = waConnections.find((c) => c.isActive && c.configured) ?? waConnections[0];
+      setConnectionId(connected?.id ?? '');
     }
-  }, [open, provider, suggestedPriority]);
+  }, [open, provider, suggestedPriority]); // eslint-disable-line react-hooks/exhaustive-deps -- só ao abrir modal
 
   // Editar provedor conectado: busca os modelos reais com a chave JÁ salva
   // (o front não a tem) — é o que permite trocar de modelo sem redigitar a chave.
@@ -525,6 +570,7 @@ function AiProviderModal({
           baseUrl: baseUrl.trim() || null,
           priority,
           isActive,
+          ...(scope === 'tenant' ? { connectionId: connectionId || null } : {}),
           ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
         },
         {
@@ -545,6 +591,7 @@ function AiProviderModal({
           model: model.trim(),
           priority,
           isActive,
+          ...(scope === 'tenant' ? { connectionId: connectionId || null } : {}),
         },
         {
           onSuccess: () => {
@@ -643,6 +690,28 @@ function AiProviderModal({
           respondem com base no seu catálogo (ex.: cliente manda a foto de um produto perguntando se
           você tem).
         </p>
+        {scope === 'tenant' && (
+          <div className="flex flex-col gap-1">
+            <Select
+              label="Número usado no atendimento"
+              value={connectionId}
+              onChange={(e) => setConnectionId(e.target.value)}
+              disabled={waFetching && waConnections.length === 0}
+            >
+              <option value="">Todos os números cadastrados</option>
+              {waConnections.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {formatPhoneOption(c)}
+                </option>
+              ))}
+            </Select>
+            <p className="text-xs text-text-secondary">
+              {waFetching
+                ? 'Buscando o número real da instância WhatsApp…'
+                : 'Escolha o telefone com que a IA vai falar com os clientes. A conexão técnica fica vinculada automaticamente.'}
+            </p>
+          </div>
+        )}
         {kind !== 'anthropic' && (
           <Input
             label="Base URL (opcional)"

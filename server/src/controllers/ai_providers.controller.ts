@@ -10,12 +10,19 @@ import {
   updateAiRuntime,
   type AiProvider,
 } from '../db/queries/ai_providers';
+import { getConnectionById, listConnections } from '../db/queries/whatsapp_connections';
 import { getTenantById } from '../db/queries/tenants';
 import { currentYm, getAiUsage } from '../db/queries/ai_usage';
 import { adapters, invalidateAiCache, getChainStatus } from '../services/ai/orchestrator';
 import { fetchModels } from '../services/ai/model-catalog';
 import type { AiKind } from '../services/ai/types';
 import { AppError, NotFoundError } from '../utils/errors';
+
+/** null = todas as instâncias; string vazia também vira null. */
+const optionalConnectionId = z
+  .union([z.string().uuid(), z.literal(''), z.null()])
+  .optional()
+  .transform((v) => (v === undefined ? undefined : v === '' || v === null ? null : v));
 
 /**
  * Gestao dos provedores de IA. Funciona em DOIS escopos com o MESMO codigo:
@@ -37,7 +44,11 @@ function maskKey(key: string | null): string | null {
   return key.length <= 6 ? '••••' : `••••${key.slice(-4)}`;
 }
 
-function toDto(p: AiProvider, cooldownActive: boolean) {
+function toDto(
+  p: AiProvider,
+  cooldownActive: boolean,
+  conn?: { label: string; phone: string | null } | null,
+) {
   return {
     id: p.id,
     kind: p.kind,
@@ -53,7 +64,21 @@ function toDto(p: AiProvider, cooldownActive: boolean) {
     last_used_at: p.last_used_at,
     cooldown_until: p.cooldown_until,
     in_cooldown: cooldownActive,
+    connection_id: p.connection_id,
+    connection_label: conn?.label ?? null,
+    connection_phone: conn?.phone ?? null,
   };
+}
+
+async function resolveConnectionId(
+  tenantId: string | null,
+  connectionId: string | null | undefined,
+): Promise<string | null | undefined> {
+  if (connectionId === undefined) return undefined;
+  if (connectionId === null || !tenantId) return null;
+  const conn = await getConnectionById(tenantId, connectionId);
+  if (!conn) throw new AppError('Instância WhatsApp não encontrada.', 400, 'INVALID_CONNECTION');
+  return conn.id;
 }
 
 function ensureEncryption(): void {
@@ -74,6 +99,8 @@ export const createAiProviderSchema = z.object({
   model: z.string().trim().min(1, 'Informe o modelo.').max(120),
   priority: z.coerce.number().int().min(0).max(1000).optional(),
   isActive: z.boolean().optional(),
+  /** null/ausente = todas as instâncias WhatsApp da empresa. */
+  connectionId: optionalConnectionId,
 });
 
 export const aiProviderIdParamSchema = z.object({ id: z.string().uuid() });
@@ -87,6 +114,7 @@ export const updateAiProviderSchema = z
     model: z.string().trim().min(1).max(120).optional(),
     priority: z.coerce.number().int().min(0).max(1000).optional(),
     isActive: z.boolean().optional(),
+    connectionId: optionalConnectionId,
   })
   .refine((d) => Object.values(d).some((v) => v !== undefined), {
     message: 'Informe ao menos um campo para atualizar.',
@@ -126,13 +154,19 @@ export function makeAiProviderControllers(scopeOf: ScopeResolver): AiProviderCon
   return {
     async getAiProviders(req, res) {
       const tenantId = scopeOf(req);
-      const [providers, status] = await Promise.all([
+      const [providers, status, connections] = await Promise.all([
         listAiProviders(tenantId),
         getChainStatus(tenantId),
+        tenantId ? listConnections(tenantId) : Promise.resolve([]),
       ]);
+      const connMap = new Map(
+        connections.map((c) => [c.id, { label: c.label, phone: c.phone_number }]),
+      );
       const coldIds = new Set(status.items.filter((s) => s.inCooldown).map((s) => s.id));
       res.json({
-        providers: providers.map((p) => toDto(p, coldIds.has(p.id))),
+        providers: providers.map((p) =>
+          toDto(p, coldIds.has(p.id), p.connection_id ? connMap.get(p.connection_id) : null),
+        ),
         source: status.source,
       });
     },
@@ -141,6 +175,7 @@ export function makeAiProviderControllers(scopeOf: ScopeResolver): AiProviderCon
       ensureEncryption();
       const tenantId = scopeOf(req);
       const input = req.body as z.infer<typeof createAiProviderSchema>;
+      const connectionId = await resolveConnectionId(tenantId, input.connectionId ?? null);
       const provider = await createAiProvider({
         tenantId,
         kind: input.kind as AiKind,
@@ -150,9 +185,20 @@ export function makeAiProviderControllers(scopeOf: ScopeResolver): AiProviderCon
         model: input.model,
         priority: input.priority,
         isActive: input.isActive,
+        connectionId: connectionId ?? null,
       });
       invalidateAiCache();
-      res.status(201).json({ provider: toDto(provider, false) });
+      const conn =
+        tenantId && provider.connection_id
+          ? await getConnectionById(tenantId, provider.connection_id)
+          : null;
+      res.status(201).json({
+        provider: toDto(
+          provider,
+          false,
+          conn ? { label: conn.label, phone: conn.phone_number } : null,
+        ),
+      });
     },
 
     async patchAiProvider(req, res) {
@@ -164,6 +210,8 @@ export function makeAiProviderControllers(scopeOf: ScopeResolver): AiProviderCon
       const existing = await getAiProviderById(id, tenantId);
       if (!existing) throw new NotFoundError('Provedor de IA');
 
+      const connectionId = await resolveConnectionId(tenantId, body.connectionId);
+
       const provider = await updateAiProvider(id, tenantId, {
         label: body.label,
         apiKey: body.apiKey,
@@ -171,9 +219,18 @@ export function makeAiProviderControllers(scopeOf: ScopeResolver): AiProviderCon
         model: body.model,
         priority: body.priority,
         isActive: body.isActive,
+        connectionId,
       });
       invalidateAiCache();
-      res.json({ provider: provider ? toDto(provider, false) : null });
+      const conn =
+        tenantId && provider?.connection_id
+          ? await getConnectionById(tenantId, provider.connection_id)
+          : null;
+      res.json({
+        provider: provider
+          ? toDto(provider, false, conn ? { label: conn.label, phone: conn.phone_number } : null)
+          : null,
+      });
     },
 
     async removeAiProvider(req, res) {

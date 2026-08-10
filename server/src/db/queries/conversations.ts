@@ -5,6 +5,8 @@ export interface ConversationListItem extends Conversation {
   client_name: string | null;
   client_phone: string;
   company_name: string | null;
+  connection_label: string | null;
+  connection_phone: string | null;
   last_message: string | null;
   last_message_type: string | null;
   last_message_at: string | null;
@@ -14,10 +16,21 @@ export interface ConversationListItem extends Conversation {
 export async function findOpenConversationByClient(
   tenantId: string,
   clientId: string,
+  connectionId?: string | null,
 ): Promise<Conversation | null> {
+  if (connectionId) {
+    return queryOne<Conversation>(
+      `SELECT * FROM conversations
+        WHERE tenant_id = $1 AND client_id = $2 AND connection_id = $3 AND status <> 'closed'
+        ORDER BY started_at DESC
+        LIMIT 1`,
+      [tenantId, clientId, connectionId],
+    );
+  }
   return queryOne<Conversation>(
     `SELECT * FROM conversations
       WHERE tenant_id = $1 AND client_id = $2 AND status <> 'closed'
+        AND connection_id IS NULL
       ORDER BY started_at DESC
       LIMIT 1`,
     [tenantId, clientId],
@@ -27,23 +40,23 @@ export async function findOpenConversationByClient(
 export async function findOrCreateOpenConversation(
   tenantId: string,
   clientId: string,
+  connectionId?: string | null,
 ): Promise<Conversation> {
-  const existing = await findOpenConversationByClient(tenantId, clientId);
+  const existing = await findOpenConversationByClient(tenantId, clientId, connectionId);
   if (existing) return existing;
 
   try {
     const { rows } = await query<Conversation>(
-      `INSERT INTO conversations (tenant_id, client_id, status)
-       VALUES ($1, $2, 'open')
+      `INSERT INTO conversations (tenant_id, client_id, connection_id, status)
+       VALUES ($1, $2, $3, 'open')
        RETURNING *`,
-      [tenantId, clientId],
+      [tenantId, clientId, connectionId ?? null],
     );
     return rows[0];
   } catch (err) {
     // Corrida: outra requisição abriu a conversa ao mesmo tempo e o índice único
-    // parcial (uq_conversations_active_per_client) barrou esta. Em vez de propagar
-    // o erro, buscamos a conversa ativa que venceu a corrida.
-    const open = await findOpenConversationByClient(tenantId, clientId);
+    // parcial barrou esta. Em vez de propagar o erro, buscamos a que venceu.
+    const open = await findOpenConversationByClient(tenantId, clientId, connectionId);
     if (open) return open;
     throw err;
   }
@@ -62,12 +75,17 @@ export async function getConversationById(
 export async function listConversations(
   tenantId: string,
   status?: ConversationStatus,
+  connectionId?: string,
 ): Promise<ConversationListItem[]> {
   const params: unknown[] = [tenantId];
   let where = 'WHERE c.tenant_id = $1';
   if (status) {
     params.push(status);
-    where += ' AND c.status = $2';
+    where += ` AND c.status = $${params.length}`;
+  }
+  if (connectionId) {
+    params.push(connectionId);
+    where += ` AND c.connection_id = $${params.length}`;
   }
 
   const { rows } = await query<ConversationListItem>(
@@ -76,12 +94,15 @@ export async function listConversations(
         cl.name AS client_name,
         cl.phone AS client_phone,
         cl.company_name,
+        wc.label AS connection_label,
+        wc.phone_number AS connection_phone,
         lm.content AS last_message,
         lm.type AS last_message_type,
         lm.sent_at AS last_message_at,
         COALESCE(uc.unread_count, 0)::int AS unread_count
       FROM conversations c
       JOIN clients cl ON cl.id = c.client_id
+      LEFT JOIN whatsapp_connections wc ON wc.id = c.connection_id
       LEFT JOIN LATERAL (
         SELECT content, type, sent_at
         FROM messages_log m
@@ -104,17 +125,52 @@ export async function listConversations(
   return rows;
 }
 
+/**
+ * Histórico da conversa para o painel. Devolve as N mensagens MAIS RECENTES
+ * em ordem cronológica (ASC). Antes era `ORDER BY sent_at ASC LIMIT N`, o que
+ * pegava só o começo da conversa — com >N msgs, o card mostrava a última
+ * (preview) e o chat aberto ficava “parado” no passado.
+ */
 export async function getConversationMessages(
   tenantId: string,
   conversationId: string,
-  limit = 100,
+  limit = 200,
 ): Promise<MessageLog[]> {
   const { rows } = await query<MessageLog>(
-    `SELECT * FROM messages_log
-      WHERE tenant_id = $1 AND conversation_id = $2
-      ORDER BY sent_at ASC
-      LIMIT $3`,
+    `SELECT * FROM (
+       SELECT * FROM messages_log
+        WHERE tenant_id = $1 AND conversation_id = $2
+        ORDER BY sent_at DESC, id DESC
+        LIMIT $3
+     ) recent
+     ORDER BY sent_at ASC, id ASC`,
     [tenantId, conversationId, limit],
+  );
+  return rows;
+}
+
+/** Conversas de um cliente (para export JSON). Opcionalmente só de um WhatsApp. */
+export async function listConversationsByClient(
+  tenantId: string,
+  clientId: string,
+  connectionId?: string | null,
+): Promise<Conversation[]> {
+  if (connectionId) {
+    const { rows } = await query<Conversation>(
+      `SELECT * FROM conversations
+        WHERE tenant_id = $1 AND client_id = $2 AND connection_id = $3
+        ORDER BY started_at DESC
+        LIMIT 50`,
+      [tenantId, clientId, connectionId],
+    );
+    return rows;
+  }
+  const { rows } = await query<Conversation>(
+    `SELECT * FROM conversations
+      WHERE tenant_id = $1 AND client_id = $2
+      ORDER BY started_at DESC
+      LIMIT 50`,
+    [tenantId, clientId],
   );
   return rows;
 }
@@ -191,6 +247,25 @@ export async function setHumanPausedUntil(
       WHERE id = $1 AND tenant_id = $2
       RETURNING *`,
     [id, tenantId, until.toISOString()],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Cliente falou de novo: volta a conversa para "open" (aparece em Abertas).
+ * Não mexe em human_paused_until — a pausa da IA continua valendo se ainda
+ * estiver na janela.
+ */
+export async function reopenConversationOnInbound(
+  tenantId: string,
+  id: string,
+): Promise<Conversation | null> {
+  const { rows } = await query<Conversation>(
+    `UPDATE conversations
+        SET status = 'open'
+      WHERE id = $1 AND tenant_id = $2 AND status = 'waiting'
+      RETURNING *`,
+    [id, tenantId],
   );
   return rows[0] ?? null;
 }

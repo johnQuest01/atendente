@@ -10,6 +10,8 @@ import settingsRoutes from './settings.routes';
 import blockedRoutes from './blocked.routes';
 import adminRoutes from './admin.routes';
 import invitesRoutes from './invites.routes';
+import broadcastsRoutes from './broadcasts.routes';
+import contactsRoutes from './contacts.routes';
 
 const api = Router();
 
@@ -25,5 +27,7 @@ api.use('/dashboard', dashboardRoutes);
 api.use('/settings', settingsRoutes);
 api.use('/blocked', blockedRoutes);
 api.use('/admin', adminRoutes);
+api.use('/broadcasts', broadcastsRoutes);
+api.use('/contacts', contactsRoutes);
 
 export default api;

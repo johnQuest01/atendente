@@ -12,7 +12,9 @@ import Audios from '@/routes/Audios';
 import Products from '@/routes/Products';
 import Messages from '@/routes/Messages';
 import Keywords from '@/routes/Keywords';
+import Broadcasts from '@/routes/Broadcasts';
 import Settings from '@/routes/Settings';
+import PasteConversation from '@/routes/PasteConversation';
 import Admin from '@/routes/Admin';
 
 /** Teste vencido / conta desativada: o painel para aqui, com explicação. */
@@ -64,9 +66,11 @@ function ProtectedRoutes() {
         <Route path="/conversas/:id" element={<ConversationDetail />} />
         <Route path="/audios" element={<Audios />} />
         <Route path="/produtos" element={<Products />} />
+        <Route path="/disparos" element={<Broadcasts />} />
         <Route path="/scripts" element={<Messages />} />
         <Route path="/keywords" element={<Keywords />} />
         <Route path="/configuracoes" element={<Settings />} />
+        <Route path="/colar-conversa" element={<PasteConversation />} />
         <Route path="/admin" element={<Admin />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

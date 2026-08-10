@@ -8,23 +8,143 @@ export async function findClientByPhone(tenantId: string, phone: string): Promis
   ]);
 }
 
+export async function findClientByLid(tenantId: string, lid: string): Promise<Client | null> {
+  return queryOne<Client>(
+    `SELECT * FROM clients
+      WHERE tenant_id = $1 AND (whatsapp_lid = $2 OR phone = $2)
+      ORDER BY CASE WHEN whatsapp_lid = $2 AND phone <> $2 THEN 0 ELSE 1 END
+      LIMIT 1`,
+    [tenantId, lid],
+  );
+}
+
+async function setClientLid(tenantId: string, clientId: string, lid: string): Promise<void> {
+  await query(
+    `UPDATE clients
+        SET whatsapp_lid = $3,
+            last_contact_at = NOW()
+      WHERE id = $1 AND tenant_id = $2
+        AND (whatsapp_lid IS NULL OR whatsapp_lid = $3)`,
+    [clientId, tenantId, lid],
+  );
+}
+
+/**
+ * Une um cliente-órfão (phone = lid) no cliente real (phone E.164):
+ * move conversas e apaga o órfão. Best-effort — se der conflito de unique, só
+ * liga o lid no cliente real.
+ */
+async function mergeOrphanLidClient(
+  tenantId: string,
+  orphanId: string,
+  realId: string,
+): Promise<void> {
+  if (orphanId === realId) return;
+  try {
+    // Reaponta conversas do órfão; se já existir open no destino p/ mesma conexão,
+    // as msgs do órfão passam para a conversa aberta do real.
+    const { rows: orphanConvs } = await query<{ id: string; connection_id: string | null; status: string }>(
+      `SELECT id, connection_id, status FROM conversations
+        WHERE tenant_id = $1 AND client_id = $2`,
+      [tenantId, orphanId],
+    );
+    for (const oc of orphanConvs) {
+      const target = await queryOne<{ id: string }>(
+        `SELECT id FROM conversations
+          WHERE tenant_id = $1 AND client_id = $2
+            AND status <> 'closed'
+            AND connection_id IS NOT DISTINCT FROM $3
+          ORDER BY started_at DESC
+          LIMIT 1`,
+        [tenantId, realId, oc.connection_id],
+      );
+      if (target && target.id !== oc.id) {
+        await query(`UPDATE messages_log SET conversation_id = $2 WHERE conversation_id = $1`, [
+          oc.id,
+          target.id,
+        ]);
+        await query(`DELETE FROM conversations WHERE id = $1 AND tenant_id = $2`, [oc.id, tenantId]);
+      } else {
+        await query(`UPDATE conversations SET client_id = $2 WHERE id = $1 AND tenant_id = $3`, [
+          oc.id,
+          realId,
+          tenantId,
+        ]);
+      }
+    }
+    await query(`DELETE FROM clients WHERE id = $1 AND tenant_id = $2`, [orphanId, tenantId]);
+  } catch {
+    // Conflito de unique / corrida — o lid no cliente real já basta para o próximo fromMe.
+  }
+}
+
+export interface ResolveWhatsappClientInput {
+  phone: string;
+  lid?: string | null;
+  name?: string | null;
+  /** true = `phone` é o próprio LID (eco fromMe sem número). */
+  phoneIsLid?: boolean;
+}
+
+/**
+ * Resolve o cliente certo para um webhook WhatsApp, lidando com @lid da Z-API.
+ */
 export async function findOrCreateClient(
   tenantId: string,
   phone: string,
   name?: string | null,
+  opts?: { lid?: string | null; phoneIsLid?: boolean },
 ): Promise<Client> {
-  // Upsert atômico: evita a corrida em que duas mensagens simultâneas de um
-  // número NOVO violariam a restrição UNIQUE(tenant_id, phone) e fariam a 2ª
-  // falhar. Mantém o nome já cadastrado (só preenche se estiver vazio) e
-  // atualiza o último contato.
+  const lid = opts?.lid?.trim() || null;
+  const phoneIsLid = Boolean(opts?.phoneIsLid);
+
+  // 1) fromMe só com LID: achar cliente real que já tem esse lid.
+  if (phoneIsLid && (lid || phone)) {
+    const key = lid || phone;
+    const byLid = await findClientByLid(tenantId, key);
+    if (byLid) {
+      await query(`UPDATE clients SET last_contact_at = NOW() WHERE id = $1`, [byLid.id]);
+      return byLid;
+    }
+  }
+
+  // 2) Número real (+ lid opcional): upsert por phone e amarra o lid.
+  if (!phoneIsLid && phone) {
+    const { rows } = await query<Client>(
+      `INSERT INTO clients (tenant_id, phone, name, whatsapp_lid)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (tenant_id, phone) DO UPDATE
+         SET last_contact_at = NOW(),
+             name = COALESCE(clients.name, EXCLUDED.name),
+             whatsapp_lid = COALESCE(EXCLUDED.whatsapp_lid, clients.whatsapp_lid)
+       RETURNING *`,
+      [tenantId, phone, name ?? null, lid],
+    );
+    const client = rows[0];
+
+    // Se existia órfão com phone=lid, funde nele.
+    if (lid) {
+      const orphan = await findClientByPhone(tenantId, lid);
+      if (orphan && orphan.id !== client.id) {
+        await mergeOrphanLidClient(tenantId, orphan.id, client.id);
+      }
+      await setClientLid(tenantId, client.id, lid);
+    }
+    return (await findClientByPhone(tenantId, phone)) ?? client;
+  }
+
+  // 3) Fallback: cria órfão (phone = lid) até chegar um inbound com número real.
+  const key = phone || lid;
+  if (!key) throw new Error('findOrCreateClient: phone/lid ausente');
   const { rows } = await query<Client>(
-    `INSERT INTO clients (tenant_id, phone, name)
-     VALUES ($1, $2, $3)
+    `INSERT INTO clients (tenant_id, phone, name, whatsapp_lid)
+     VALUES ($1, $2, $3, $4)
      ON CONFLICT (tenant_id, phone) DO UPDATE
        SET last_contact_at = NOW(),
-           name = COALESCE(clients.name, EXCLUDED.name)
+           name = COALESCE(clients.name, EXCLUDED.name),
+           whatsapp_lid = COALESCE(EXCLUDED.whatsapp_lid, clients.whatsapp_lid)
      RETURNING *`,
-    [tenantId, phone, name ?? null],
+    [tenantId, key, name ?? null, lid || key],
   );
   return rows[0];
 }
@@ -32,6 +152,39 @@ export async function findOrCreateClient(
 export async function listClients(tenantId: string): Promise<Client[]> {
   const { rows } = await query<Client>(
     'SELECT * FROM clients WHERE tenant_id = $1 ORDER BY last_contact_at DESC LIMIT 200',
+    [tenantId],
+  );
+  return rows;
+}
+
+/**
+ * Lista para export de agenda.
+ * Com `connectionId`: só clientes que já conversaram nesse WhatsApp (não vaza outros números).
+ */
+export async function listClientsForExport(
+  tenantId: string,
+  connectionId?: string | null,
+): Promise<Client[]> {
+  if (connectionId) {
+    const { rows } = await query<Client>(
+      `SELECT DISTINCT cl.*
+         FROM clients cl
+         INNER JOIN conversations c
+           ON c.client_id = cl.id AND c.tenant_id = cl.tenant_id
+        WHERE cl.tenant_id = $1
+          AND cl.is_active = true
+          AND c.connection_id = $2
+        ORDER BY COALESCE(cl.name, cl.phone) ASC
+        LIMIT 5000`,
+      [tenantId, connectionId],
+    );
+    return rows;
+  }
+  const { rows } = await query<Client>(
+    `SELECT * FROM clients
+      WHERE tenant_id = $1 AND is_active = true
+      ORDER BY COALESCE(name, phone) ASC
+      LIMIT 5000`,
     [tenantId],
   );
   return rows;
@@ -52,7 +205,6 @@ export async function updateClient(
        notes = COALESCE($6, notes),
        is_active = COALESCE($7, is_active),
        ai_enabled = COALESCE($8, ai_enabled),
-       -- string vazia limpa o prompt; undefined mantém o que já existe.
        ai_prompt = CASE WHEN $9::text IS NULL THEN ai_prompt
                         WHEN $9 = '' THEN NULL
                         ELSE $9 END

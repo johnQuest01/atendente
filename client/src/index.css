@@ -147,3 +147,69 @@ h3 {
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
+
+/* Espaço do menu inferior (ícones + padding + safe-area). */
+:root {
+  --bottom-nav-space: calc(4.85rem + env(safe-area-inset-bottom, 0px));
+}
+
+/*
+ * Chat aberto: trava o documento.
+ * Só [data-chat-scroll="1"] pode rolar.
+ */
+html.chat-lock,
+html.chat-lock body {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  height: 100% !important;
+  height: 100dvh !important;
+  overflow: hidden !important;
+  overscroll-behavior: none !important;
+}
+
+html.chat-lock #root {
+  height: 100% !important;
+  overflow: hidden !important;
+}
+
+html.chat-lock [data-chat-scroll='1'] {
+  touch-action: pan-y;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/*
+ * Shell do chat: altura/top vêm da visualViewport (JS) quando o teclado abre.
+ * Header e footer (digitação) ficam fora do scroll; só [data-chat-scroll] rola.
+ */
+.chat-shell {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: auto;
+  height: 100dvh;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  width: auto;
+  overflow: hidden;
+  overscroll-behavior: none;
+  pointer-events: auto;
+  background-color: var(--color-bg);
+  /* Evita o browser “puxar” o layout ao focar o textarea. */
+  touch-action: manipulation;
+}
+
+@media (min-width: 768px) {
+  .chat-shell {
+    left: 16rem; /* sidebar w-64 */
+    height: 100dvh;
+  }
+}
+
+html.chat-lock [data-chat-composer='1'] {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom, 0px));
+}

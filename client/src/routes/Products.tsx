@@ -17,6 +17,14 @@ import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
 import type { Product } from '@/types';
 
+/** Aceita "12,50" / "1.234,56" e devolve número; vazio → undefined. */
+function parsePriceBR(raw: string): number | undefined {
+  const s = raw.trim().replace(/\./g, '').replace(',', '.');
+  if (!s) return undefined;
+  const n = Number(s);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
 export default function Products() {
   const { data, isLoading, isError, refetch } = useProducts();
   const deleteProduct = useDeleteProduct();
@@ -110,7 +118,7 @@ function CreateProductModal({ open, onClose }: { open: boolean; onClose: () => v
         name: name.trim(),
         description: description.trim() || undefined,
         category: category.trim() || undefined,
-        price_wholesale: price ? Number(price) : undefined,
+        price_wholesale: parsePriceBR(price),
         min_quantity: Number(minQty) || 1,
         unit: unit.trim() || undefined,
         image_urls: imageUrls,
@@ -150,7 +158,13 @@ function CreateProductModal({ open, onClose }: { open: boolean; onClose: () => v
         <TextArea label="Descrição" value={description} onChange={(e) => setDescription(e.target.value)} />
         <div className="grid grid-cols-2 gap-3">
           <Input label="Categoria" value={category} onChange={(e) => setCategory(e.target.value)} />
-          <Input label="Preço atacado" type="number" step="0.01" value={price} onChange={(e) => setPrice(e.target.value)} placeholder="0,00" />
+          <Input
+            label="Preço atacado"
+            inputMode="decimal"
+            value={price}
+            onChange={(e) => setPrice(e.target.value)}
+            placeholder="12,50"
+          />
           <Input label="Qtd. mínima" type="number" value={minQty} onChange={(e) => setMinQty(e.target.value)} />
           <Input label="Unidade" value={unit} onChange={(e) => setUnit(e.target.value)} placeholder="caixa com 12" />
         </div>

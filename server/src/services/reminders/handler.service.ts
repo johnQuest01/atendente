@@ -14,7 +14,7 @@ import { isMemoryScanEnabled } from '../../db/queries/settings';
 import { keywordMatches } from '../matcher.service';
 import { scanForCommitments } from './scan.service';
 import { env } from '../../config/env';
-import { getTenantWhatsapp } from '../whatsapp.service';
+import { getTenantWhatsapp, getWhatsappByConnection } from '../whatsapp.service';
 import { transcribeAudioFromBase64, transcribeAudioFromUrl } from '../transcription.service';
 import type { NormalizedInbound } from '../whatsapp/types';
 import type { Reminder } from '../../types';
@@ -101,8 +101,14 @@ function setState(tenantId: string, phone: string, patch: Partial<OwnerState>): 
   state.set(key, { ...current, ...patch, at: Date.now() });
 }
 
+/** Conexão WhatsApp ativa durante o tratamento da mensagem do dono. */
+const ownerReplyConnection = new Map<string, string>();
+
 async function reply(tenantId: string, phone: string, text: string): Promise<void> {
-  const wa = await getTenantWhatsapp(tenantId);
+  const connectionId = ownerReplyConnection.get(stateKey(tenantId, phone));
+  const wa = connectionId
+    ? await getWhatsappByConnection(tenantId, connectionId)
+    : await getTenantWhatsapp(tenantId);
   await wa.sendText(phone, text).catch((err) => logger.warn('Lembretes: falha ao responder o dono', err));
 }
 
@@ -371,10 +377,26 @@ async function matchesReminderKeyword(tenantId: string, text: string): Promise<b
 export async function handleOwnerMessage(
   tenantId: string,
   inbound: NormalizedInbound,
+  connectionId?: string | null,
 ): Promise<boolean> {
   const phone = inbound.phone;
   const tz = DEFAULT_TZ;
+  const key = stateKey(tenantId, phone);
+  if (connectionId) ownerReplyConnection.set(key, connectionId);
 
+  try {
+    return await handleOwnerMessageInner(tenantId, inbound, phone, tz);
+  } finally {
+    ownerReplyConnection.delete(key);
+  }
+}
+
+async function handleOwnerMessageInner(
+  tenantId: string,
+  inbound: NormalizedInbound,
+  phone: string,
+  tz: string,
+): Promise<boolean> {
   if (alreadyHandled(inbound.providerMessageId)) {
     logger.info(`Lembretes: webhook repetido ignorado (${inbound.providerMessageId}).`);
     return true;
@@ -408,6 +430,7 @@ export async function handleOwnerMessage(
     const { items, source } = owner.pending;
 
     if (AFFIRMATIVE.has(normalized)) {
+      const replyConnectionId = ownerReplyConnection.get(stateKey(tenantId, phone)) ?? null;
       const inputs: CreateReminderInput[] = items.map((p) => ({
         ownerPhone: phone,
         task: p.task,
@@ -416,6 +439,7 @@ export async function handleOwnerMessage(
         nextFireAt: p.nextFireAt,
         leadMinutes: p.leadMinutes,
         timezone: tz,
+        connectionId: replyConnectionId,
       }));
       // Tudo-ou-nada: ou grava todos, ou nenhum (transação).
       await createRemindersBulk(tenantId, inputs);

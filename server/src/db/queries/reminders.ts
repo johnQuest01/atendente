@@ -63,6 +63,8 @@ export interface CreateReminderInput {
   notes?: string | null;
   /** Minutos de aviso prévio ("me avise 1h antes" = 60). */
   leadMinutes?: number | null;
+  /** Instância WhatsApp que enviará o alarme. */
+  connectionId?: string | null;
 }
 
 export async function createReminder(
@@ -72,8 +74,8 @@ export async function createReminder(
   assertTenantMatchesScope(tenantId);
   const { rows } = await query<Reminder>(
     `INSERT INTO reminders
-       (tenant_id, owner_phone, task, category, recurrence, next_fire_at, timezone, notes, lead_minutes)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       (tenant_id, owner_phone, task, category, recurrence, next_fire_at, timezone, notes, lead_minutes, connection_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      RETURNING *`,
     [
       tenantId,
@@ -85,6 +87,7 @@ export async function createReminder(
       input.timezone ?? 'America/Sao_Paulo',
       input.notes ?? null,
       input.leadMinutes ?? null,
+      input.connectionId ?? null,
     ],
   );
   return rows[0];
@@ -106,8 +109,8 @@ export async function createRemindersBulk(
     for (const input of inputs) {
       const { rows } = await client.query<Reminder>(
         `INSERT INTO reminders
-           (tenant_id, owner_phone, task, category, recurrence, next_fire_at, timezone, notes, lead_minutes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           (tenant_id, owner_phone, task, category, recurrence, next_fire_at, timezone, notes, lead_minutes, connection_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING *`,
         [
           tenantId,
@@ -119,6 +122,7 @@ export async function createRemindersBulk(
           input.timezone ?? 'America/Sao_Paulo',
           input.notes ?? null,
           input.leadMinutes ?? null,
+          input.connectionId ?? null,
         ],
       );
       created.push(rows[0]);

@@ -24,10 +24,15 @@ import {
   putMemoryScan,
   updateMemoryScanSchema,
   getSystemStatus,
+  listWhatsappConnections,
   getWhatsappConnection,
-  configureWhatsappWebhook,
+  createWhatsappConnection,
   putWhatsappConnection,
+  putWhatsappConnectionById,
+  deleteWhatsappConnection,
+  configureWhatsappWebhook,
   updateWhatsappSchema,
+  whatsappConnectionIdSchema,
 } from '../controllers/settings.controller';
 import {
   tenantAiProviders,
@@ -97,16 +102,40 @@ router.get('/status', asyncHandler(getSystemStatus));
 // Visível a qualquer papel DAQUELA empresa — é o "exposto pra ele e pra quem loga".
 router.get('/access-token', asyncHandler(getMyAccessToken));
 
-// Conexão de WhatsApp da empresa (cadastro de credenciais). Só admin edita.
-router.get('/whatsapp', asyncHandler(getWhatsappConnection));
+// Instâncias WhatsApp da empresa (N por tenant: Z-API / Evolution / Meta).
+router.get('/whatsapp', asyncHandler(listWhatsappConnections));
+router.get('/whatsapp/legacy', asyncHandler(getWhatsappConnection));
+router.post(
+  '/whatsapp',
+  adminOnly,
+  validate({ body: updateWhatsappSchema }),
+  asyncHandler(createWhatsappConnection),
+);
 router.put(
   '/whatsapp',
   adminOnly,
   validate({ body: updateWhatsappSchema }),
   asyncHandler(putWhatsappConnection),
 );
-// Registra a URL de webhook direto no provedor, sem o cliente colar nada lá.
+router.put(
+  '/whatsapp/:id',
+  adminOnly,
+  validate({ params: whatsappConnectionIdSchema, body: updateWhatsappSchema }),
+  asyncHandler(putWhatsappConnectionById),
+);
+router.delete(
+  '/whatsapp/:id',
+  adminOnly,
+  validate({ params: whatsappConnectionIdSchema }),
+  asyncHandler(deleteWhatsappConnection),
+);
 router.post('/whatsapp/webhook', adminOnly, asyncHandler(configureWhatsappWebhook));
+router.post(
+  '/whatsapp/:id/webhook',
+  adminOnly,
+  validate({ params: whatsappConnectionIdSchema }),
+  asyncHandler(configureWhatsappWebhook),
+);
 
 // Assistente pessoal de lembretes: quais números da empresa falam com ele em
 // vez de serem atendidos como clientes. Só admin mexe na whitelist.

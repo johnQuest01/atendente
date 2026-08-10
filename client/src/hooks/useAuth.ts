@@ -51,24 +51,34 @@ export function useBootstrapAuth(): void {
 
   useEffect(() => {
     let active = true;
+    // Se /auth/me travar (API lenta, rede, SW antigo), libera a tela de login
+    // em vez de ficar eternamente em "Carregando...".
+    const failSafe = window.setTimeout(() => {
+      if (active) setInitialized(true);
+    }, 8_000);
+
     async function bootstrap() {
       if (!getToken()) {
         setInitialized(true);
         return;
       }
       try {
-        const { data } = await api.get<{ user: User }>('/auth/me');
+        const { data } = await api.get<{ user: User }>('/auth/me', {
+          timeout: 7_000,
+        });
         if (active) setUser(data.user);
       } catch {
         setToken(null);
         logout();
       } finally {
         if (active) setInitialized(true);
+        window.clearTimeout(failSafe);
       }
     }
     void bootstrap();
     return () => {
       active = false;
+      window.clearTimeout(failSafe);
     };
   }, [setUser, setInitialized, logout]);
 }

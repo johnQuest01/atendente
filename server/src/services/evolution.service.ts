@@ -23,6 +23,7 @@ export interface EvolutionConnection {
 export interface ProviderStatus {
   ok: boolean;
   detail: string;
+  phone?: string | null;
 }
 
 function isConfigured(conn: EvolutionConnection): boolean {

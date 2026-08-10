@@ -3,15 +3,21 @@ import { useLocation } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { BottomNav } from './BottomNav';
 import { BlockFab } from '@/components/features/BlockAccess';
+import { cn } from '@/utils/cn';
 
 interface AppShellProps {
   children: ReactNode;
 }
 
+/** Chat aberto: /conversas/:id — ou tela “colar conversa” (mesmo layout fixo). */
+function isChatLikePath(pathname: string): boolean {
+  return /^\/conversas\/[^/]+\/?$/.test(pathname) || pathname === '/colar-conversa';
+}
+
 export function AppShell({ children }: AppShellProps) {
   const location = useLocation();
-  // Desativa o menu de contexto do navegador (que aparece ao "segurar" a tela
-  // em alguns dispositivos/Chrome), deixando os gestos de long-press do app.
+  const chatOpen = isChatLikePath(location.pathname);
+
   useEffect(() => {
     const block = (e: Event) => e.preventDefault();
     document.addEventListener('contextmenu', block);
@@ -19,17 +25,30 @@ export function AppShell({ children }: AppShellProps) {
   }, []);
 
   return (
-    <div className="flex h-full min-h-screen">
+    <div className={cn('flex', chatOpen ? 'h-dvh max-h-dvh overflow-hidden' : 'h-full min-h-screen')}>
       <Sidebar />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <main className="no-scrollbar flex-1 overflow-y-auto pb-24 md:pb-6">
-          <div key={location.pathname} className="mx-auto w-full max-w-3xl animate-rise">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <main
+          className={cn(
+            'min-h-0 flex-1',
+            chatOpen ? 'relative overflow-hidden' : 'no-scrollbar overflow-y-auto pb-24 md:pb-6',
+          )}
+        >
+          <div
+            key={location.pathname}
+            className={cn(
+              'mx-auto w-full max-w-3xl',
+              chatOpen ? 'h-full overflow-hidden' : 'animate-rise',
+            )}
+          >
             {children}
           </div>
         </main>
-        <BottomNav />
+        {/* Menu inferior só na lista / outras telas — some no chat aberto. */}
+        {!chatOpen && <BottomNav />}
       </div>
-      <BlockFab />
+      {/* Cadeado some no chat (cobria o botão enviar). */}
+      {!chatOpen && <BlockFab />}
     </div>
   );
 }
@@ -39,12 +58,17 @@ interface PageHeaderProps {
   subtitle?: string;
   action?: ReactNode;
   leading?: ReactNode;
+  sticky?: boolean;
 }
 
-/** Cabeçalho de página com safe-area e sticky no topo. */
-export function PageHeader({ title, subtitle, action, leading }: PageHeaderProps) {
+export function PageHeader({ title, subtitle, action, leading, sticky = true }: PageHeaderProps) {
   return (
-    <header className="safe-top glass sticky top-0 z-20 border-x-0 border-t-0 border-b border-border/70">
+    <header
+      className={cn(
+        'safe-top glass z-20 shrink-0 border-x-0 border-t-0 border-b border-border/70',
+        sticky && 'sticky top-0',
+      )}
+    >
       <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-4 py-3.5">
         {leading}
         <div className="min-w-0 flex-1">

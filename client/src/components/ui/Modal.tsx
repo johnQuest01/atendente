@@ -17,10 +17,14 @@ export function Modal({ open, onClose, title, children, footer }: ModalProps) {
       if (e.key === 'Escape') onClose();
     };
     document.addEventListener('keydown', onKey);
-    document.body.style.overflow = 'hidden';
+    // No chat a trava vem de html.chat-lock — não mexe no overflow do body.
+    const chatLocked = document.documentElement.classList.contains('chat-lock');
+    if (!chatLocked) document.body.style.overflow = 'hidden';
     return () => {
       document.removeEventListener('keydown', onKey);
-      document.body.style.overflow = '';
+      if (!document.documentElement.classList.contains('chat-lock')) {
+        document.body.style.overflow = '';
+      }
     };
   }, [open, onClose]);
 

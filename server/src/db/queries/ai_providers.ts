@@ -2,13 +2,9 @@ import { query, queryOne } from '../index';
 import { encryptSecret, decryptSecret } from '../../utils/crypto';
 
 /**
- * Provedores de IA. Escopo definido por `tenant_id`:
- *   - NULL  = provedor GLOBAL da plataforma (super-admin)
- *   - <uuid> = provedor da EMPRESA (BYO)
- * A chave de API fica cifrada; a descriptografia acontece somente aqui.
- *
- * Nas funcoes abaixo, `tenantId` aceita string (empresa) ou null (global), e o
- * filtro usa "IS NOT DISTINCT FROM" para casar NULL com seguranca.
+ * Provedores de IA. Escopo por `tenant_id` (NULL = global da plataforma).
+ * `connection_id` NULL = atende TODAS as instâncias WhatsApp da empresa;
+ * UUID = só aquela conexão/número.
  */
 
 export type AiKind = 'anthropic' | 'openai' | 'gemini';
@@ -16,6 +12,7 @@ export type AiKind = 'anthropic' | 'openai' | 'gemini';
 export interface AiProvider {
   id: string;
   tenant_id: string | null;
+  connection_id: string | null;
   kind: AiKind;
   label: string;
   apiKey: string | null;
@@ -32,6 +29,7 @@ export interface AiProvider {
 interface AiProviderRow {
   id: string;
   tenant_id: string | null;
+  connection_id: string | null;
   kind: AiKind;
   label: string;
   api_key_encrypted: string | null;
@@ -46,7 +44,7 @@ interface AiProviderRow {
 }
 
 const COLS =
-  'id, tenant_id, kind, label, api_key_encrypted, base_url, model, priority, is_active, last_status, last_error, last_used_at, cooldown_until';
+  'id, tenant_id, connection_id, kind, label, api_key_encrypted, base_url, model, priority, is_active, last_status, last_error, last_used_at, cooldown_until';
 
 function decodeKey(enc: string | null): string | null {
   if (!enc) return null;
@@ -61,6 +59,7 @@ function mapRow(row: AiProviderRow): AiProvider {
   return {
     id: row.id,
     tenant_id: row.tenant_id,
+    connection_id: row.connection_id ?? null,
     kind: row.kind,
     label: row.label,
     apiKey: decodeKey(row.api_key_encrypted),
@@ -86,18 +85,39 @@ export async function listAiProviders(tenantId: string | null): Promise<AiProvid
   return rows.map(mapRow);
 }
 
-/** Apenas os ATIVOS do escopo, na ordem de tentativa do failover. */
-export async function listActiveAiProviders(tenantId: string | null): Promise<AiProvider[]> {
+/**
+ * Ativos do escopo para a corrente de failover.
+ * Com `connectionId`: inclui os daquela instância + os de “todas” (connection_id NULL).
+ * Dedicados à instância vêm antes dos gerais (mesmo priority).
+ */
+export async function listActiveAiProviders(
+  tenantId: string | null,
+  connectionId?: string | null,
+): Promise<AiProvider[]> {
+  if (!connectionId) {
+    const { rows } = await query<AiProviderRow>(
+      `SELECT ${COLS} FROM ai_providers
+        WHERE tenant_id IS NOT DISTINCT FROM $1 AND is_active = true
+        ORDER BY priority ASC, created_at ASC`,
+      [tenantId],
+    );
+    return rows.map(mapRow);
+  }
+
   const { rows } = await query<AiProviderRow>(
     `SELECT ${COLS} FROM ai_providers
-      WHERE tenant_id IS NOT DISTINCT FROM $1 AND is_active = true
-      ORDER BY priority ASC, created_at ASC`,
-    [tenantId],
+      WHERE tenant_id IS NOT DISTINCT FROM $1
+        AND is_active = true
+        AND (connection_id IS NULL OR connection_id = $2)
+      ORDER BY
+        CASE WHEN connection_id = $2 THEN 0 ELSE 1 END,
+        priority ASC,
+        created_at ASC`,
+    [tenantId, connectionId],
   );
   return rows.map(mapRow);
 }
 
-/** Busca por id DENTRO do escopo (impede uma empresa de tocar em provedor de outra/global). */
 export async function getAiProviderById(
   id: string,
   tenantId: string | null,
@@ -126,16 +146,20 @@ export interface CreateAiProviderInput {
   model: string;
   priority?: number;
   isActive?: boolean;
+  /** null/undefined = todas as instâncias WhatsApp. */
+  connectionId?: string | null;
 }
 
 export async function createAiProvider(input: CreateAiProviderInput): Promise<AiProvider> {
   const enc = input.apiKey ? encryptSecret(input.apiKey) : null;
   const row = await queryOne<AiProviderRow>(
-    `INSERT INTO ai_providers (tenant_id, kind, label, api_key_encrypted, base_url, model, priority, is_active)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO ai_providers
+       (tenant_id, connection_id, kind, label, api_key_encrypted, base_url, model, priority, is_active)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING ${COLS}`,
     [
       input.tenantId,
+      input.connectionId ?? null,
       input.kind,
       input.label,
       enc,
@@ -150,12 +174,13 @@ export async function createAiProvider(input: CreateAiProviderInput): Promise<Ai
 
 export interface UpdateAiProviderInput {
   label?: string;
-  /** Vazio/undefined = mantém a chave atual. */
   apiKey?: string;
   baseUrl?: string | null;
   model?: string;
   priority?: number;
   isActive?: boolean;
+  /** Passar null para “todas”; undefined = não alterar. */
+  connectionId?: string | null;
 }
 
 export async function updateAiProvider(
@@ -178,9 +203,9 @@ export async function updateAiProvider(
   if (patch.model !== undefined) push('model', patch.model);
   if (patch.priority !== undefined) push('priority', patch.priority);
   if (patch.isActive !== undefined) push('is_active', patch.isActive);
+  if (patch.connectionId !== undefined) push('connection_id', patch.connectionId);
 
   if (sets.length === 0) return getAiProviderById(id, tenantId);
-  // Reativar/editar zera o cooldown para o provedor voltar a ser tentado já.
   sets.push('cooldown_until = NULL', 'updated_at = NOW()');
   params.push(id);
   const idIdx = i;
@@ -204,7 +229,6 @@ export async function deleteAiProvider(id: string, tenantId: string | null): Pro
   return (rowCount ?? 0) > 0;
 }
 
-/** Atualiza o estado de runtime após uma tentativa (sucesso ou falha + cooldown). */
 export async function updateAiRuntime(
   id: string,
   state: { status: string; error?: string | null; cooldownUntil?: Date | null },

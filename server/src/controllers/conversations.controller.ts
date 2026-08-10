@@ -8,16 +8,28 @@ import {
   markInboundAsRead,
   updateConversationStatus,
 } from '../db/queries/conversations';
-import { deleteAllMessages, deleteMessages } from '../db/queries/messages';
+import {
+  deleteAllMessages,
+  deleteMessages,
+  getMessageById,
+  getMessagesByIds,
+  updateMessageContent,
+} from '../db/queries/messages';
 import { updateClient } from '../db/queries/clients';
 import { queryOne } from '../db/index';
 import { dispatchAudio, dispatchProduct, dispatchText } from '../services/dispatch.service';
-import { emitConversationUpdated } from '../socket';
-import { NotFoundError } from '../utils/errors';
+import {
+  getTenantWhatsapp,
+  getWhatsappByConnection,
+} from '../services/whatsapp.service';
+import { emitConversationUpdated, emitNewMessage } from '../socket';
+import { AppError, NotFoundError } from '../utils/errors';
 import type { Client } from '../types';
 
 export const listQuerySchema = z.object({
   status: z.enum(['open', 'closed', 'waiting']).optional(),
+  /** Filtra conversas de um número/instância WhatsApp. */
+  connectionId: z.string().uuid().optional(),
 });
 
 export const idParamSchema = z.object({ id: z.string().uuid() });
@@ -36,10 +48,26 @@ export const sendAudioSchema = z.object({
 
 export const sendProductSchema = z.object({
   product_id: z.string().uuid(),
+  /** false = envia foto/nome/mínimo sem revelar o preço na legenda. Default true. */
+  with_price: z.boolean().optional().default(true),
 });
 
 export const deleteMessagesSchema = z.object({
   ids: z.array(z.string().uuid()).min(1).max(500),
+  /**
+   * true (padrão) = tenta apagar no WhatsApp para todos, depois remove do painel.
+   * false = só remove do painel (histórico local).
+   */
+  forEveryone: z.boolean().optional().default(true),
+});
+
+export const editMessageSchema = z.object({
+  text: z.string().trim().min(1).max(4096),
+});
+
+export const messageIdParamSchema = z.object({
+  id: z.string().uuid(),
+  messageId: z.string().uuid(),
 });
 
 /** Busca o cliente garantindo que ele pertence ao tenant da requisição. */
@@ -52,8 +80,8 @@ function findTenantClient(tenantId: string, clientId: string): Promise<Client | 
 
 export async function getConversations(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenant_id;
-  const { status } = req.query as z.infer<typeof listQuerySchema>;
-  const conversations = await listConversations(tenantId, status);
+  const { status, connectionId } = req.query as z.infer<typeof listQuerySchema>;
+  const conversations = await listConversations(tenantId, status, connectionId);
   res.json({ conversations });
 }
 
@@ -125,7 +153,8 @@ export async function sendManualMessage(req: Request, res: Response): Promise<vo
   const client = await findTenantClient(tenantId, conversation.client_id);
   if (!client) throw new NotFoundError('Cliente');
 
-  const message = await dispatchText({ conversation, client }, text);
+  // Operador digitou no painel — origin 'human' para a IA não tratar como resposta dela.
+  const message = await dispatchText({ conversation, client }, text, { origin: 'human' });
   res.status(201).json({ message });
 }
 
@@ -145,17 +174,113 @@ export async function sendManualAudio(req: Request, res: Response): Promise<void
   res.status(201).json({ message });
 }
 
-/** Apaga mensagens selecionadas de uma conversa. */
+/** Apaga mensagens selecionadas — no WhatsApp (para todos) e/ou só no painel. */
 export async function removeMessages(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenant_id;
   const { id } = req.params as z.infer<typeof idParamSchema>;
-  const { ids } = req.body as z.infer<typeof deleteMessagesSchema>;
+  const { ids, forEveryone } = req.body as z.infer<typeof deleteMessagesSchema>;
 
   const conversation = await getConversationById(tenantId, id);
   if (!conversation) throw new NotFoundError('Conversa');
+  const client = await findTenantClient(tenantId, conversation.client_id);
+  if (!client) throw new NotFoundError('Cliente');
+
+  let whatsappOk = 0;
+  let whatsappFailed = 0;
+  const failures: string[] = [];
+
+  if (forEveryone) {
+    const rows = await getMessagesByIds(tenantId, id, ids);
+    const wa = conversation.connection_id
+      ? await getWhatsappByConnection(tenantId, conversation.connection_id)
+      : await getTenantWhatsapp(tenantId);
+
+    for (const row of rows) {
+      if (!row.zapi_message_id || !wa.deleteMessage) {
+        whatsappFailed += 1;
+        failures.push('sem ID do WhatsApp');
+        continue;
+      }
+      const result = await wa.deleteMessage(
+        client.phone,
+        row.zapi_message_id,
+        row.direction === 'outbound',
+        false,
+      );
+      if (result.ok) whatsappOk += 1;
+      else {
+        whatsappFailed += 1;
+        failures.push(result.detail);
+      }
+    }
+  }
 
   const deleted = await deleteMessages(tenantId, id, ids);
-  res.json({ deleted });
+  emitConversationUpdated(tenantId, conversation);
+  res.json({
+    deleted,
+    whatsappOk,
+    whatsappFailed,
+    detail:
+      forEveryone === false
+        ? 'Removidas só do painel.'
+        : whatsappFailed === 0
+          ? `Apagadas no WhatsApp (para todos) e no painel (${deleted}).`
+          : `Painel: ${deleted}. WhatsApp: ${whatsappOk} ok, ${whatsappFailed} falhou${
+              failures[0] ? ` (${failures[0]})` : ''
+            }.`,
+  });
+}
+
+/** Corrige texto de uma mensagem outbound no WhatsApp e no painel. */
+export async function editMessage(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const { id, messageId } = req.params as z.infer<typeof messageIdParamSchema>;
+  const { text } = req.body as z.infer<typeof editMessageSchema>;
+
+  const conversation = await getConversationById(tenantId, id);
+  if (!conversation) throw new NotFoundError('Conversa');
+  const client = await findTenantClient(tenantId, conversation.client_id);
+  if (!client) throw new NotFoundError('Cliente');
+
+  const existing = await getMessageById(tenantId, id, messageId);
+  if (!existing) throw new NotFoundError('Mensagem');
+  if (existing.direction !== 'outbound' || existing.type !== 'text') {
+    throw new AppError('Só é possível corrigir textos enviados por você.', 400, 'EDIT_NOT_ALLOWED');
+  }
+  if (!existing.zapi_message_id) {
+    throw new AppError(
+      'Esta mensagem não tem ID do WhatsApp — não dá para corrigir no celular do cliente.',
+      400,
+      'MISSING_WA_ID',
+    );
+  }
+
+  const wa = conversation.connection_id
+    ? await getWhatsappByConnection(tenantId, conversation.connection_id)
+    : await getTenantWhatsapp(tenantId);
+
+  if (!wa.editText) {
+    throw new AppError('Seu provedor de WhatsApp não permite editar mensagens.', 400, 'EDIT_UNSUPPORTED');
+  }
+
+  try {
+    await wa.editText(client.phone, existing.zapi_message_id, text);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new AppError(
+      `WhatsApp recusou a correção (limite de ~7 dias ou mensagem inválida): ${msg}`,
+      502,
+      'WA_EDIT_FAILED',
+    );
+  }
+
+  const updated = await updateMessageContent(tenantId, id, messageId, text);
+  if (!updated) throw new NotFoundError('Mensagem');
+
+  emitNewMessage(tenantId, id, updated);
+  emitConversationUpdated(tenantId, conversation);
+  res.json({ message: updated });
 }
 
 /** Apaga a conversa inteira (some da lista) junto com suas mensagens. */
@@ -183,14 +308,16 @@ export async function clearConversation(req: Request, res: Response): Promise<vo
 export async function sendManualProduct(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenant_id;
   const { id } = req.params as z.infer<typeof idParamSchema>;
-  const { product_id } = req.body as z.infer<typeof sendProductSchema>;
+  const { product_id, with_price } = req.body as z.infer<typeof sendProductSchema>;
 
   const conversation = await getConversationById(tenantId, id);
   if (!conversation) throw new NotFoundError('Conversa');
   const client = await findTenantClient(tenantId, conversation.client_id);
   if (!client) throw new NotFoundError('Cliente');
 
-  const message = await dispatchProduct({ conversation, client }, product_id);
+  const message = await dispatchProduct({ conversation, client }, product_id, {
+    withPrice: with_price,
+  });
   if (!message) throw new NotFoundError('Produto');
   res.status(201).json({ message });
 }

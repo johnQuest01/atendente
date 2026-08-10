@@ -8,18 +8,16 @@ import {
   rescheduleReminder,
 } from '../../db/queries/reminders';
 import { isTenantBlocked } from '../../middleware/tenantAccess.middleware';
-import { getTenantWhatsapp } from '../whatsapp.service';
+import { getTenantWhatsapp, getWhatsappByConnection } from '../whatsapp.service';
 import type { Reminder } from '../../types';
 import { describeLead, describeRecurrence } from './parse.service';
 import { formatForOwner, nextOccurrence } from './time';
+import { tickBroadcasts } from '../broadcast.service';
+import { purgeExpiredMemories } from '../../db/queries/client_memories';
 
 /**
  * Agendador dos lembretes: a cada minuto varre os vencidos e dispara no
- * WhatsApp do dono.
- *
- * Roda como TAREFA DE SISTEMA, sem `runWithTenant`: a policy de RLS da 019 é
- * permissiva quando `app.tenant_id` está vazio, então a varredura enxerga todas
- * as empresas. O envio, esse sim, usa a conexão de cada tenant.
+ * WhatsApp do dono (na mesma instância em que o lembrete foi criado).
  */
 
 const TICK_MS = 60_000;
@@ -31,6 +29,13 @@ let running = false;
 function reminderText(reminder: Reminder): string {
   const repeat = reminder.recurrence ? `\nRepete: ${describeRecurrence(reminder.recurrence)}` : '';
   return `Lembrete\n${reminder.task}${repeat}`;
+}
+
+async function whatsappForReminder(reminder: Reminder) {
+  if (reminder.connection_id) {
+    return getWhatsappByConnection(reminder.tenant_id, reminder.connection_id);
+  }
+  return getTenantWhatsapp(reminder.tenant_id);
 }
 
 async function fire(reminder: Reminder): Promise<void> {
@@ -46,9 +51,12 @@ async function fire(reminder: Reminder): Promise<void> {
   }
 
   try {
-    const wa = await getTenantWhatsapp(reminder.tenant_id);
+    const wa = await whatsappForReminder(reminder);
     await wa.sendText(reminder.owner_phone, reminderText(reminder));
-    logger.info(`Lembrete enviado (${reminder.id}) para ${reminder.owner_phone}.`);
+    logger.info(
+      `Lembrete enviado (${reminder.id}) para ${reminder.owner_phone}` +
+        (reminder.connection_id ? ` via ${reminder.connection_id}` : ' (1ª conexão).'),
+    );
   } catch (err) {
     logger.warn(`Falha ao enviar lembrete ${reminder.id} — será tentado de novo em 10min`, err);
     await rescheduleReminder(reminder.id, new Date(Date.now() + 10 * 60_000));
@@ -88,7 +96,7 @@ async function fireLead(reminder: Reminder): Promise<void> {
   const text = `Lembrete antecipado (${antes})\n${reminder.task}\nHorário: ${quando}`;
 
   try {
-    const wa = await getTenantWhatsapp(reminder.tenant_id);
+    const wa = await whatsappForReminder(reminder);
     await wa.sendText(reminder.owner_phone, text);
     logger.info(`Aviso antecipado enviado (${reminder.id}).`);
   } catch (err) {
@@ -115,6 +123,12 @@ async function tick(): Promise<void> {
         logger.warn(`Erro ao processar lembrete ${reminder.id}`, err),
       );
     }
+
+    // Campanhas em massa (throttle/teto ficam no serviço).
+    await tickBroadcasts().catch((err) => logger.warn('Falha na varredura de disparos', err));
+
+    // LGPD: limpa memórias com expires_at vencido (best-effort).
+    await purgeExpiredMemories().catch(() => 0);
   } catch (err) {
     logger.warn('Falha na varredura de lembretes', err);
   } finally {

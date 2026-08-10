@@ -76,8 +76,15 @@ export function getIO(): SocketIOServer | null {
 
 export function emitNewMessage(tenantId: string, conversationId: string, message: MessageLog): void {
   if (!io) return;
+  // Sala da conversa (quem está com ela aberta) …
   io.to(`conversation:${conversationId}`).emit(SOCKET_EVENTS.MESSAGE_NEW, message);
-  io.to(tenantRoom(tenantId)).emit(SOCKET_EVENTS.CONVERSATION_UPDATED, { conversationId, lastMessage: message });
+  // … e a sala do tenant: após reconexão o painel pode ter perdido o join da
+  // conversa; o cliente filtra por conversation_id. Assim a bolha aparece sem F5.
+  io.to(tenantRoom(tenantId)).emit(SOCKET_EVENTS.MESSAGE_NEW, message);
+  io.to(tenantRoom(tenantId)).emit(SOCKET_EVENTS.CONVERSATION_UPDATED, {
+    conversationId,
+    lastMessage: message,
+  });
 }
 
 export function emitConversationUpdated(tenantId: string, conversation: Conversation): void {

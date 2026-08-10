@@ -33,6 +33,10 @@ export interface AiProviderDto {
   last_used_at: string | null;
   cooldown_until: string | null;
   in_cooldown: boolean;
+  /** null = atende todas as instâncias WhatsApp. */
+  connection_id: string | null;
+  connection_label: string | null;
+  connection_phone: string | null;
 }
 
 export interface AiProvidersResponse {
@@ -55,6 +59,8 @@ export interface CreateAiProviderInput {
   model: string;
   priority?: number;
   isActive?: boolean;
+  /** null = todas as instâncias. */
+  connectionId?: string | null;
 }
 
 export interface UpdateAiProviderInput {
@@ -65,6 +71,7 @@ export interface UpdateAiProviderInput {
   model?: string;
   priority?: number;
   isActive?: boolean;
+  connectionId?: string | null;
 }
 
 export interface TestAiCredsInput {

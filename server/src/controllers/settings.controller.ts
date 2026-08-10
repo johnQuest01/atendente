@@ -27,12 +27,18 @@ import { previewReply } from '../services/ai.service';
 import { parseReminder } from '../services/reminders/parse.service';
 import { listProducts } from '../db/queries/products';
 import { listScripts } from '../db/queries/messages_scripts';
-import { getTenantWhatsapp, invalidateTenantWhatsapp } from '../services/whatsapp.service';
+import { getWhatsappByConnection, invalidateTenantWhatsapp } from '../services/whatsapp.service';
 import {
+  createConnection,
+  deleteConnection,
   generateVerifyToken,
+  getConnectionById,
   getConnectionByTenant,
-  updateConnectionStatus,
-  upsertConnection,
+  listConnections,
+  updateConnection,
+  updateConnectionPhoneNumber,
+  updateConnectionStatusById,
+  type WhatsappConnection,
   type WhatsappSecrets,
 } from '../db/queries/whatsapp_connections';
 import { hasEncryptionKey } from '../utils/crypto';
@@ -272,69 +278,229 @@ function maskTail(value: string, visible = 4): string {
   return `••••${value.slice(-visible)}`;
 }
 
-/** Monta a "view" pública da conexão (sem expor tokens) + status ao vivo. */
-async function buildWhatsappView(tenantId: string): Promise<Record<string, unknown>> {
-  const conn = await getConnectionByTenant(tenantId);
-  const wa = await getTenantWhatsapp(tenantId);
+/** Monta a "view" pública de UMA conexão (sem expor tokens) + status ao vivo. */
+async function buildConnectionView(
+  tenantId: string,
+  conn: WhatsappConnection,
+): Promise<Record<string, unknown>> {
+  const wa = await getWhatsappByConnection(tenantId, conn.id);
   const status = await wa.getConnectionStatus();
-  if (conn) await updateConnectionStatus(tenantId, status).catch(() => undefined);
+  await updateConnectionStatusById(conn.id, status).catch(() => undefined);
 
-  const token = conn?.webhook_token ?? null;
+  // Detecta o número real da instância (ex.: Z-API GET /device) e persiste.
+  let phoneNumber = conn.phone_number;
+  const detected = (status.phone ?? '').replace(/\D/g, '');
+  if (detected.length >= 10 && detected !== (phoneNumber ?? '')) {
+    await updateConnectionPhoneNumber(conn.id, detected).catch(() => undefined);
+    phoneNumber = detected;
+  }
+
   return {
-    provider: conn?.provider ?? wa.provider,
-    baseUrl: conn?.base_url ?? null,
-    isActive: conn?.is_active ?? true,
+    id: conn.id,
+    label: conn.label,
+    phoneNumber,
+    provider: conn.provider,
+    baseUrl: conn.base_url,
+    isActive: conn.is_active,
     configured: wa.configured,
     encryptionAvailable: hasEncryptionKey(),
-    // URL para colar no painel da Z-API/Evolution desta empresa.
-    webhookUrl: token ? `${env.PUBLIC_BASE_URL}/webhook/whatsapp/${token}` : null,
-    instanceId: conn?.secrets.instanceId ? maskTail(conn.secrets.instanceId) : null,
-    instance: conn?.secrets.instance ? maskTail(conn.secrets.instance) : null,
-    hasToken: Boolean(conn?.secrets.token),
-    hasClientToken: Boolean(conn?.secrets.clientToken),
-    hasApiKey: Boolean(conn?.secrets.apiKey),
-    // Meta Cloud: o phone number ID não é segredo (aparece no painel da Meta) e
-    // o verify token precisa ser LIDO pelo cliente para colar lá — os dois vão
-    // inteiros. O access token, esse sim, nunca sai daqui.
-    phoneNumberId: conn?.secrets.phoneNumberId ?? null,
-    verifyToken: conn?.secrets.verifyToken ?? null,
-    hasAccessToken: Boolean(conn?.secrets.accessToken),
+    webhookUrl: `${env.PUBLIC_BASE_URL}/webhook/whatsapp/${conn.webhook_token}`,
+    instanceId: conn.secrets.instanceId ? maskTail(conn.secrets.instanceId) : null,
+    instance: conn.secrets.instance ? maskTail(conn.secrets.instance) : null,
+    hasToken: Boolean(conn.secrets.token),
+    hasClientToken: Boolean(conn.secrets.clientToken),
+    hasApiKey: Boolean(conn.secrets.apiKey),
+    phoneNumberId: conn.secrets.phoneNumberId ?? null,
+    verifyToken: conn.secrets.verifyToken ?? null,
+    hasAccessToken: Boolean(conn.secrets.accessToken),
+    // IA desta instância (null = herda o padrão da empresa)
+    aiPersona: conn.ai_persona,
+    aiTemperature: conn.ai_temperature,
+    aiMaxTokens: conn.ai_max_tokens,
+    agentEnabled: conn.agent_enabled,
     status,
   };
 }
 
-export async function getWhatsappConnection(req: Request, res: Response): Promise<void> {
-  const view = await buildWhatsappView(req.user!.tenant_id);
-  res.json(view);
+export async function listWhatsappConnections(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const conns = await listConnections(tenantId);
+  const connections = await Promise.all(conns.map((c) => buildConnectionView(tenantId, c)));
+  res.json({
+    encryptionAvailable: hasEncryptionKey(),
+    connections,
+  });
 }
 
+/** @deprecated Prefer listWhatsappConnections — mantém 1ª conexão para clientes antigos. */
+export async function getWhatsappConnection(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const conn = await getConnectionByTenant(tenantId);
+  if (!conn) {
+    res.json({
+      encryptionAvailable: hasEncryptionKey(),
+      configured: false,
+      provider: 'zapi',
+      isActive: true,
+      webhookUrl: null,
+      status: { ok: false, detail: 'Nenhuma instância cadastrada.' },
+      connections: [],
+    });
+    return;
+  }
+  const view = await buildConnectionView(tenantId, conn);
+  const all = await listConnections(tenantId);
+  res.json({
+    ...view,
+    connections: await Promise.all(all.map((c) => buildConnectionView(tenantId, c))),
+  });
+}
+
+export const whatsappConnectionIdSchema = z.object({
+  id: z.string().uuid(),
+});
+
 export const updateWhatsappSchema = z.object({
+  label: z.string().trim().min(1).max(120).optional(),
+  phoneNumber: z.string().trim().max(30).optional().nullable(),
   provider: z.enum(['zapi', 'evolution', 'metacloud']).default('zapi'),
   instanceId: z.string().trim().max(200).optional(),
   token: z.string().trim().max(400).optional(),
   clientToken: z.string().trim().max(400).optional(),
   apiKey: z.string().trim().max(400).optional(),
   instance: z.string().trim().max(200).optional(),
-  // Meta Cloud API
   accessToken: z.string().trim().max(1000).optional(),
   phoneNumberId: z.string().trim().max(64).optional(),
-  baseUrl: z.string().url().optional(),
+  baseUrl: z.string().url().optional().or(z.literal('')),
   isActive: z.boolean().optional(),
+  // IA por número — null/omitido herda o padrão da empresa
+  aiPersona: z.string().max(20_000).optional().nullable(),
+  aiTemperature: z.number().min(0).max(1.5).optional().nullable(),
+  aiMaxTokens: z.number().int().min(50).max(1200).optional().nullable(),
+  agentEnabled: z.boolean().optional().nullable(),
 });
 
-/**
- * Aponta o webhook do provedor para a URL desta empresa, por API.
- *
- * O passo manual (copiar a URL e colar no painel do provedor) é onde a
- * integração mais quebra: a instância fica conectada, o painel mostra tudo
- * verde, e mesmo assim nenhuma mensagem chega — sem erro em lugar nenhum.
- */
+function normalizeBaseUrl(provider: string, raw: string | null): string | null {
+  if (!raw) return null;
+  const url = raw.trim().replace(/\/+$/, '');
+  if (!url) return null;
+  if (provider === 'zapi') {
+    const m = url.match(/^(https?:\/\/[^/]+\/instances)\b/i);
+    if (m) return m[1];
+    const cut = url.match(/^(https?:\/\/[^/]+)/i);
+    return cut ? `${cut[1]}/instances` : null;
+  }
+  return url.replace(/\/(token|message|send)[^]*$/i, '') || null;
+}
+
+function mergeSecrets(
+  input: z.infer<typeof updateWhatsappSchema>,
+  prev: WhatsappSecrets,
+): WhatsappSecrets {
+  return {
+    instanceId: input.instanceId || prev.instanceId,
+    token: input.token || prev.token,
+    clientToken: input.clientToken || prev.clientToken,
+    apiKey: input.apiKey || prev.apiKey,
+    instance: input.instance || prev.instance,
+    accessToken: input.accessToken || prev.accessToken,
+    phoneNumberId: input.phoneNumberId || prev.phoneNumberId,
+    verifyToken:
+      prev.verifyToken ?? (input.provider === 'metacloud' ? generateVerifyToken() : undefined),
+  };
+}
+
+export async function createWhatsappConnection(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  if (!hasEncryptionKey()) {
+    throw new AppError(
+      'Criptografia não configurada no servidor (defina ENCRYPTION_KEY) para salvar as credenciais com segurança.',
+      503,
+      'NO_ENCRYPTION_KEY',
+    );
+  }
+  const input = req.body as z.infer<typeof updateWhatsappSchema>;
+  const secrets = mergeSecrets(input, {});
+  const conn = await createConnection(tenantId, {
+    provider: input.provider,
+    secrets,
+    label: input.label ?? `WhatsApp ${(await listConnections(tenantId)).length + 1}`,
+    phoneNumber: input.phoneNumber,
+    baseUrl: normalizeBaseUrl(input.provider, input.baseUrl || null),
+    isActive: input.isActive ?? true,
+    aiPersona: input.aiPersona,
+    aiTemperature: input.aiTemperature,
+    aiMaxTokens: input.aiMaxTokens,
+    agentEnabled: input.agentEnabled,
+  });
+  invalidateTenantWhatsapp(tenantId, conn.id);
+  res.status(201).json(await buildConnectionView(tenantId, conn));
+}
+
+export async function putWhatsappConnectionById(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const { id } = req.params as z.infer<typeof whatsappConnectionIdSchema>;
+  if (!hasEncryptionKey()) {
+    throw new AppError(
+      'Criptografia não configurada no servidor (defina ENCRYPTION_KEY) para salvar as credenciais com segurança.',
+      503,
+      'NO_ENCRYPTION_KEY',
+    );
+  }
+  const existing = await getConnectionById(tenantId, id);
+  if (!existing) throw new NotFoundError('Conexão WhatsApp');
+
+  const input = req.body as z.infer<typeof updateWhatsappSchema>;
+  const secrets = mergeSecrets(input, existing.secrets);
+  const updated = await updateConnection(tenantId, id, {
+    provider: input.provider,
+    secrets,
+    label: input.label ?? existing.label,
+    phoneNumber: input.phoneNumber !== undefined ? input.phoneNumber : existing.phone_number,
+    baseUrl: normalizeBaseUrl(
+      input.provider,
+      input.baseUrl !== undefined ? input.baseUrl || null : existing.base_url,
+    ),
+    isActive: input.isActive ?? existing.is_active,
+    aiPersona: input.aiPersona !== undefined ? input.aiPersona : existing.ai_persona,
+    aiTemperature: input.aiTemperature !== undefined ? input.aiTemperature : existing.ai_temperature,
+    aiMaxTokens: input.aiMaxTokens !== undefined ? input.aiMaxTokens : existing.ai_max_tokens,
+    agentEnabled: input.agentEnabled !== undefined ? input.agentEnabled : existing.agent_enabled,
+  });
+  invalidateTenantWhatsapp(tenantId, id);
+  res.json(await buildConnectionView(tenantId, updated as WhatsappConnection));
+}
+
+/** Compat: PUT /whatsapp sem id atualiza a primeira ou cria. */
+export async function putWhatsappConnection(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const existing = await getConnectionByTenant(tenantId);
+  if (existing) {
+    req.params = { ...req.params, id: existing.id };
+    await putWhatsappConnectionById(req, res);
+    return;
+  }
+  await createWhatsappConnection(req, res);
+}
+
+export async function deleteWhatsappConnection(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const { id } = req.params as z.infer<typeof whatsappConnectionIdSchema>;
+  const ok = await deleteConnection(tenantId, id);
+  if (!ok) throw new NotFoundError('Conexão WhatsApp');
+  invalidateTenantWhatsapp(tenantId, id);
+  res.status(204).send();
+}
+
 export async function configureWhatsappWebhook(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenant_id;
-  const conn = await getConnectionByTenant(tenantId);
+  const id = (req.params as { id?: string }).id;
+  const conn = id
+    ? await getConnectionById(tenantId, id)
+    : await getConnectionByTenant(tenantId);
   if (!conn) throw new AppError('Cadastre as credenciais do WhatsApp primeiro.', 400, 'NO_CONNECTION');
 
-  const wa = await getTenantWhatsapp(tenantId);
+  const wa = await getWhatsappByConnection(tenantId, conn.id);
   if (!wa.configured) {
     throw new AppError('Conexão incompleta — preencha as credenciais do provedor.', 400, 'NOT_CONFIGURED');
   }
@@ -349,68 +515,4 @@ export async function configureWhatsappWebhook(req: Request, res: Response): Pro
   const url = `${env.PUBLIC_BASE_URL}/webhook/whatsapp/${conn.webhook_token}`;
   const result = await wa.configureWebhook(url);
   res.status(result.ok ? 200 : 502).json({ ...result, webhookUrl: url });
-}
-
-/**
- * Corta o que vier depois da raiz da API no campo "URL base".
- *
- * É comum colar ali a URL inteira de um endpoint (ex.: `.../token/XXX/send-text`),
- * porque é ela que aparece na documentação do provedor. O código concatena o ID
- * e o token EM CIMA dessa base, então o endereço final vira impossível e todas
- * as chamadas respondem 404 — sem nenhuma pista de que a causa foi este campo.
- */
-function normalizeBaseUrl(provider: string, raw: string | null): string | null {
-  if (!raw) return null;
-  const url = raw.trim().replace(/\/+$/, '');
-  if (provider === 'zapi') {
-    const m = url.match(/^(https?:\/\/[^/]+\/instances)\b/i);
-    if (m) return m[1];
-    // Sem "/instances" reconhecível, guarda só a origem (host) e deixa o
-    // resto com o padrão do provedor.
-    const cut = url.match(/^(https?:\/\/[^/]+)/i);
-    return cut ? `${cut[1]}/instances` : null;
-  }
-  // Outros provedores: descarta caminho de endpoint óbvio, mantém o resto.
-  return url.replace(/\/(token|message|send)[^]*$/i, '') || null;
-}
-
-export async function putWhatsappConnection(req: Request, res: Response): Promise<void> {
-  const tenantId = req.user!.tenant_id;
-  if (!hasEncryptionKey()) {
-    throw new AppError(
-      'Criptografia não configurada no servidor (defina ENCRYPTION_KEY) para salvar as credenciais com segurança.',
-      503,
-      'NO_ENCRYPTION_KEY',
-    );
-  }
-
-  const input = req.body as z.infer<typeof updateWhatsappSchema>;
-  const existing = await getConnectionByTenant(tenantId);
-  const prev = existing?.secrets ?? {};
-  // Campo vazio = "não alterar" (o front nunca recebe o segredo em texto).
-  const secrets: WhatsappSecrets = {
-    instanceId: input.instanceId || prev.instanceId,
-    token: input.token || prev.token,
-    clientToken: input.clientToken || prev.clientToken,
-    apiKey: input.apiKey || prev.apiKey,
-    instance: input.instance || prev.instance,
-    accessToken: input.accessToken || prev.accessToken,
-    phoneNumberId: input.phoneNumberId || prev.phoneNumberId,
-    // Geramos o verify token na primeira vez que a empresa escolhe Meta Cloud:
-    // é ele que a cliente cola no painel da Meta, e precisa ser estável depois.
-    verifyToken:
-      prev.verifyToken ?? (input.provider === 'metacloud' ? generateVerifyToken() : undefined),
-  };
-
-  await upsertConnection(tenantId, {
-    provider: input.provider,
-    secrets,
-    baseUrl: normalizeBaseUrl(input.provider, input.baseUrl ?? existing?.base_url ?? null),
-    isActive: input.isActive ?? existing?.is_active ?? true,
-    webhookToken: existing?.webhook_token,
-  });
-  invalidateTenantWhatsapp(tenantId);
-
-  const view = await buildWhatsappView(tenantId);
-  res.json(view);
 }

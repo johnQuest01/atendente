@@ -5,6 +5,8 @@ import { getToken } from '@/services/api';
 const SOCKET_URL = import.meta.env.VITE_API_URL ?? '';
 
 let sharedSocket: Socket | null = null;
+/** Conversa aberta no painel — re-join automático a cada (re)conexão. */
+let activeConversationId: string | null = null;
 
 function getSocket(): Socket {
   const token = getToken() ?? undefined;
@@ -13,6 +15,12 @@ function getSocket(): Socket {
       autoConnect: Boolean(token),
       auth: { token },
       transports: ['websocket', 'polling'],
+    });
+    // A sala conversation:* é por conexão. Em toda reconexão, volta para a ativa.
+    sharedSocket.on('connect', () => {
+      if (activeConversationId) {
+        sharedSocket!.emit('conversation:join', activeConversationId);
+      }
     });
   } else {
     sharedSocket.auth = { token };
@@ -75,9 +83,11 @@ export function useSocket(handlers: Record<string, SocketHandler>): Socket {
 }
 
 export function joinConversation(conversationId: string): void {
+  activeConversationId = conversationId;
   getSocket().emit('conversation:join', conversationId);
 }
 
 export function leaveConversation(conversationId: string): void {
+  if (activeConversationId === conversationId) activeConversationId = null;
   getSocket().emit('conversation:leave', conversationId);
 }

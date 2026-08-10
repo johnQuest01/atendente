@@ -26,6 +26,11 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // Bump força o SW a trocar o precache (evita ficar na UI antiga de “Colar conversa”).
+        cacheId: 'atendente-pwa-20260810b',
+        cleanupOutdatedCaches: true,
+        clientsClaim: true,
+        skipWaiting: true,
         navigateFallbackDenylist: [/^\/api/, /^\/uploads/, /^\/webhook/],
         runtimeCaching: [
           {

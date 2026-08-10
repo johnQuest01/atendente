@@ -8,7 +8,7 @@ import { emitNewMessage } from '../socket';
 import { renderTemplate, formatBRL } from '../utils/text';
 import { signMediaToken } from '../utils/media-token';
 import * as whatsapp from './whatsapp.service';
-import type { Audio, Client, Conversation, MessageLog } from '../types';
+import type { Audio, Client, Conversation, MessageLog, MessageOrigin } from '../types';
 
 interface DispatchContext {
   conversation: Conversation;
@@ -85,7 +85,7 @@ export async function dispatchAudio(ctx: DispatchContext, audioId: string): Prom
 
   const publicUrl = audioPublicUrl(audio, tenantId);
 
-  const wa = await whatsapp.getTenantWhatsapp(tenantId);
+  const wa = await whatsapp.getWhatsappForConversation(tenantId, ctx.conversation.connection_id);
   let zapiId: string | null;
   try {
     zapiId = await sendAudioToProvider(wa, ctx.client.phone, publicUrl);
@@ -126,7 +126,7 @@ export async function dispatchScript(ctx: DispatchContext, scriptId: string): Pr
     company_name: ctx.client.company_name ?? '',
   });
 
-  const wa = await whatsapp.getTenantWhatsapp(tenantId);
+  const wa = await whatsapp.getWhatsappForConversation(tenantId, ctx.conversation.connection_id);
   const zapiId = await wa.sendText(ctx.client.phone, text);
   await incrementScriptUsage(tenantId, script.id);
 
@@ -141,20 +141,26 @@ export async function dispatchScript(ctx: DispatchContext, scriptId: string): Pr
   return msg;
 }
 
-/** Envia as imagens de um produto + legenda formatada com preço. */
-export async function dispatchProduct(ctx: DispatchContext, productId: string): Promise<MessageLog | null> {
+/** Envia as imagens de um produto + legenda. `withPrice: false` omite o preço. */
+export async function dispatchProduct(
+  ctx: DispatchContext,
+  productId: string,
+  opts?: { withPrice?: boolean },
+): Promise<MessageLog | null> {
   const tenantId = ctx.conversation.tenant_id;
   const product = await getProductById(tenantId, productId);
   if (!product || !product.is_available) return null;
 
-  const priceLine = product.price_wholesale
-    ? `\nPreço atacado: ${formatBRL(Number(product.price_wholesale))}`
-    : '';
+  const withPrice = opts?.withPrice !== false;
+  const priceLine =
+    withPrice && product.price_wholesale
+      ? `\nPreço atacado: ${formatBRL(Number(product.price_wholesale))}`
+      : '';
   const minLine = `\nPedido mínimo: ${product.min_quantity}${product.unit ? ` (${product.unit})` : ''}`;
   const caption = `*${product.name}*${product.description ? `\n${product.description}` : ''}${priceLine}${minLine}`;
 
   const imageUrls = product.image_urls.map(toCurrentPublicUrl);
-  const wa = await whatsapp.getTenantWhatsapp(tenantId);
+  const wa = await whatsapp.getWhatsappForConversation(tenantId, ctx.conversation.connection_id);
   let zapiId: string | null = null;
   if (imageUrls.length > 0) {
     const ids = await wa.sendImages(ctx.client.phone, imageUrls, caption);
@@ -177,8 +183,15 @@ export async function dispatchProduct(ctx: DispatchContext, productId: string): 
 }
 
 /** Envia um texto livre (resposta do Claude ou mensagem manual do operador). */
-export async function dispatchText(ctx: DispatchContext, text: string): Promise<MessageLog> {
-  const wa = await whatsapp.getTenantWhatsapp(ctx.conversation.tenant_id);
+export async function dispatchText(
+  ctx: DispatchContext,
+  text: string,
+  opts?: { origin?: MessageOrigin },
+): Promise<MessageLog> {
+  const wa = await whatsapp.getWhatsappForConversation(
+    ctx.conversation.tenant_id,
+    ctx.conversation.connection_id,
+  );
   const zapiId = await wa.sendText(ctx.client.phone, text);
   const msg = await insertMessage(ctx.conversation.tenant_id, {
     conversationId: ctx.conversation.id,
@@ -186,6 +199,7 @@ export async function dispatchText(ctx: DispatchContext, text: string): Promise<
     type: 'text',
     content: text,
     zapiMessageId: zapiId,
+    origin: opts?.origin,
   });
   emitNewMessage(ctx.conversation.tenant_id, ctx.conversation.id, msg);
   return msg;

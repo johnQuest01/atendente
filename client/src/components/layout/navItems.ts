@@ -25,6 +25,7 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/conversas', label: 'Conversas', icon: ChatIcon, primary: true },
   { to: '/audios', label: 'Áudios', icon: AudioIcon, primary: true },
   { to: '/produtos', label: 'Produtos', icon: ProductIcon, primary: true },
+  { to: '/disparos', label: 'Disparos', icon: TextIcon, primary: false },
   { to: '/scripts', label: 'Scripts', icon: TextIcon, primary: false },
   { to: '/keywords', label: 'Keywords', icon: KeyIcon, primary: false },
   { to: '/configuracoes', label: 'Config', icon: SettingsIcon, primary: true },

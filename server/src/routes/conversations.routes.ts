@@ -8,10 +8,13 @@ import {
   clientAiSchema,
   patchConversationClient,
   deleteMessagesSchema,
+  editMessage,
+  editMessageSchema,
   getConversations,
   getConversationDetail,
   idParamSchema,
   listQuerySchema,
+  messageIdParamSchema,
   patchConversationStatus,
   removeConversation,
   removeMessages,
@@ -23,6 +26,12 @@ import {
   sendProductSchema,
   statusBodySchema,
 } from '../controllers/conversations.controller';
+import {
+  conversationIdParamSchema,
+  conversationMemoryParamSchema,
+  listMemoriesForConversation,
+  removeMemoryForConversation,
+} from '../controllers/memories.controller';
 
 const router = Router();
 
@@ -30,6 +39,16 @@ router.use(authenticate, requireActiveTenant);
 
 router.get('/', validate({ query: listQuerySchema }), asyncHandler(getConversations));
 router.get('/:id', validate({ params: idParamSchema }), asyncHandler(getConversationDetail));
+router.get(
+  '/:id/memories',
+  validate({ params: conversationIdParamSchema }),
+  asyncHandler(listMemoriesForConversation),
+);
+router.delete(
+  '/:id/memories/:memoryId',
+  validate({ params: conversationMemoryParamSchema }),
+  asyncHandler(removeMemoryForConversation),
+);
 router.patch(
   '/:id/status',
   validate({ params: idParamSchema, body: statusBodySchema }),
@@ -60,6 +79,11 @@ router.post(
   '/:id/messages/delete',
   validate({ params: idParamSchema, body: deleteMessagesSchema }),
   asyncHandler(removeMessages),
+);
+router.patch(
+  '/:id/messages/:messageId',
+  validate({ params: messageIdParamSchema, body: editMessageSchema }),
+  asyncHandler(editMessage),
 );
 router.delete('/:id/messages', validate({ params: idParamSchema }), asyncHandler(clearConversation));
 router.delete('/:id', validate({ params: idParamSchema }), asyncHandler(removeConversation));

@@ -16,6 +16,11 @@ export interface Client {
   id: string;
   tenant_id: string;
   phone: string;
+  /**
+   * WhatsApp Linked ID (@lid), sem sufixo. Serve para casar mensagens fromMe
+   * da Z-API que chegam só com LID, sem o número E.164.
+   */
+  whatsapp_lid: string | null;
   name: string | null;
   company_name: string | null;
   segment: string | null;
@@ -35,6 +40,8 @@ export interface Conversation {
   id: string;
   tenant_id: string;
   client_id: string;
+  /** Instância WhatsApp que originou/atende esta conversa (null = legado). */
+  connection_id: string | null;
   status: ConversationStatus;
   assigned_to: string | null;
   started_at: string;
@@ -147,6 +154,8 @@ export interface Reminder {
   lead_minutes: number | null;
   /** Quando o aviso prévio deste ciclo foi enviado (null = ainda não). */
   lead_fired_at: string | null;
+  /** WhatsApp/instância que deve disparar o alarme. */
+  connection_id?: string | null;
   created_at: string;
 }
 

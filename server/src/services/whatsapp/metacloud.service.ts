@@ -209,9 +209,11 @@ export function createMetaCloudProvider(conn: MetaCloudConnection): WhatsAppProv
           data.display_phone_number ?? null,
           data.quality_rating ? `qualidade ${data.quality_rating}` : null,
         ].filter(Boolean);
+        const phone = (data.display_phone_number ?? '').replace(/\D/g, '');
         return {
           ok: true,
           detail: parts.length > 0 ? `Número ativo na Meta: ${parts.join(' · ')}.` : 'Número ativo na Meta.',
+          phone: phone.length >= 10 ? phone : null,
         };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -382,6 +384,8 @@ export function parseMetaCloudInbound(body: Record<string, unknown>): Normalized
 
   return {
     phone: (msg.from ?? '').replace(/\D/g, ''),
+    lid: null,
+    phoneIsLid: false,
     text: content,
     type,
     providerMessageId: msg.id ?? null,

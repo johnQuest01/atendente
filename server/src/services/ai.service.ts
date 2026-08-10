@@ -5,6 +5,7 @@ import { getAiMaxTokens, getAiTemperature } from '../db/queries/settings';
 import type { AiHistoryMessage, Client, Product, TextScript } from '../types';
 import { complete, hasVisionProvider, isAiConfigured } from './ai/orchestrator';
 import type { ChatImage, ChatMessage } from './ai/types';
+import { buildMemoryPromptBlock } from './memory.service';
 
 export { isAiConfigured, hasVisionProvider };
 
@@ -108,6 +109,8 @@ interface SystemPromptInput {
   scripts?: TextScript[];
   storeName?: string;
   systemPrompt?: string;
+  /** Bloco opcional de memórias (já formatado). */
+  memoryBlock?: string;
 }
 
 /**
@@ -123,6 +126,7 @@ function buildSystemPrompt(input: SystemPromptInput): string {
   return (
     basePrompt +
     buildClientContext(input.client) +
+    (input.memoryBlock ?? '') +
     buildClientInstruction(input.client) +
     buildCatalog(input.products) +
     buildScriptsReference(input.scripts)
@@ -152,11 +156,17 @@ export interface GenerateReplyInput {
   storeName?: string;
   /** Persona/instruções (system prompt) editadas pelo usuário no app. */
   systemPrompt?: string;
+  /** Temperatura desta resposta (ex.: override da conexão/número). */
+  temperature?: number;
+  /** maxTokens desta resposta (ex.: override da conexão/número). */
+  maxTokens?: number;
   /**
    * Imagens para a IA "ver" (anexadas ao último turno do cliente). Quadros de
    * vídeo também entram aqui. Modelos sem visão simplesmente as ignoram.
    */
   attachImages?: ChatImage[];
+  /** Instância WhatsApp que está atendendo — escolhe IAs ligadas a ela. */
+  connectionId?: string | null;
 }
 
 /**
@@ -209,19 +219,24 @@ export async function generateReply(
   if (hasImages) attachImagesToLastUser(messages, input.attachImages as ChatImage[]);
 
   const hasHumanTurns = input.history.some((m) => m.origin === 'human');
+  const memoryBlock = input.client
+    ? await buildMemoryPromptBlock(tenantId, input.client.id).catch(() => '')
+    : '';
   const system =
-    buildSystemPrompt(input) +
+    buildSystemPrompt({ ...input, memoryBlock }) +
     (hasImages ? VISION_INSTRUCTION : '') +
     (hasHumanTurns ? HUMAN_TURN_INSTRUCTION : '');
-  const [temperature, configuredMax] = await Promise.all([
-    getAiTemperature(tenantId),
-    getAiMaxTokens(tenantId),
+  const [tenantTemp, tenantMax] = await Promise.all([
+    input.temperature !== undefined ? Promise.resolve(input.temperature) : getAiTemperature(tenantId),
+    input.maxTokens !== undefined ? Promise.resolve(input.maxTokens) : getAiMaxTokens(tenantId),
   ]);
+  const temperature = clampNumber(tenantTemp, 0, 1.5);
   // Visão: um pouco mais de espaço, sem passar do teto absoluto (1200).
-  const maxTokens = hasImages ? Math.min(1200, Math.max(configuredMax, 700)) : configuredMax;
+  const maxTokens = hasImages ? Math.min(1200, Math.max(tenantMax, 700)) : tenantMax;
 
   const result = await complete({ system, messages, maxTokens, temperature }, tenantId, {
     meter: true,
+    connectionId: input.connectionId,
   });
   if (!result) {
     logger.warn('Sem resposta da IA (nenhum provedor disponível, teto atingido ou todos em falha).');

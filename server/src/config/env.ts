@@ -163,6 +163,12 @@ if (!cleanedEnv.PUBLIC_BASE_URL && cleanedEnv.RENDER_EXTERNAL_URL) {
   cleanedEnv.PUBLIC_BASE_URL = cleanedEnv.RENDER_EXTERNAL_URL;
 }
 
+// Em produção no Fly.io: FLY_APP_NAME vem injetado; montamos a URL pública
+// padrão *.fly.dev quando PUBLIC_BASE_URL não foi definido manualmente.
+if (!cleanedEnv.PUBLIC_BASE_URL && cleanedEnv.FLY_APP_NAME) {
+  cleanedEnv.PUBLIC_BASE_URL = `https://${cleanedEnv.FLY_APP_NAME}.fly.dev`;
+}
+
 const parsed = envSchema.safeParse(cleanedEnv);
 
 if (!parsed.success) {

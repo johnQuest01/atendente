@@ -42,6 +42,8 @@ export function isAllowedOrigin(origin?: string): boolean {
   // Requisições sem Origin (curl, apps nativas, same-origin) são liberadas.
   if (!origin) return true;
   const normalized = origin.replace(/\/$/, '');
+  // Z-API às vezes manda Origin no POST do webhook — não é o browser do painel.
+  if (normalized === 'https://api.z-api.io') return true;
   if (allowList.includes(normalized)) return true;
   try {
     const host = new URL(origin).hostname;

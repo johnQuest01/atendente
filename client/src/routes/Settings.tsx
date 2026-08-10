@@ -24,10 +24,12 @@ import {
 } from '@/hooks/usePersona';
 import { useSystemStatus, type ServiceCheck } from '@/hooks/useSystemStatus';
 import {
-  useWhatsappConnection,
+  useWhatsappConnections,
   useSaveWhatsappConnection,
+  useDeleteWhatsappConnection,
   useConfigureWebhook,
   type WhatsappConnectionInput,
+  type WhatsappConnectionView,
   type WhatsappProvider,
 } from '@/hooks/useWhatsappConnection';
 import {
@@ -40,11 +42,17 @@ import {
 import { useKeywords, useCreateKeyword, useDeleteKeyword } from '@/hooks/useKeywords';
 import { useAiUsage } from '@/hooks/useAiProviders';
 import { AiProvidersManager } from '@/components/ai/AiProvidersManager';
+import { ContactsHistoryCard } from '@/components/features/ContactsHistoryCard';
 import { useSocket } from '@/hooks/useSocket';
 import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
 import { initials } from '@/utils/formatters';
+import { splitDispatchKeywords } from '@/utils/dispatchKeywords';
 import type { UserRole } from '@/types';
+
+/** Campo de prompt: sans, um pouco mais preto, sem negrito. */
+const PROMPT_TEXTAREA_CLASS =
+  'mt-1 w-full resize-y rounded-xl border border-border bg-bg p-3 font-sans text-sm font-normal leading-relaxed text-[#0a0d14] outline-none focus:border-primary';
 
 const PROVIDER_LABEL: Record<string, string> = {
   zapi: 'Z-API',
@@ -152,6 +160,8 @@ export default function Settings() {
         </Card>
 
         <WhatsappCard canEdit={user?.role === 'admin' || user?.role === 'superadmin'} />
+
+        <ContactsHistoryCard />
 
         {(user?.role === 'admin' || user?.role === 'superadmin') && <ReminderOwnersCard />}
 
@@ -352,7 +362,7 @@ function PersonaCard() {
         rows={16}
         spellCheck
         placeholder="Ex.: Você é a Ana, atendente da Loja X. Fale de forma simpática e curta..."
-        className="mt-1 w-full resize-y rounded-xl border border-border bg-bg p-3 font-mono text-xs leading-relaxed text-text-primary outline-none focus:border-primary"
+        className={PROMPT_TEXTAREA_CLASS}
       />
 
       <div className="mt-2 flex items-center justify-between gap-2">
@@ -548,28 +558,54 @@ function DispatchKeywordsCard() {
   const create = useCreateKeyword();
   const remove = useDeleteKeyword();
   const [word, setWord] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const words = (keywords ?? []).filter((k) => k.content_type === 'reminders_today');
+  const existing = new Set(words.map((k) => k.keyword.trim().toLowerCase()));
 
-  function add() {
-    const w = word.trim();
-    if (!w) return;
-    create.mutate(
-      {
-        keyword: w,
-        intent: 'reminders_today',
-        content_type: 'reminders_today',
-        content_id: null,
-        priority: 1,
-      },
-      {
-        onSuccess: () => {
-          setWord('');
-          toast('Palavra de disparo adicionada.', 'success');
-        },
-        onError: (err) => toast(getErrorMessage(err), 'error'),
-      },
-    );
+  async function add() {
+    const parts = splitDispatchKeywords(word);
+    if (parts.length === 0) return;
+
+    const toCreate = parts.filter((p) => !existing.has(p));
+    if (toCreate.length === 0) {
+      toast('Essas palavras já estão cadastradas.', 'info');
+      setWord('');
+      return;
+    }
+
+    setSaving(true);
+    let ok = 0;
+    let fail = 0;
+    try {
+      for (const w of toCreate) {
+        try {
+          await create.mutateAsync({
+            keyword: w,
+            intent: 'reminders_today',
+            content_type: 'reminders_today',
+            content_id: null,
+            priority: 1,
+          });
+          ok += 1;
+        } catch {
+          fail += 1;
+        }
+      }
+      setWord('');
+      if (ok > 0 && fail === 0) {
+        toast(
+          ok === 1 ? 'Palavra de disparo adicionada.' : `${ok} palavras de disparo adicionadas.`,
+          'success',
+        );
+      } else if (ok > 0) {
+        toast(`${ok} salva(s), ${fail} falhou(aram).`, 'info');
+      } else {
+        toast('Não foi possível salvar as palavras.', 'error');
+      }
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -578,9 +614,11 @@ function DispatchKeywordsCard() {
         <h2 className="text-base font-bold text-text-primary">Palavras de disparo</h2>
         <p className="text-sm text-text-secondary">
           Quando um número autorizado mandar uma destas palavras, eu respondo os compromissos de
-          hoje — sem gastar IA. As palavras <strong>HOJE</strong>, <strong>AMANHÃ</strong>,{' '}
-          <strong>SEMANA</strong>, <strong>MÊS</strong> e <strong>TODOS</strong> já funcionam sem
-          cadastrar.
+          hoje — sem gastar IA. Maiúsculas/minúsculas não importam. Separe várias com{' '}
+          <strong>ponto</strong> ou <strong>vírgula</strong> (ex.:{' '}
+          <em>hoje. amanha. mes, e todos</em>). As palavras <strong>HOJE</strong>,{' '}
+          <strong>AMANHÃ</strong>, <strong>SEMANA</strong>, <strong>MÊS</strong> e{' '}
+          <strong>TODOS</strong> já funcionam sem cadastrar.
         </p>
       </div>
 
@@ -609,24 +647,25 @@ function DispatchKeywordsCard() {
 
       {words.length === 0 && !isLoading && (
         <p className="text-xs text-text-secondary">
-          Nenhuma palavra extra. Adicione, por exemplo, <em>resumo</em> ou <em>agenda do dia</em>.
+          Nenhuma palavra extra. Ex.: <em>resumo. agenda do dia</em>
         </p>
       )}
 
       <div className="flex flex-col gap-2 rounded-xl border border-border bg-bg p-3">
         <Input
           label="Nova palavra de disparo"
-          placeholder="Ex.: resumo, agenda do dia"
+          placeholder="Ex.: resumo. agenda do dia, e balanço"
+          hint="Ponto ou vírgula separa várias. HOJE e HOJE são a mesma."
           value={word}
           onChange={(e) => setWord(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault();
-              add();
+              void add();
             }
           }}
         />
-        <Button size="sm" onClick={add} loading={create.isPending} disabled={!word.trim()}>
+        <Button size="sm" onClick={() => void add()} loading={saving || create.isPending} disabled={!word.trim()}>
           Adicionar palavra
         </Button>
       </div>
@@ -702,7 +741,7 @@ function ReminderPersonaCard() {
         rows={10}
         spellCheck
         placeholder='Ex.: "Você é minha secretária. Confirme com clareza, cite a data por extenso..."'
-        className="mt-1 w-full resize-y rounded-xl border border-border bg-bg p-3 font-mono text-xs leading-relaxed text-text-primary outline-none focus:border-primary"
+        className={PROMPT_TEXTAREA_CLASS}
       />
 
       <div className="mt-2 flex items-center justify-between gap-2">
@@ -909,60 +948,282 @@ function BehaviorSettingsCard() {
 }
 
 function WhatsappCard({ canEdit }: { canEdit: boolean }) {
-  const { data, isFetching, refetch } = useWhatsappConnection();
+  const { data, isFetching, refetch } = useWhatsappConnections();
   const save = useSaveWhatsappConnection();
+  const remove = useDeleteWhatsappConnection();
   const configureWebhook = useConfigureWebhook();
 
-  const [editing, setEditing] = useState(false);
-  const [provider, setProvider] = useState<WhatsappProvider>('zapi');
+  const [editingId, setEditingId] = useState<string | 'new' | null>(null);
+  const connections = data?.connections ?? [];
+  const encryptionOk = data?.encryptionAvailable !== false;
+
+  return (
+    <Card>
+      <div className="mb-3 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h2 className="text-base font-bold text-text-primary">Números WhatsApp</h2>
+          <p className="text-sm text-text-secondary">
+            Cadastre várias instâncias independentes (Z-API, Evolution ou Meta). Cada número tem
+            webhook e IA próprios.
+          </p>
+        </div>
+        <Badge tone={connections.some((c) => c.status?.ok) ? 'success' : 'warning'}>
+          {connections.length} instância{connections.length === 1 ? '' : 's'}
+        </Badge>
+      </div>
+
+      {!canEdit && (
+        <p className="mb-3 text-xs text-text-secondary">Apenas administradores podem alterar.</p>
+      )}
+      {canEdit && !encryptionOk && (
+        <p className="mb-3 rounded-lg bg-warning/12 px-3 py-2 text-xs text-warning">
+          Defina ENCRYPTION_KEY no servidor para salvar as credenciais com segurança.
+        </p>
+      )}
+
+      <div className="flex flex-col gap-3">
+        {connections.map((conn) =>
+          editingId === conn.id ? (
+            <WhatsappConnectionForm
+              key={conn.id}
+              initial={conn}
+              encryptionOk={encryptionOk}
+              saving={save.isPending}
+              onCancel={() => setEditingId(null)}
+              onSave={(payload) => {
+                save.mutate(
+                  { ...payload, id: conn.id },
+                  {
+                    onSuccess: (view) => {
+                      setEditingId(null);
+                      if (view.status?.ok) toast(`Conectado! ${view.status.detail}`, 'success');
+                      else if (!view.configured)
+                        toast('Credenciais incompletas — preencha os campos do provedor.', 'error');
+                      else toast(`Salvo, mas falhou: ${view.status?.detail ?? ''}`, 'error');
+                    },
+                    onError: (err) => toast(getErrorMessage(err), 'error'),
+                  },
+                );
+              }}
+            />
+          ) : (
+            <WhatsappConnectionRow
+              key={conn.id}
+              conn={conn}
+              canEdit={canEdit}
+              testing={isFetching}
+              configuring={configureWebhook.isPending}
+              deleting={remove.isPending}
+              onTest={() =>
+                void refetch().then(({ data: fresh }) => {
+                  const c = fresh?.connections.find((x) => x.id === conn.id);
+                  if (!c) return;
+                  if (!c.configured) toast('Credenciais incompletas.', 'info');
+                  else if (c.status?.ok) toast(`Conectado! ${c.status.detail}`, 'success');
+                  else toast(c.status?.detail ?? 'Falha', 'error');
+                })
+              }
+              onEdit={() => setEditingId(conn.id)}
+              onConfigureWebhook={() =>
+                configureWebhook.mutate(conn.id, {
+                  onSuccess: (r) => toast(r.detail, 'success'),
+                  onError: (err) => toast(getErrorMessage(err), 'error'),
+                })
+              }
+              onDelete={() => {
+                if (!confirm(`Remover a instância "${conn.label}"?`)) return;
+                remove.mutate(conn.id, {
+                  onSuccess: () => toast('Instância removida.', 'success'),
+                  onError: (err) => toast(getErrorMessage(err), 'error'),
+                });
+              }}
+            />
+          ),
+        )}
+
+        {editingId === 'new' && (
+          <WhatsappConnectionForm
+            encryptionOk={encryptionOk}
+            saving={save.isPending}
+            onCancel={() => setEditingId(null)}
+            onSave={(payload) => {
+              save.mutate(payload, {
+                onSuccess: (view) => {
+                  setEditingId(null);
+                  if (view.status?.ok) toast(`Conectado! ${view.status.detail}`, 'success');
+                  else toast('Instância criada. Complete as credenciais se precisar.', 'success');
+                },
+                onError: (err) => toast(getErrorMessage(err), 'error'),
+              });
+            }}
+          />
+        )}
+      </div>
+
+      {canEdit && editingId === null && (
+        <Button
+          size="sm"
+          className="mt-3"
+          disabled={!encryptionOk}
+          onClick={() => setEditingId('new')}
+        >
+          Adicionar número / instância
+        </Button>
+      )}
+    </Card>
+  );
+}
+
+function copyValue(value: string | null | undefined, what: string) {
+  if (!value) return;
+  void navigator.clipboard?.writeText(value).then(
+    () => toast(`${what} copiado!`, 'success'),
+    () => toast('Não foi possível copiar — copie manualmente.', 'error'),
+  );
+}
+
+function WhatsappConnectionRow({
+  conn,
+  canEdit,
+  testing,
+  configuring,
+  deleting,
+  onTest,
+  onEdit,
+  onConfigureWebhook,
+  onDelete,
+}: {
+  conn: WhatsappConnectionView;
+  canEdit: boolean;
+  testing: boolean;
+  configuring: boolean;
+  deleting: boolean;
+  onTest: () => void;
+  onEdit: () => void;
+  onConfigureWebhook: () => void;
+  onDelete: () => void;
+}) {
+  const ok = conn.status?.ok ?? false;
+  const tone = ok ? 'success' : conn.configured ? 'danger' : 'warning';
+  const badge = ok ? 'Conectado' : conn.configured ? 'Offline' : 'Incompleto';
+
+  return (
+    <div className="rounded-xl border border-border bg-bg p-3">
+      <div className="mb-2 flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-text-primary">{conn.label}</p>
+          <p className="text-xs text-text-secondary">
+            {PROVIDER_LABEL[conn.provider] ?? conn.provider}
+            {conn.phoneNumber ? ` · ${conn.phoneNumber}` : ''}
+            {conn.agentEnabled === false ? ' · IA desligada neste número' : ''}
+          </p>
+        </div>
+        <Badge tone={tone}>{badge}</Badge>
+      </div>
+      {conn.status?.detail && (
+        <p className="mb-2 text-xs text-text-secondary">{conn.status.detail}</p>
+      )}
+
+      {conn.webhookUrl && (
+        <div className="mb-2">
+          <p className="mb-1 text-xs font-semibold text-text-primary">Webhook desta instância</p>
+          <div className="flex items-center gap-2">
+            <code className="block flex-1 truncate rounded-lg bg-surface px-2 py-1.5 text-xs">
+              {conn.webhookUrl}
+            </code>
+            <Button size="sm" variant="secondary" onClick={() => copyValue(conn.webhookUrl, 'URL')}>
+              Copiar
+            </Button>
+          </div>
+          {conn.provider === 'metacloud' && conn.verifyToken && (
+            <div className="mt-2 flex items-center gap-2">
+              <code className="block flex-1 truncate rounded-lg bg-surface px-2 py-1.5 text-xs">
+                Verify: {conn.verifyToken}
+              </code>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => copyValue(conn.verifyToken, 'Verify token')}
+              >
+                Copiar
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {canEdit && (
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button size="sm" variant="secondary" loading={testing} onClick={onTest}>
+            Testar
+          </Button>
+          {conn.provider !== 'metacloud' && (
+            <Button size="sm" variant="secondary" loading={configuring} onClick={onConfigureWebhook}>
+              Webhook auto
+            </Button>
+          )}
+          <Button size="sm" variant="secondary" onClick={onEdit}>
+            Editar
+          </Button>
+          <Button size="sm" variant="secondary" loading={deleting} onClick={onDelete}>
+            Remover
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WhatsappConnectionForm({
+  initial,
+  encryptionOk,
+  saving,
+  onCancel,
+  onSave,
+}: {
+  initial?: WhatsappConnectionView;
+  encryptionOk: boolean;
+  saving: boolean;
+  onCancel: () => void;
+  onSave: (payload: WhatsappConnectionInput) => void;
+}) {
+  const [label, setLabel] = useState(initial?.label ?? '');
+  const [phoneNumber, setPhoneNumber] = useState(initial?.phoneNumber ?? '');
+  const [provider, setProvider] = useState<WhatsappProvider>(initial?.provider ?? 'zapi');
   const [instanceId, setInstanceId] = useState('');
   const [token, setToken] = useState('');
   const [clientToken, setClientToken] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [instance, setInstance] = useState('');
   const [accessToken, setAccessToken] = useState('');
-  const [phoneNumberId, setPhoneNumberId] = useState('');
-  const [baseUrl, setBaseUrl] = useState('');
-
-  useEffect(() => {
-    if (data && !editing) setProvider(data.provider);
-  }, [data, editing]);
-
-  const status = data?.status;
-  const ok = status?.ok ?? false;
-  const tone = !data ? 'warning' : ok ? 'success' : data.configured ? 'danger' : 'warning';
-  const label = !data ? '...' : ok ? 'Conectado' : data.configured ? 'Offline' : 'Não configurado';
-
-  function copyValue(value: string | null | undefined, what: string) {
-    if (!value) return;
-    void navigator.clipboard?.writeText(value).then(
-      () => toast(`${what} copiado!`, 'success'),
-      () => toast('Não foi possível copiar — copie manualmente.', 'error'),
-    );
-  }
-
-  function resetFields() {
-    setInstanceId('');
-    setToken('');
-    setClientToken('');
-    setApiKey('');
-    setInstance('');
-    setAccessToken('');
-    setPhoneNumberId('');
-    setBaseUrl('');
-  }
-
-  /** Reconsulta o provedor e diz o resultado em voz alta, em vez de só repintar o badge. */
-  async function testConnection() {
-    const { data: fresh } = await refetch();
-    if (!fresh) return;
-    if (!fresh.configured) toast('Nenhuma credencial cadastrada ainda.', 'info');
-    else if (fresh.status?.ok) toast(`Conectado! ${fresh.status.detail}`, 'success');
-    else toast(fresh.status?.detail ?? 'Não foi possível conectar.', 'error');
-  }
+  const [phoneNumberId, setPhoneNumberId] = useState(initial?.phoneNumberId ?? '');
+  const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? '');
+  const [aiPersona, setAiPersona] = useState(initial?.aiPersona ?? '');
+  const [aiTemperature, setAiTemperature] = useState(
+    initial?.aiTemperature != null ? String(initial.aiTemperature) : '',
+  );
+  const [aiMaxTokens, setAiMaxTokens] = useState(
+    initial?.aiMaxTokens != null ? String(initial.aiMaxTokens) : '',
+  );
+  const [agentEnabled, setAgentEnabled] = useState<string>(
+    initial?.agentEnabled === null || initial?.agentEnabled === undefined
+      ? 'inherit'
+      : initial.agentEnabled
+        ? 'on'
+        : 'off',
+  );
 
   function submit() {
-    const payload: WhatsappConnectionInput = { provider };
+    const payload: WhatsappConnectionInput = {
+      provider,
+      label: label.trim() || undefined,
+      phoneNumber: phoneNumber.trim() || null,
+      baseUrl: baseUrl.trim() || undefined,
+      aiPersona: aiPersona.trim() ? aiPersona.trim() : null,
+      aiTemperature: aiTemperature.trim() === '' ? null : Number(aiTemperature),
+      aiMaxTokens: aiMaxTokens.trim() === '' ? null : Number(aiMaxTokens),
+      agentEnabled: agentEnabled === 'inherit' ? null : agentEnabled === 'on',
+    };
     if (provider === 'zapi') {
       if (instanceId.trim()) payload.instanceId = instanceId.trim();
       if (token.trim()) payload.token = token.trim();
@@ -974,254 +1235,155 @@ function WhatsappCard({ canEdit }: { canEdit: boolean }) {
       if (apiKey.trim()) payload.apiKey = apiKey.trim();
       if (instance.trim()) payload.instance = instance.trim();
     }
-    if (baseUrl.trim()) payload.baseUrl = baseUrl.trim();
-
-    // O backend testa a conexão logo após salvar e devolve o status real — é
-    // isso que o usuário precisa ouvir, não um "salvo" que não prova nada.
-    save.mutate(payload, {
-      onSuccess: (view) => {
-        setEditing(false);
-        resetFields();
-        if (view.status?.ok) {
-          toast(`Conectado! ${view.status.detail}`, 'success');
-        } else if (!view.configured) {
-          toast('Credenciais incompletas — preencha os campos do provedor escolhido.', 'error');
-        } else {
-          toast(`Salvo, mas a conexão falhou: ${view.status?.detail ?? 'sem detalhe'}`, 'error');
-        }
-      },
-      onError: (err) => toast(getErrorMessage(err), 'error'),
-    });
+    onSave(payload);
   }
 
   return (
-    <Card>
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <div className="min-w-0">
-          <h2 className="text-base font-bold text-text-primary">Conexão do WhatsApp</h2>
-          <p className="text-sm text-text-secondary">
-            Conecte a instância de WhatsApp desta empresa. O agente envia e recebe por ela.
-          </p>
+    <div className="flex flex-col gap-3 rounded-xl border border-primary/30 bg-bg p-3">
+      <Input
+        label="Nome da instância"
+        value={label}
+        onChange={(e) => setLabel(e.target.value)}
+        placeholder="Ex.: Vendas, Suporte, Número 2"
+      />
+      <Input
+        label="Número (opcional)"
+        value={phoneNumber}
+        onChange={(e) => setPhoneNumber(e.target.value)}
+        placeholder="Ex.: 5511999999999"
+      />
+      <Select
+        label="Provedor"
+        value={provider}
+        onChange={(e) => setProvider(e.target.value as WhatsappProvider)}
+      >
+        <option value="zapi">Z-API</option>
+        <option value="evolution">Evolution API</option>
+        <option value="metacloud">WhatsApp Oficial (Meta)</option>
+      </Select>
+
+      {provider === 'zapi' ? (
+        <>
+          <Input
+            label="ID da instância"
+            value={instanceId}
+            onChange={(e) => setInstanceId(e.target.value)}
+            placeholder={initial?.instanceId ? `Salvo (${initial.instanceId})` : 'ID da Z-API'}
+            hint="Painel Z-API → sua instância → ID da instância"
+          />
+          <Input
+            label="Token da instância"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder={initial?.hasToken ? '•••• salvo (vazio = manter)' : 'Token'}
+            hint="Token da conta/instância (na URL da API Z-API)"
+          />
+          <Input
+            label="Token da integração (Client-Token)"
+            value={clientToken}
+            onChange={(e) => setClientToken(e.target.value)}
+            placeholder={
+              initial?.hasClientToken ? '•••• salvo (vazio = manter)' : 'Cole aqui o token da integração'
+            }
+            hint="Na Z-API: Segurança / Token de integração. Cole neste campo — não misture com o Token da instância."
+          />
+        </>
+      ) : provider === 'metacloud' ? (
+        <>
+          <Input
+            label="Token de acesso permanente"
+            value={accessToken}
+            onChange={(e) => setAccessToken(e.target.value)}
+            placeholder={initial?.hasAccessToken ? '•••• salvo (vazio = manter)' : 'EAA...'}
+          />
+          <Input
+            label="Phone number ID"
+            value={phoneNumberId}
+            onChange={(e) => setPhoneNumberId(e.target.value)}
+            placeholder={initial?.phoneNumberId ?? 'ID do número na Meta'}
+          />
+        </>
+      ) : (
+        <>
+          <Input
+            label="API Key"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder={initial?.hasApiKey ? '•••• salvo (vazio = manter)' : 'apikey'}
+          />
+          <Input
+            label="Nome da instância"
+            value={instance}
+            onChange={(e) => setInstance(e.target.value)}
+            placeholder={initial?.instance ? `Salvo (${initial.instance})` : 'nome'}
+          />
+        </>
+      )}
+
+      <Input
+        label="URL base (opcional)"
+        value={baseUrl}
+        onChange={(e) => setBaseUrl(e.target.value)}
+        placeholder={
+          provider === 'zapi'
+            ? 'https://api.z-api.io/instances'
+            : provider === 'metacloud'
+              ? 'https://graph.facebook.com/v21.0'
+              : 'https://sua-evolution'
+        }
+      />
+
+      <div className="rounded-lg border border-border p-3">
+        <p className="mb-2 text-xs font-semibold text-text-primary">IA deste número (prompt separado)</p>
+        <p className="mb-2 text-xs text-text-secondary">
+          Prompt <strong>só desta instância</strong> — não mistura com o prompt geral da empresa nem
+          com o de outro número. Conversas deste WhatsApp ficam isoladas das outras instâncias. Vazio
+          = herda a personalidade geral.
+        </p>
+        <Select
+          label="Atendente neste número"
+          value={agentEnabled}
+          onChange={(e) => setAgentEnabled(e.target.value)}
+        >
+          <option value="inherit">Herdar padrão da empresa</option>
+          <option value="on">Ligado</option>
+          <option value="off">Desligado</option>
+        </Select>
+        <label className="mt-2 block text-xs font-medium text-text-secondary">
+          Prompt deste número (não conflita com outros)
+          <textarea
+            className="mt-1 w-full rounded-lg border border-border bg-surface px-3 py-2 font-sans text-sm font-normal text-[#0a0d14]"
+            rows={4}
+            value={aiPersona}
+            onChange={(e) => setAiPersona(e.target.value)}
+            placeholder="Instruções só para este WhatsApp. Vazio = persona geral da empresa."
+          />
+        </label>
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <Input
+            label="Temperatura"
+            value={aiTemperature}
+            onChange={(e) => setAiTemperature(e.target.value)}
+            placeholder="ex.: 0.7"
+          />
+          <Input
+            label="Máx. tokens"
+            value={aiMaxTokens}
+            onChange={(e) => setAiMaxTokens(e.target.value)}
+            placeholder="ex.: 500"
+          />
         </div>
-        <Badge tone={tone}>{label}</Badge>
       </div>
 
-      {status?.detail && <p className="mb-3 text-xs text-text-secondary">{status.detail}</p>}
-
-      {data?.webhookUrl && (
-        <div className="mb-3 rounded-xl border border-border bg-bg p-3">
-          <p className="mb-1 text-xs font-semibold text-text-primary">URL de webhook desta empresa</p>
-          <p className="mb-2 text-xs text-text-secondary">
-            {data.provider === 'metacloud'
-              ? 'Cole em Meta for Developers → WhatsApp → Configuration → Callback URL.'
-              : `Cole no painel da ${PROVIDER_LABEL[data.provider] ?? 'Z-API'} (mensagens recebidas e status).`}
-          </p>
-          <div className="flex items-center gap-2">
-            <code className="block flex-1 truncate rounded-lg bg-surface px-2 py-1.5 text-xs text-text-primary">
-              {data.webhookUrl}
-            </code>
-            <Button size="sm" variant="secondary" onClick={() => copyValue(data.webhookUrl, 'URL de webhook')}>
-              Copiar
-            </Button>
-          </div>
-
-          {canEdit && data.provider !== 'metacloud' && (
-            <>
-              <Button
-                size="sm"
-                className="mt-2"
-                loading={configureWebhook.isPending}
-                onClick={() =>
-                  configureWebhook.mutate(undefined, {
-                    onSuccess: (r) => toast(r.detail, 'success'),
-                    onError: (err) => toast(getErrorMessage(err), 'error'),
-                  })
-                }
-              >
-                Configurar webhook automaticamente
-              </Button>
-              <p className="mt-1.5 text-xs text-text-secondary">
-                Registra esta URL na {PROVIDER_LABEL[data.provider] ?? 'Z-API'} por API — recebimento,
-                status de entrega e o eco das mensagens que você envia pelo celular. Dispensa colar
-                nada no painel dela.
-              </p>
-            </>
-          )}
-
-          {data.provider === 'metacloud' && data.verifyToken && (
-            <>
-              <p className="mb-1 mt-3 text-xs font-semibold text-text-primary">Verify token</p>
-              <p className="mb-2 text-xs text-text-secondary">
-                No mesmo formulário da Meta, cole este valor no campo “Verify token”. Depois clique em
-                Verify and save e assine o campo <strong>messages</strong>.
-              </p>
-              <div className="flex items-center gap-2">
-                <code className="block flex-1 truncate rounded-lg bg-surface px-2 py-1.5 text-xs text-text-primary">
-                  {data.verifyToken}
-                </code>
-                <Button size="sm" variant="secondary" onClick={() => copyValue(data.verifyToken, 'Verify token')}>
-                  Copiar
-                </Button>
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
-      {canEdit && data?.encryptionAvailable === false && (
-        <p className="mb-3 rounded-lg bg-warning/12 px-3 py-2 text-xs text-warning">
-          Defina ENCRYPTION_KEY no servidor para salvar as credenciais com segurança.
-        </p>
-      )}
-
-      {!canEdit ? (
-        <p className="text-xs text-text-secondary">Apenas administradores podem alterar a conexão.</p>
-      ) : editing ? (
-        <div className="flex flex-col gap-3">
-          <Select
-            label="Provedor"
-            value={provider}
-            onChange={(e) => setProvider(e.target.value as WhatsappProvider)}
-          >
-            <option value="zapi">Z-API</option>
-            <option value="evolution">Evolution API</option>
-            <option value="metacloud">WhatsApp Oficial (Meta)</option>
-          </Select>
-
-          <p className="-mt-1 text-xs text-text-secondary">
-            Só um provedor fica ativo por vez — ao salvar, o anterior é desligado na hora, sem risco
-            de os dois responderem juntos. As credenciais do outro continuam guardadas, então dá para
-            voltar depois sem digitar tudo de novo.
-          </p>
-
-          {provider === 'metacloud' && (
-            <p className="rounded-lg bg-primary/10 px-3 py-2 text-xs text-text-secondary">
-              Pegue os dois valores em{' '}
-              <a
-                href="https://developers.facebook.com/apps"
-                target="_blank"
-                rel="noreferrer"
-                className="font-semibold text-primary underline"
-              >
-                Meta for Developers
-              </a>{' '}
-              → seu app → WhatsApp → API Setup. Salve aqui primeiro: a URL de webhook e o verify token
-              aparecem logo acima, e é com eles que você conclui a configuração lá na Meta.
-            </p>
-          )}
-
-          {provider === 'zapi' ? (
-            <>
-              <p className="rounded-lg bg-primary/10 px-3 py-2 text-xs text-text-secondary">
-                Abra o{' '}
-                <a
-                  href="https://app.z-api.io"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="font-semibold text-primary underline"
-                >
-                  painel da Z-API
-                </a>{' '}
-                → <strong>Minhas instâncias</strong> → clique na sua instância. O ID e o token estão
-                lá, um do lado do outro. O Client-Token fica em outro lugar: menu{' '}
-                <strong>Segurança</strong> da conta.
-              </p>
-              <Input
-                label="ID da instância"
-                value={instanceId}
-                onChange={(e) => setInstanceId(e.target.value)}
-                placeholder={data?.instanceId ? `Salvo (${data.instanceId})` : 'Ex.: 3DF1A2B4C5D6E7F8'}
-              />
-              <Input
-                label="Token da instância"
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                placeholder={data?.hasToken ? '•••• salvo (deixe vazio para manter)' : 'Token da própria instância'}
-              />
-              <Input
-                label="Client-Token (token de segurança da conta)"
-                value={clientToken}
-                onChange={(e) => setClientToken(e.target.value)}
-                placeholder={
-                  data?.hasClientToken ? '•••• salvo (deixe vazio para manter)' : 'Deixe vazio se não ativou'
-                }
-              />
-              <p className="-mt-1 text-xs text-text-secondary">
-                O Client-Token só é obrigatório se você ativou o token de segurança na conta. Com ele
-                ligado na Z-API e vazio aqui, todo envio volta com erro de autorização.
-              </p>
-            </>
-          ) : provider === 'metacloud' ? (
-            <>
-              <Input
-                label="Token de acesso permanente"
-                value={accessToken}
-                onChange={(e) => setAccessToken(e.target.value)}
-                placeholder={data?.hasAccessToken ? '•••• salvo (vazio = manter)' : 'Começa com EAA...'}
-              />
-              <Input
-                label="Phone number ID"
-                value={phoneNumberId}
-                onChange={(e) => setPhoneNumberId(e.target.value)}
-                placeholder={data?.phoneNumberId ?? 'Ex.: 123456789012345'}
-              />
-            </>
-          ) : (
-            <>
-              <p className="rounded-lg bg-primary/10 px-3 py-2 text-xs text-text-secondary">
-                Evolution é auto-hospedada: a chave é a <strong>apikey</strong> definida no servidor
-                dela, e a instância é o nome que você deu ao criá-la. Preencha também a URL base
-                abaixo, apontando para o seu servidor.
-              </p>
-              <Input
-                label="API Key"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder={data?.hasApiKey ? '•••• salvo (deixe vazio para manter)' : 'apikey da Evolution'}
-              />
-              <Input
-                label="Nome da instância"
-                value={instance}
-                onChange={(e) => setInstance(e.target.value)}
-                placeholder={data?.instance ? `Salvo (${data.instance})` : 'Ex.: minha-loja'}
-              />
-            </>
-          )}
-
-          <Input
-            label="URL base (opcional)"
-            value={baseUrl}
-            onChange={(e) => setBaseUrl(e.target.value)}
-            placeholder={
-              data?.baseUrl ??
-              (provider === 'zapi'
-                ? 'https://api.z-api.io/instances'
-                : provider === 'metacloud'
-                  ? 'https://graph.facebook.com/v21.0'
-                  : 'http://...')
-            }
-          />
-
-          <div className="flex justify-end gap-2">
-            <Button size="sm" variant="secondary" onClick={() => setEditing(false)} disabled={save.isPending}>
-              Cancelar
-            </Button>
-            <Button size="sm" onClick={submit} loading={save.isPending} disabled={data?.encryptionAvailable === false}>
-              Salvar conexão
-            </Button>
-          </div>
-        </div>
-      ) : (
-        <div className="flex items-center justify-between gap-2">
-          <Button size="sm" variant="secondary" loading={isFetching} onClick={() => void testConnection()}>
-            Testar conexão
-          </Button>
-          <Button size="sm" onClick={() => setEditing(true)}>
-            {data?.configured ? 'Editar credenciais' : 'Configurar'}
-          </Button>
-        </div>
-      )}
-    </Card>
+      <div className="flex justify-end gap-2">
+        <Button size="sm" variant="secondary" onClick={onCancel} disabled={saving}>
+          Cancelar
+        </Button>
+        <Button size="sm" onClick={submit} loading={saving} disabled={!encryptionOk}>
+          Salvar instância
+        </Button>
+      </div>
+    </div>
   );
 }
 

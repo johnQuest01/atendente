@@ -120,6 +120,13 @@ export const CloseIcon = (p: IconProps) => (
   </svg>
 );
 
+export const DownloadIcon = (p: IconProps) => (
+  <svg {...base} {...p}>
+    <path d="M12 3v12M7 10l5 5 5-5" />
+    <path d="M5 21h14" />
+  </svg>
+);
+
 export const BuildingIcon = (p: IconProps) => (
   <svg {...base} {...p}>
     <path d="M3 21h18M5 21V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v16" />
