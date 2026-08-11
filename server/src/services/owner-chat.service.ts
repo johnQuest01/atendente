@@ -6,7 +6,6 @@ import { loadOwnerAgenda } from './reminders/parse.service';
 import { formatForOwner, DEFAULT_TZ } from './reminders/time';
 import {
   formatSearchContext,
-  hasWebSearchConfigured,
   messageLikelyNeedsSearch,
   webSearch,
 } from './web-search.service';
@@ -60,12 +59,21 @@ function buildFastSystem(
   persona: string | null | undefined,
   agendaLines: string[],
   searchBlock: string | null,
+  webSearchOn: boolean,
 ): string {
   const parts = [
     'Você fala com o DONO no WhatsApp — como um assistente humano rápido (estilo Claude), não como robô.',
-    'Respostas CURTAS (WhatsApp): no máximo ~8 linhas; bullets quando ajudar.',
+    'Respostas CURTAS (WhatsApp): no máximo ~6 linhas; bullets quando ajudar.',
     'Nunca diga que é IA/bot. Não invente compromissos: agenda real está abaixo.',
     'Se pedirem para anotar/lembrar algo com data, diga pra mandar tipo "me lembra amanhã às 9h de…".',
+    webSearchOn
+      ? [
+          'Busca na web está LIGADA neste WhatsApp.',
+          'Se houver "Resultados da busca" abaixo, USE-OS na resposta (cite a fonte em 1 linha).',
+          'NUNCA peça WEB_SEARCH_API_KEY, chave de API, Tavily, nem diga que falta configurar no servidor.',
+          'Se a busca não trouxe resultado, diga só que não achou fonte atual — sem falar de configuração.',
+        ].join(' ')
+      : 'Busca na web está desligada. Se pedirem pesquisa, diga pra ligar a alavanca "Busca na web" em Lembretes.',
     persona?.trim() ? `Tom:\n${persona.trim()}` : '',
     agendaLines.length
       ? `Caderno (próximos dias):\n${agendaLines.join('\n')}`
@@ -100,14 +108,20 @@ export async function freeChatOwner(
   });
 
   let searchBlock: string | null = null;
-  if (opts.webSearchEnabled && hasWebSearchConfigured() && messageLikelyNeedsSearch(message)) {
+  const wantsSearch =
+    Boolean(opts.webSearchEnabled) &&
+    (messageLikelyNeedsSearch(message) ||
+      /\b(pesquisa|pesquis|busca|buscar|procure|procura|internet|web)\b/i.test(message));
+
+  if (wantsSearch) {
     const hits = await webSearch(message, 3);
     if (hits?.length) {
       searchBlock = formatSearchContext(hits);
       logger.info(`Agente: busca web com ${hits.length} resultado(s).`);
     } else {
       searchBlock =
-        'A busca não trouxe resultados úteis. Responda com o que souber e diga que não achou fonte atual.';
+        'Resultados da busca: (vazio). Não peça chave de API. Diga que não achou fonte atual e responda o que souber com cautela.';
+      logger.warn('Agente: busca web sem resultados.');
     }
   }
 
@@ -119,7 +133,7 @@ export async function freeChatOwner(
 
   const result = await complete(
     {
-      system: buildFastSystem(persona, agendaLines, searchBlock),
+      system: buildFastSystem(persona, agendaLines, searchBlock, Boolean(opts.webSearchEnabled)),
       messages,
       maxTokens: FAST_MAX_TOKENS,
       temperature: FAST_TEMPERATURE,
