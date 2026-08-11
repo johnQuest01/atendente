@@ -35,9 +35,22 @@ export interface InstanceProvisioner {
 }
 
 /**
- * Conta em trial (7 dias) → pool pago. Conta active → on-demand.
- * Se on-demand exige Partner-Token e ele não está configurado, cai no pool
- * (evita travar o onboarding enquanto o token de parceiro não chega).
+ * Estratégia de provisionamento (ambas implementadas):
+ *
+ * FASE ATUAL (provisória): `pool`
+ *   - Você compra/assina instâncias na Z-API e cadastra no Admin.
+ *   - Cliente só digita o número + código no WhatsApp.
+ *
+ * FASE PARTNER (quando bater ~10 instâncias ativas no programa Z-API):
+ *   - Configura `ZAPI_PARTNER_TOKEN` → `OnDemandProvisioner` cria a instância via API.
+ *   - No pagamento do cliente: `activateTenantPaid` assina a instância na Z-API.
+ *   - Conta trial continua no pool (trial Z-API é 2 dias; nosso trial é 7).
+ *
+ * Obs.: nem web nem mobile/phoneless dispensam o código/QR no celular —
+ * isso é regra do WhatsApp, não da Z-API.
+ *
+ * Conta trial → pool. Conta active + Partner Token → on-demand.
+ * Sem Partner Token, on-demand cai no pool (não trava o onboarding).
  */
 export function resolveProvisionMode(tenant: TenantRow): InstanceOrigin {
   if (env.ZAPI_PROVISION_MODE === 'pool') return 'pool';

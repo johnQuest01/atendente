@@ -11,7 +11,12 @@ import { AppError } from '../../utils/errors';
  * - QR imagem: GET /instances/{id}/token/{token}/qr-code/image
  * - Código telefone: GET /instances/{id}/token/{token}/phone-code/{phone}
  * - Status: GET /instances/{id}/token/{token}/status
+ * - Disconnect: POST /instances/{id}/token/{token}/disconnect
  * - Webhooks: PUT /instances/{id}/token/{token}/update-every-webhooks
+ *
+ * Partner Token: liberado no programa de integrador da Z-API (após ~10
+ * instâncias). Até lá usamos pool de instâncias já assinadas.
+ * `isDevice: true` = phoneless/mobile — ainda exige código/QR no aparelho.
  *
  * Nunca logar tokens.
  */

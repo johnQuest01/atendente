@@ -32,6 +32,24 @@ export async function getInstancePool(_req: Request, res: Response): Promise<voi
     free: { web: freeWeb, phoneless: freePhoneless },
     encryptionAvailable: hasEncryptionKey(),
     envInstanceConfigured: Boolean(env.ZAPI_INSTANCE_ID && env.ZAPI_TOKEN),
+    /**
+     * Roadmap de provisionamento (já implementado no backend):
+     * - pool: fase provisória (agora)
+     * - on_demand: após Partner Token (programa integrador ~10 instâncias)
+     * create/subscribe já existem em ZApiClient + activate-paid.
+     */
+    provisioning: {
+      mode: env.ZAPI_PROVISION_MODE,
+      partnerTokenConfigured: env.hasZapiPartner,
+      poolReady: freeWeb + freePhoneless > 0 || instances.length > 0,
+      onDemandReady: env.hasZapiPartner,
+      /** Endpoints já prontos quando o Partner Token chegar. */
+      nextStepsWhenPartner: [
+        'fly secrets set ZAPI_PARTNER_TOKEN=... -a mayra-api',
+        'Conta paga → cria instância on-demand automaticamente',
+        'POST /api/tenants/:id/whatsapp/activate-paid → assina na Z-API',
+      ],
+    },
   });
 }
 

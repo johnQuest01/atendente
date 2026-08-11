@@ -23,6 +23,13 @@ interface PoolResponse {
   free: { web: number; phoneless: number };
   encryptionAvailable: boolean;
   envInstanceConfigured?: boolean;
+  provisioning?: {
+    mode: string;
+    partnerTokenConfigured: boolean;
+    poolReady: boolean;
+    onDemandReady: boolean;
+    nextStepsWhenPartner: string[];
+  };
 }
 
 /**
@@ -77,8 +84,35 @@ export function InstancePoolManager() {
   const [providerMode, setProviderMode] = useState<'web' | 'phoneless'>('web');
   const [label, setLabel] = useState('');
 
+  const prov = data?.provisioning;
+
   return (
     <div className="flex flex-col gap-3">
+      <Card className="flex flex-col gap-2">
+        <h2 className="text-base font-bold text-text-primary">WhatsApp — como provisionamos</h2>
+        <div className="flex flex-wrap gap-2">
+          <Badge tone="success">Agora: pool</Badge>
+          <Badge tone={prov?.onDemandReady ? 'success' : 'warning'}>
+            {prov?.onDemandReady ? 'Partner on-demand ativo' : 'Partner on-demand aguardando'}
+          </Badge>
+        </div>
+        <p className="text-sm text-text-secondary">
+          <strong>Agora:</strong> você cadastra instâncias já pagas (sem número) neste pool. O
+          cliente só digita o telefone e o código no WhatsApp.
+        </p>
+        <p className="text-sm text-text-secondary">
+          <strong>Depois (~10 instâncias ativas / Partner Token):</strong> o código de criar e
+          assinar instância na hora <em>já está pronto</em> no backend. Basta configurar{' '}
+          <code className="text-xs">ZAPI_PARTNER_TOKEN</code> no Fly — contas pagas passam a criar
+          on-demand; no pagamento chamamos <code className="text-xs">activate-paid</code> (assina na
+          Z-API). Trial de 7 dias continua no pool.
+        </p>
+        <p className="text-xs text-text-secondary">
+          Obs.: modo mobile/phoneless <strong>não</strong> conecta sozinho sem o cliente confirmar no
+          celular (código ou QR) — isso é regra do WhatsApp.
+        </p>
+      </Card>
+
       <div className="flex items-start justify-between gap-3">
         <div>
           <h2 className="text-base font-bold text-text-primary">Instâncias prontas (pool)</h2>
