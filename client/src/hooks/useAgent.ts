@@ -1,37 +1,48 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 
-export const AGENT_QUERY_KEY = ['agent-status'] as const;
+export function agentQueryKey(connectionId?: string) {
+  return ['agent-status', connectionId] as const;
+}
 
-export function useAgentStatus() {
+/** @deprecated use agentQueryKey(connectionId) */
+export const AGENT_QUERY_KEY = agentQueryKey();
+
+export function useAgentStatus(connectionId?: string) {
   return useQuery({
-    queryKey: AGENT_QUERY_KEY,
+    queryKey: agentQueryKey(connectionId),
     queryFn: async () => {
-      const { data } = await api.get<{ enabled: boolean }>('/settings/agent');
+      const { data } = await api.get<{ enabled: boolean }>('/settings/agent', {
+        params: connectionId ? { connectionId } : undefined,
+      });
       return data.enabled;
     },
   });
 }
 
-export function useSetAgentStatus() {
+export function useSetAgentStatus(connectionId?: string) {
   const qc = useQueryClient();
+  const key = agentQueryKey(connectionId);
   return useMutation({
     mutationFn: async (enabled: boolean) => {
-      const { data } = await api.put<{ enabled: boolean }>('/settings/agent', { enabled });
+      const { data } = await api.put<{ enabled: boolean }>(
+        '/settings/agent',
+        { enabled },
+        { params: connectionId ? { connectionId } : undefined },
+      );
       return data.enabled;
     },
-    // Atualização otimista: a UI responde na hora; revertemos em caso de erro.
     onMutate: async (enabled) => {
-      await qc.cancelQueries({ queryKey: AGENT_QUERY_KEY });
-      const previous = qc.getQueryData<boolean>(AGENT_QUERY_KEY);
-      qc.setQueryData(AGENT_QUERY_KEY, enabled);
+      await qc.cancelQueries({ queryKey: key });
+      const previous = qc.getQueryData<boolean>(key);
+      qc.setQueryData(key, enabled);
       return { previous };
     },
     onError: (_err, _enabled, context) => {
       if (context?.previous !== undefined) {
-        qc.setQueryData(AGENT_QUERY_KEY, context.previous);
+        qc.setQueryData(key, context.previous);
       }
     },
-    onSuccess: (enabled) => qc.setQueryData(AGENT_QUERY_KEY, enabled),
+    onSuccess: (enabled) => qc.setQueryData(key, enabled),
   });
 }

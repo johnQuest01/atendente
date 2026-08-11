@@ -35,30 +35,53 @@ import {
   getConnectionById,
   getConnectionByTenant,
   listConnections,
+  patchConnectionConfig,
   updateConnection,
   updateConnectionPhoneNumber,
   updateConnectionStatusById,
   type WhatsappConnection,
   type WhatsappSecrets,
 } from '../db/queries/whatsapp_connections';
+import {
+  readConnectionSetting,
+  writeConnectionSetting,
+} from '../db/queries/connection_settings';
 import { hasEncryptionKey } from '../utils/crypto';
 import { env } from '../config/env';
 import { AppError, NotFoundError } from '../utils/errors';
 import { emitAgentStatus } from '../socket';
+import { parseConnectionIdQuery, requireConnection } from './connectionScope';
 
 export const updateAgentSchema = z.object({
   enabled: z.boolean(),
 });
 
 export async function getAgentStatus(req: Request, res: Response): Promise<void> {
-  const enabled = await isAgentEnabled(req.user!.tenant_id);
+  const tenantId = req.user!.tenant_id;
+  const connectionId = parseConnectionIdQuery(req);
+  if (connectionId) {
+    const conn = await requireConnection(tenantId, connectionId);
+    const enabled = conn.agent_enabled ?? (await isAgentEnabled(tenantId));
+    res.json({ enabled });
+    return;
+  }
+  const enabled = await isAgentEnabled(tenantId);
   res.json({ enabled });
 }
 
 export async function putAgentStatus(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
   const { enabled } = req.body as z.infer<typeof updateAgentSchema>;
-  await setAgentEnabled(req.user!.tenant_id, enabled);
-  emitAgentStatus(req.user!.tenant_id, enabled);
+  const connectionId = parseConnectionIdQuery(req);
+  if (connectionId) {
+    await requireConnection(tenantId, connectionId);
+    await patchConnectionConfig(tenantId, connectionId, { agentEnabled: enabled });
+    emitAgentStatus(tenantId, enabled);
+    res.json({ enabled });
+    return;
+  }
+  await setAgentEnabled(tenantId, enabled);
+  emitAgentStatus(tenantId, enabled);
   res.json({ enabled });
 }
 
@@ -71,6 +94,27 @@ export const updatePersonaSchema = z.object({
 
 export async function getPersona(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenant_id;
+  const connectionId = parseConnectionIdQuery(req);
+  if (connectionId) {
+    const conn = await requireConnection(tenantId, connectionId);
+    const [tenantPersona, tenantTemp, tenantMax] = await Promise.all([
+      getAiPersona(tenantId),
+      getAiTemperature(tenantId),
+      getAiMaxTokens(tenantId),
+    ]);
+    const prompt =
+      conn.ai_persona && conn.ai_persona.trim() ? conn.ai_persona.trim() : tenantPersona;
+    const temperature = conn.ai_temperature ?? tenantTemp;
+    const maxTokens = conn.ai_max_tokens ?? tenantMax;
+    res.json({
+      prompt,
+      default: DEFAULT_AI_PERSONA,
+      isDefault: prompt === DEFAULT_AI_PERSONA,
+      temperature,
+      maxTokens,
+    });
+    return;
+  }
   const [prompt, temperature, maxTokens] = await Promise.all([
     getAiPersona(tenantId),
     getAiTemperature(tenantId),
@@ -88,6 +132,33 @@ export async function getPersona(req: Request, res: Response): Promise<void> {
 export async function putPersona(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenant_id;
   const { prompt, temperature, maxTokens } = req.body as z.infer<typeof updatePersonaSchema>;
+  const connectionId = parseConnectionIdQuery(req);
+  if (connectionId) {
+    await requireConnection(tenantId, connectionId);
+    const clean = prompt.trim();
+    const effective = clean || DEFAULT_AI_PERSONA;
+    const patched = await patchConnectionConfig(tenantId, connectionId, {
+      aiPersona: clean || null,
+      aiTemperature: temperature ?? undefined,
+      aiMaxTokens: maxTokens ?? undefined,
+    });
+    if (temperature !== undefined) {
+      await writeConnectionSetting(tenantId, connectionId, 'ai_temperature', String(temperature));
+    }
+    if (maxTokens !== undefined) {
+      await writeConnectionSetting(tenantId, connectionId, 'ai_max_tokens', String(maxTokens));
+    }
+    const temp = patched?.ai_temperature ?? (await getAiTemperature(tenantId));
+    const tokens = patched?.ai_max_tokens ?? (await getAiMaxTokens(tenantId));
+    res.json({
+      prompt: effective,
+      default: DEFAULT_AI_PERSONA,
+      isDefault: effective === DEFAULT_AI_PERSONA,
+      temperature: temp,
+      maxTokens: tokens,
+    });
+    return;
+  }
   const effective = await setAiPersona(tenantId, prompt);
   const temp =
     temperature !== undefined ? await setAiTemperature(tenantId, temperature) : await getAiTemperature(tenantId);
@@ -148,7 +219,19 @@ export async function previewPersona(req: Request, res: Response): Promise<void>
     return;
   }
 
-  const systemPrompt = body.prompt !== undefined ? body.prompt : await getAiPersona(tenantId);
+  const connectionId = parseConnectionIdQuery(req);
+  let systemPrompt = body.prompt;
+  if (systemPrompt === undefined) {
+    if (connectionId) {
+      const conn = await requireConnection(tenantId, connectionId);
+      systemPrompt =
+        conn.ai_persona && conn.ai_persona.trim()
+          ? conn.ai_persona.trim()
+          : await getAiPersona(tenantId);
+    } else {
+      systemPrompt = await getAiPersona(tenantId);
+    }
+  }
   const [products, scripts] = await Promise.all([
     listProducts(tenantId, true),
     listScripts(tenantId, true),
@@ -188,7 +271,23 @@ export const updateReminderPersonaSchema = z.object({
 });
 
 export async function getReminderPersonaHandler(req: Request, res: Response): Promise<void> {
-  const prompt = await getReminderPersona(req.user!.tenant_id);
+  const tenantId = req.user!.tenant_id;
+  const connectionId = parseConnectionIdQuery(req);
+  if (connectionId) {
+    const conn = await requireConnection(tenantId, connectionId);
+    const tenantPrompt = await getReminderPersona(tenantId);
+    const prompt =
+      conn.reminder_assistant_persona && conn.reminder_assistant_persona.trim()
+        ? conn.reminder_assistant_persona.trim()
+        : tenantPrompt;
+    res.json({
+      prompt,
+      default: DEFAULT_REMINDER_PERSONA,
+      isDefault: prompt === DEFAULT_REMINDER_PERSONA,
+    });
+    return;
+  }
+  const prompt = await getReminderPersona(tenantId);
   res.json({
     prompt,
     default: DEFAULT_REMINDER_PERSONA,
@@ -197,8 +296,24 @@ export async function getReminderPersonaHandler(req: Request, res: Response): Pr
 }
 
 export async function putReminderPersona(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
   const { prompt } = req.body as z.infer<typeof updateReminderPersonaSchema>;
-  const effective = await setReminderPersona(req.user!.tenant_id, prompt);
+  const connectionId = parseConnectionIdQuery(req);
+  if (connectionId) {
+    await requireConnection(tenantId, connectionId);
+    const clean = prompt.trim();
+    const effective = clean || DEFAULT_REMINDER_PERSONA;
+    await patchConnectionConfig(tenantId, connectionId, {
+      reminderAssistantPersona: clean || null,
+    });
+    res.json({
+      prompt: effective,
+      default: DEFAULT_REMINDER_PERSONA,
+      isDefault: effective === DEFAULT_REMINDER_PERSONA,
+    });
+    return;
+  }
+  const effective = await setReminderPersona(tenantId, prompt);
   res.json({
     prompt: effective,
     default: DEFAULT_REMINDER_PERSONA,
@@ -213,9 +328,14 @@ export async function putReminderPersona(req: Request, res: Response): Promise<v
 
 export async function getBehaviorSettings(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenant_id;
+  const connectionId = parseConnectionIdQuery(req);
+  if (connectionId) await requireConnection(tenantId, connectionId);
   const settings = await Promise.all(
     BEHAVIOR_SETTINGS.map(async (s) => {
-      const value = await readSetting(tenantId, s.key);
+      const value = connectionId
+        ? (await readConnectionSetting(tenantId, connectionId, s.key)) ??
+          (await readSetting(tenantId, s.key))
+        : await readSetting(tenantId, s.key);
       return { ...s, value: value ?? s.default };
     }),
   );
@@ -235,6 +355,23 @@ export async function putBehaviorSetting(req: Request, res: Response): Promise<v
 
   const { value } = req.body as z.infer<typeof updateBehaviorSchema>;
   const normalized = coerceBehaviorValue(setting, value); // valida (400 se torto)
+  const connectionId = parseConnectionIdQuery(req);
+  if (connectionId) {
+    await requireConnection(tenantId, connectionId);
+    await writeConnectionSetting(tenantId, connectionId, key, normalized);
+    // Espelha temp/tokens na coluna da conexão (usada no webhook).
+    if (key === 'ai_temperature') {
+      await patchConnectionConfig(tenantId, connectionId, {
+        aiTemperature: Number(normalized),
+      });
+    } else if (key === 'ai_max_tokens') {
+      await patchConnectionConfig(tenantId, connectionId, {
+        aiMaxTokens: Number(normalized),
+      });
+    }
+    res.json({ key, value: normalized });
+    return;
+  }
   await writeSetting(tenantId, key, normalized);
   res.json({ key, value: normalized });
 }
@@ -246,15 +383,32 @@ export async function putBehaviorSetting(req: Request, res: Response): Promise<v
 // ---------------------------------------------------------------------------
 
 export async function getMemoryScan(req: Request, res: Response): Promise<void> {
-  const enabled = await isMemoryScanEnabled(req.user!.tenant_id);
+  const tenantId = req.user!.tenant_id;
+  const connectionId = parseConnectionIdQuery(req);
+  if (connectionId) {
+    const conn = await requireConnection(tenantId, connectionId);
+    const enabled =
+      conn.memory_scan_enabled ?? (await isMemoryScanEnabled(tenantId));
+    res.json({ enabled });
+    return;
+  }
+  const enabled = await isMemoryScanEnabled(tenantId);
   res.json({ enabled });
 }
 
 export const updateMemoryScanSchema = z.object({ enabled: z.boolean() });
 
 export async function putMemoryScan(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
   const { enabled } = req.body as z.infer<typeof updateMemoryScanSchema>;
-  await setMemoryScanEnabled(req.user!.tenant_id, enabled);
+  const connectionId = parseConnectionIdQuery(req);
+  if (connectionId) {
+    await requireConnection(tenantId, connectionId);
+    await patchConnectionConfig(tenantId, connectionId, { memoryScanEnabled: enabled });
+    res.json({ enabled });
+    return;
+  }
+  await setMemoryScanEnabled(tenantId, enabled);
   res.json({ enabled });
 }
 
@@ -318,6 +472,10 @@ async function buildConnectionView(
     aiTemperature: conn.ai_temperature,
     aiMaxTokens: conn.ai_max_tokens,
     agentEnabled: conn.agent_enabled,
+    connectionStatus: conn.connection_status,
+    providerMode: conn.provider_mode,
+    instanceOrigin: conn.instance_origin,
+    webhookConfigured: conn.webhook_configured,
     status,
   };
 }

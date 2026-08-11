@@ -6,6 +6,10 @@ import { Spinner } from '@/components/ui/States';
 import Login from '@/routes/Login';
 import AcceptInvite from '@/routes/AcceptInvite';
 import Dashboard from '@/routes/Dashboard';
+import Connections from '@/routes/Connections';
+import ConnectionWorkspace from '@/routes/ConnectionWorkspace';
+import ConnectionCreate from '@/routes/ConnectionCreate';
+import Account from '@/routes/Account';
 import Conversations from '@/routes/Conversations';
 import ConversationDetail from '@/routes/ConversationDetail';
 import Audios from '@/routes/Audios';
@@ -13,7 +17,6 @@ import Products from '@/routes/Products';
 import Messages from '@/routes/Messages';
 import Keywords from '@/routes/Keywords';
 import Broadcasts from '@/routes/Broadcasts';
-import Settings from '@/routes/Settings';
 import PasteConversation from '@/routes/PasteConversation';
 import Admin from '@/routes/Admin';
 
@@ -61,7 +64,12 @@ function ProtectedRoutes() {
   return (
     <AppShell>
       <Routes>
-        <Route path="/" element={<Dashboard />} />
+        <Route path="/" element={<Connections />} />
+        <Route path="/conexoes/nova" element={<ConnectionCreate />} />
+        <Route path="/conexoes/:connectionId" element={<ConnectionWorkspace />} />
+        <Route path="/conta" element={<Account />} />
+        <Route path="/configuracoes" element={<Navigate to="/conta" replace />} />
+        <Route path="/painel" element={<Dashboard />} />
         <Route path="/conversas" element={<Conversations />} />
         <Route path="/conversas/:id" element={<ConversationDetail />} />
         <Route path="/audios" element={<Audios />} />
@@ -69,7 +77,6 @@ function ProtectedRoutes() {
         <Route path="/disparos" element={<Broadcasts />} />
         <Route path="/scripts" element={<Messages />} />
         <Route path="/keywords" element={<Keywords />} />
-        <Route path="/configuracoes" element={<Settings />} />
         <Route path="/colar-conversa" element={<PasteConversation />} />
         <Route path="/admin" element={<Admin />} />
         <Route path="*" element={<Navigate to="/" replace />} />

@@ -13,16 +13,23 @@ import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
 
 /** Exporta agenda (VCF), backup de conversas (JSON) e importa — sempre por número. */
-export function ContactsHistoryCard() {
+export function ContactsHistoryCard({
+  connectionId: fixedConnectionId,
+}: {
+  /** Se informado, fixa neste número e esconde o picker. */
+  connectionId?: string;
+} = {}) {
   const { data: wa } = useWhatsappConnections();
   const connections = (wa?.connections ?? []).filter((c) => c.isActive !== false);
-  const [connectionId, setConnectionId] = useState('');
+  const [pickedId, setPickedId] = useState('');
+  const connectionId = fixedConnectionId || pickedId;
 
   useEffect(() => {
-    if (!connectionId && connections.length === 1) {
-      setConnectionId(connections[0].id);
+    if (fixedConnectionId) return;
+    if (!pickedId && connections.length === 1) {
+      setPickedId(connections[0].id);
     }
-  }, [connections, connectionId]);
+  }, [connections, pickedId, fixedConnectionId]);
 
   const exportVcf = useExportContactsVcf();
   const exportJson = useExportContactsJson();
@@ -90,12 +97,14 @@ export function ContactsHistoryCard() {
         </p>
       </div>
 
-      <ConnectionNumberPicker
-        value={connectionId}
-        onChange={setConnectionId}
-        label="De qual número?"
-        cards={connections.length > 1}
-      />
+      {!fixedConnectionId && (
+        <ConnectionNumberPicker
+          value={pickedId}
+          onChange={setPickedId}
+          label="De qual número?"
+          cards={connections.length > 1}
+        />
+      )}
 
       <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
         <Button

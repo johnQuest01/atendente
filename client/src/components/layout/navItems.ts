@@ -21,13 +21,14 @@ export interface NavItem {
 }
 
 export const NAV_ITEMS: NavItem[] = [
-  { to: '/', label: 'Início', icon: DashboardIcon, primary: true },
-  { to: '/conversas', label: 'Conversas', icon: ChatIcon, primary: true },
-  { to: '/audios', label: 'Áudios', icon: AudioIcon, primary: true },
+  { to: '/', label: 'Conexões', icon: DashboardIcon, primary: true },
+  { to: '/conversas', label: 'Contatos', icon: ChatIcon, primary: true },
   { to: '/produtos', label: 'Produtos', icon: ProductIcon, primary: true },
+  { to: '/conta', label: 'Conta', icon: SettingsIcon, primary: true },
+  { to: '/audios', label: 'Áudios', icon: AudioIcon, primary: false },
   { to: '/disparos', label: 'Disparos', icon: TextIcon, primary: false },
   { to: '/scripts', label: 'Scripts', icon: TextIcon, primary: false },
   { to: '/keywords', label: 'Keywords', icon: KeyIcon, primary: false },
-  { to: '/configuracoes', label: 'Config', icon: SettingsIcon, primary: true },
+  { to: '/painel', label: 'Painel', icon: DashboardIcon, primary: false },
   { to: '/admin', label: 'Empresas', icon: BuildingIcon, primary: false, superadminOnly: true },
 ];

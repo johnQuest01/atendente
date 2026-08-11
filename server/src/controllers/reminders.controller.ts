@@ -6,7 +6,8 @@ import {
   listReminders,
   removeReminderOwner,
 } from '../db/queries/reminders';
-import { NotFoundError } from '../utils/errors';
+import { AppError, NotFoundError } from '../utils/errors';
+import { parseConnectionIdQuery, requireConnection } from './connectionScope';
 
 /**
  * Whitelist do assistente pessoal: quais números, dentro da empresa, podem
@@ -18,7 +19,9 @@ function onlyDigits(value: string): string {
 }
 
 export async function getReminderOwners(req: Request, res: Response): Promise<void> {
-  const owners = await listReminderOwners(req.user!.tenant_id);
+  const connectionId = parseConnectionIdQuery(req);
+  if (connectionId) await requireConnection(req.user!.tenant_id, connectionId);
+  const owners = await listReminderOwners(req.user!.tenant_id, connectionId);
   res.json({ owners });
 }
 
@@ -35,20 +38,31 @@ export const createReminderOwnerSchema = z.object({
 });
 
 export async function postReminderOwner(req: Request, res: Response): Promise<void> {
+  const connectionId = parseConnectionIdQuery(req);
+  if (!connectionId) {
+    throw new AppError(
+      'Escolha de qual número WhatsApp este contato autoriza lembretes.',
+      400,
+      'CONNECTION_REQUIRED',
+    );
+  }
+  await requireConnection(req.user!.tenant_id, connectionId);
   const input = req.body as z.infer<typeof createReminderOwnerSchema>;
   const phone = onlyDigits(input.phone);
-  await addReminderOwner(req.user!.tenant_id, phone, input.label ?? null);
-  const owners = await listReminderOwners(req.user!.tenant_id);
+  await addReminderOwner(req.user!.tenant_id, phone, input.label ?? null, connectionId);
+  const owners = await listReminderOwners(req.user!.tenant_id, connectionId);
   res.status(201).json({ owners });
 }
 
 export const reminderOwnerParamSchema = z.object({ phone: z.string().min(8).max(20) });
 
 export async function deleteReminderOwner(req: Request, res: Response): Promise<void> {
+  const connectionId = parseConnectionIdQuery(req);
+  if (connectionId) await requireConnection(req.user!.tenant_id, connectionId);
   const { phone } = req.params as z.infer<typeof reminderOwnerParamSchema>;
-  const ok = await removeReminderOwner(req.user!.tenant_id, onlyDigits(phone));
+  const ok = await removeReminderOwner(req.user!.tenant_id, onlyDigits(phone), connectionId);
   if (!ok) throw new NotFoundError('Número autorizado');
-  const owners = await listReminderOwners(req.user!.tenant_id);
+  const owners = await listReminderOwners(req.user!.tenant_id, connectionId);
   res.json({ owners });
 }
 

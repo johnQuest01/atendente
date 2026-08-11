@@ -28,17 +28,28 @@ export interface SystemStatus {
   };
 }
 
-export const SYSTEM_STATUS_QUERY_KEY = ['system-status'] as const;
+export function systemStatusQueryKey(connectionId?: string) {
+  return ['system-status', connectionId] as const;
+}
+
+/** @deprecated use systemStatusQueryKey(connectionId) */
+export const SYSTEM_STATUS_QUERY_KEY = systemStatusQueryKey();
 
 /**
  * Status REAL das integrações. Sempre pede `force=1` (o servidor tem cache curto
  * de ~10s, então não há risco de martelar as APIs externas).
+ * Se `connectionId` for passado, o backend pode escopar o status do WhatsApp.
  */
-export function useSystemStatus() {
+export function useSystemStatus(connectionId?: string) {
   return useQuery({
-    queryKey: SYSTEM_STATUS_QUERY_KEY,
+    queryKey: systemStatusQueryKey(connectionId),
     queryFn: async () => {
-      const { data } = await api.get<SystemStatus>('/settings/status?force=1');
+      const { data } = await api.get<SystemStatus>('/settings/status', {
+        params: {
+          force: 1,
+          ...(connectionId ? { connectionId } : {}),
+        },
+      });
       return data;
     },
     staleTime: 10_000,

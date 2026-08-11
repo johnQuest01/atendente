@@ -20,6 +20,12 @@ export const SOCKET_EVENTS = {
   CONVERSATION_NEW: 'conversation:new',
   MESSAGE_NEW: 'message:new',
   AGENT_STATUS: 'agent:status',
+  /**
+   * Onboarding WhatsApp (sala tenant:*).
+   * Payload: { connectionId, status, detail?, phone?, qrBase64?, phoneCode? }
+   * status: PROVISIONING | AGUARDANDO_LEITURA | CONECTANDO | CONECTADO | ERRO | EXPIRADO | DESCONECTADO
+   */
+  WHATSAPP_STATUS: 'whatsapp:status',
 } as const;
 
 export function initSocket(httpServer: HttpServer): SocketIOServer {
@@ -101,4 +107,19 @@ export function emitNewConversation(tenantId: string, conversation: Conversation
 export function emitAgentStatus(tenantId: string, enabled: boolean): void {
   if (!io) return;
   io.to(tenantRoom(tenantId)).emit(SOCKET_EVENTS.AGENT_STATUS, { enabled });
+}
+
+export interface WhatsappStatusPayload {
+  connectionId: string;
+  status: string;
+  detail?: string | null;
+  phone?: string | null;
+  qrBase64?: string | null;
+  phoneCode?: string | null;
+}
+
+/** Empurra transições do onboarding WhatsApp para a sala do tenant. */
+export function emitWhatsappStatus(tenantId: string, payload: WhatsappStatusPayload): void {
+  if (!io) return;
+  io.to(tenantRoom(tenantId)).emit(SOCKET_EVENTS.WHATSAPP_STATUS, payload);
 }

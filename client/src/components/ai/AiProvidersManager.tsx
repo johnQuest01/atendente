@@ -268,9 +268,21 @@ function SourceHint({ scope, source, hasOwn }: { scope: AiScope; source: ChainSo
   );
 }
 
-export function AiProvidersManager({ scope }: { scope: AiScope }) {
+export function AiProvidersManager({
+  scope,
+  suggestedConnectionId,
+}: {
+  scope: AiScope;
+  /** Pré-seleciona / prioriza este número ao criar provedor (workspace da conexão). */
+  suggestedConnectionId?: string;
+}) {
   const { data, isLoading, isError, refetch } = useAiProviders(scope);
-  const providers = data?.providers;
+  const allProviders = data?.providers;
+  const providers = suggestedConnectionId
+    ? allProviders?.filter(
+        (p) => !p.connection_id || p.connection_id === suggestedConnectionId,
+      )
+    : allProviders;
   const source = data?.source ?? null;
   const [modal, setModal] = useState<AiProviderDto | 'new' | null>(null);
 
@@ -330,6 +342,7 @@ export function AiProvidersManager({ scope }: { scope: AiScope }) {
         onClose={() => setModal(null)}
         provider={modal && modal !== 'new' ? modal : undefined}
         suggestedPriority={nextPriority}
+        suggestedConnectionId={suggestedConnectionId}
       />
     </div>
   );
@@ -425,12 +438,14 @@ function AiProviderModal({
   onClose,
   provider,
   suggestedPriority,
+  suggestedConnectionId,
 }: {
   scope: AiScope;
   open: boolean;
   onClose: () => void;
   provider?: AiProviderDto;
   suggestedPriority: number;
+  suggestedConnectionId?: string;
 }) {
   const isEdit = Boolean(provider);
   const create = useCreateAiProvider(scope);
@@ -484,11 +499,15 @@ function AiProviderModal({
       setApiKey('');
       setPriority(suggestedPriority);
       setIsActive(true);
-      // Preferência: número já conectado; senão o primeiro cadastrado.
-      const connected = waConnections.find((c) => c.isActive && c.configured) ?? waConnections[0];
-      setConnectionId(connected?.id ?? '');
+      // Preferência: conexão do workspace; senão número conectado; senão o primeiro.
+      const preferred =
+        (suggestedConnectionId &&
+          waConnections.find((c) => c.id === suggestedConnectionId)) ||
+        waConnections.find((c) => c.isActive && c.configured) ||
+        waConnections[0];
+      setConnectionId(preferred?.id ?? '');
     }
-  }, [open, provider, suggestedPriority]); // eslint-disable-line react-hooks/exhaustive-deps -- só ao abrir modal
+  }, [open, provider, suggestedPriority, suggestedConnectionId]); // eslint-disable-line react-hooks/exhaustive-deps -- só ao abrir modal
 
   // Editar provedor conectado: busca os modelos reais com a chave JÁ salva
   // (o front não a tem) — é o que permite trocar de modelo sem redigitar a chave.

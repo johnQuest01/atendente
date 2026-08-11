@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
-import { SYSTEM_STATUS_QUERY_KEY } from './useSystemStatus';
 
 export type AiKind = 'anthropic' | 'openai' | 'gemini';
 
@@ -132,7 +131,7 @@ function useInvalidate(scope: AiScope) {
   return () => {
     void qc.invalidateQueries({ queryKey: aiProvidersQueryKey(scope) });
     void qc.invalidateQueries({ queryKey: aiUsageQueryKey(scope) });
-    void qc.invalidateQueries({ queryKey: SYSTEM_STATUS_QUERY_KEY });
+    void qc.invalidateQueries({ queryKey: ['system-status'] });
   };
 }
 

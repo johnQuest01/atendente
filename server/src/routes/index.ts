@@ -12,6 +12,9 @@ import adminRoutes from './admin.routes';
 import invitesRoutes from './invites.routes';
 import broadcastsRoutes from './broadcasts.routes';
 import contactsRoutes from './contacts.routes';
+import whatsappOnboardingRoutes, {
+  tenantWhatsappRouter,
+} from './whatsapp-onboarding.routes';
 
 const api = Router();
 
@@ -29,5 +32,7 @@ api.use('/blocked', blockedRoutes);
 api.use('/admin', adminRoutes);
 api.use('/broadcasts', broadcastsRoutes);
 api.use('/contacts', contactsRoutes);
+api.use('/whatsapp', whatsappOnboardingRoutes);
+api.use('/tenants/:tenantId/whatsapp', tenantWhatsappRouter);
 
 export default api;

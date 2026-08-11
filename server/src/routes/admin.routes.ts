@@ -33,6 +33,11 @@ import {
   testAiCredsSchema,
   listAiModelsSchema,
 } from '../controllers/ai_providers.controller';
+import {
+  addPoolBodySchema,
+  getInstancePool,
+  postInstancePool,
+} from '../controllers/instance-pool.controller';
 
 const router = Router();
 
@@ -113,6 +118,14 @@ router.post(
   '/ai/providers/:id/models',
   validate({ params: aiProviderIdParamSchema }),
   asyncHandler(adminAiProviders.listModelsForSaved),
+);
+
+// Pool de instâncias Z-API (trials de 7 dias). Instâncias devem estar assinadas.
+router.get('/whatsapp/instance-pool', asyncHandler(getInstancePool));
+router.post(
+  '/whatsapp/instance-pool',
+  validate({ body: addPoolBodySchema }),
+  asyncHandler(postInstancePool),
 );
 
 export default router;

@@ -1,5 +1,6 @@
 import { assertTenantMatchesScope, query, queryOne, withTransaction } from '../index';
 import type { Reminder, ReminderCategory, ReminderStatus } from '../../types';
+import { AppError } from '../../utils/errors';
 
 /**
  * Lembretes pessoais do dono e a whitelist de números autorizados.
@@ -10,8 +11,20 @@ import type { Reminder, ReminderCategory, ReminderStatus } from '../../types';
  * agendador varrendo todas as empresas) e por isso não recebe tenantId.
  */
 
-export async function isReminderOwner(tenantId: string, phone: string): Promise<boolean> {
+export async function isReminderOwner(
+  tenantId: string,
+  phone: string,
+  connectionId?: string | null,
+): Promise<boolean> {
   assertTenantMatchesScope(tenantId);
+  if (connectionId) {
+    const row = await queryOne<{ phone: string }>(
+      `SELECT phone FROM reminder_owners
+        WHERE tenant_id = $1 AND phone = $2 AND connection_id = $3`,
+      [tenantId, phone, connectionId],
+    );
+    return row !== null;
+  }
   const row = await queryOne<{ phone: string }>(
     'SELECT phone FROM reminder_owners WHERE tenant_id = $1 AND phone = $2',
     [tenantId, phone],
@@ -21,10 +34,21 @@ export async function isReminderOwner(tenantId: string, phone: string): Promise<
 
 export async function listReminderOwners(
   tenantId: string,
-): Promise<Array<{ phone: string; label: string | null }>> {
+  connectionId?: string | null,
+): Promise<Array<{ phone: string; label: string | null; connection_id?: string }>> {
   assertTenantMatchesScope(tenantId);
-  const { rows } = await query<{ phone: string; label: string | null }>(
-    'SELECT phone, label FROM reminder_owners WHERE tenant_id = $1 ORDER BY created_at ASC',
+  if (connectionId) {
+    const { rows } = await query<{ phone: string; label: string | null; connection_id: string }>(
+      `SELECT phone, label, connection_id FROM reminder_owners
+        WHERE tenant_id = $1 AND connection_id = $2
+        ORDER BY created_at ASC`,
+      [tenantId, connectionId],
+    );
+    return rows;
+  }
+  const { rows } = await query<{ phone: string; label: string | null; connection_id: string }>(
+    `SELECT phone, label, connection_id FROM reminder_owners
+      WHERE tenant_id = $1 ORDER BY created_at ASC`,
     [tenantId],
   );
   return rows;
@@ -34,18 +58,38 @@ export async function addReminderOwner(
   tenantId: string,
   phone: string,
   label?: string | null,
+  connectionId?: string | null,
 ): Promise<void> {
   assertTenantMatchesScope(tenantId);
+  if (!connectionId) {
+    throw new AppError(
+      'Escolha de qual número WhatsApp este contato autoriza lembretes.',
+      400,
+      'CONNECTION_REQUIRED',
+    );
+  }
   await query(
-    `INSERT INTO reminder_owners (tenant_id, phone, label)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (tenant_id, phone) DO UPDATE SET label = EXCLUDED.label`,
-    [tenantId, phone, label ?? null],
+    `INSERT INTO reminder_owners (tenant_id, phone, label, connection_id)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (tenant_id, phone, connection_id) DO UPDATE SET label = EXCLUDED.label`,
+    [tenantId, phone, label ?? null, connectionId],
   );
 }
 
-export async function removeReminderOwner(tenantId: string, phone: string): Promise<boolean> {
+export async function removeReminderOwner(
+  tenantId: string,
+  phone: string,
+  connectionId?: string | null,
+): Promise<boolean> {
   assertTenantMatchesScope(tenantId);
+  if (connectionId) {
+    const { rowCount } = await query(
+      `DELETE FROM reminder_owners
+        WHERE tenant_id = $1 AND phone = $2 AND connection_id = $3`,
+      [tenantId, phone, connectionId],
+    );
+    return (rowCount ?? 0) > 0;
+  }
   const { rowCount } = await query(
     'DELETE FROM reminder_owners WHERE tenant_id = $1 AND phone = $2',
     [tenantId, phone],

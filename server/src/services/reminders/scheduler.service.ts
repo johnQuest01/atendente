@@ -14,6 +14,7 @@ import { describeLead, describeRecurrence } from './parse.service';
 import { formatForOwner, nextOccurrence } from './time';
 import { tickBroadcasts } from '../broadcast.service';
 import { purgeExpiredMemories } from '../../db/queries/client_memories';
+import { tickWhatsappOnboarding } from '../whatsapp-onboarding.service';
 
 /**
  * Agendador dos lembretes: a cada minuto varre os vencidos e dispara no
@@ -129,6 +130,11 @@ async function tick(): Promise<void> {
 
     // LGPD: limpa memórias com expires_at vencido (best-effort).
     await purgeExpiredMemories().catch(() => 0);
+
+    // Onboarding: QR expirado + recycle de pool quando trial de 7 dias acaba.
+    await tickWhatsappOnboarding().catch((err) =>
+      logger.warn('Falha na varredura de onboarding WhatsApp', err),
+    );
   } catch (err) {
     logger.warn('Falha na varredura de lembretes', err);
   } finally {

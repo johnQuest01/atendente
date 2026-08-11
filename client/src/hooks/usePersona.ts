@@ -1,7 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
 
-export const PERSONA_QUERY_KEY = ['ai-persona'] as const;
+export function personaQueryKey(connectionId?: string) {
+  return ['ai-persona', connectionId] as const;
+}
+
+/** @deprecated use personaQueryKey(connectionId) */
+export const PERSONA_QUERY_KEY = personaQueryKey();
 
 export interface PersonaData {
   prompt: string;
@@ -11,24 +16,28 @@ export interface PersonaData {
   maxTokens: number;
 }
 
-export function usePersona() {
+export function usePersona(connectionId?: string) {
   return useQuery({
-    queryKey: PERSONA_QUERY_KEY,
+    queryKey: personaQueryKey(connectionId),
     queryFn: async () => {
-      const { data } = await api.get<PersonaData>('/settings/persona');
+      const { data } = await api.get<PersonaData>('/settings/persona', {
+        params: connectionId ? { connectionId } : undefined,
+      });
       return data;
     },
   });
 }
 
-export function useSetPersona() {
+export function useSetPersona(connectionId?: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (input: { prompt: string; temperature: number; maxTokens?: number }) => {
-      const { data } = await api.put<PersonaData>('/settings/persona', input);
+      const { data } = await api.put<PersonaData>('/settings/persona', input, {
+        params: connectionId ? { connectionId } : undefined,
+      });
       return data;
     },
-    onSuccess: (data) => qc.setQueryData(PERSONA_QUERY_KEY, data),
+    onSuccess: (data) => qc.setQueryData(personaQueryKey(connectionId), data),
   });
 }
 
@@ -41,6 +50,7 @@ export interface PersonaPreviewInput {
   /** 'sales' (padrão) ou 'reminder' (assistente de lembretes). */
   target?: 'sales' | 'reminder';
   history?: { role: 'user' | 'assistant'; content: string }[];
+  connectionId?: string;
 }
 
 export interface PersonaPreviewResult {
@@ -55,7 +65,10 @@ export interface PersonaPreviewResult {
 export function usePersonaPreview() {
   return useMutation({
     mutationFn: async (input: PersonaPreviewInput) => {
-      const { data } = await api.post<PersonaPreviewResult>('/settings/persona/preview', input);
+      const { connectionId, ...body } = input;
+      const { data } = await api.post<PersonaPreviewResult>('/settings/persona/preview', body, {
+        params: connectionId ? { connectionId } : undefined,
+      });
       return data;
     },
   });
@@ -65,7 +78,12 @@ export function usePersonaPreview() {
 // Persona do assistente de lembretes (secretária do dono)
 // ---------------------------------------------------------------------------
 
-export const REMINDER_PERSONA_QUERY_KEY = ['reminder-persona'] as const;
+export function reminderPersonaQueryKey(connectionId?: string) {
+  return ['reminder-persona', connectionId] as const;
+}
+
+/** @deprecated use reminderPersonaQueryKey(connectionId) */
+export const REMINDER_PERSONA_QUERY_KEY = reminderPersonaQueryKey();
 
 export interface ReminderPersonaData {
   prompt: string;
@@ -73,25 +91,29 @@ export interface ReminderPersonaData {
   isDefault: boolean;
 }
 
-export function useReminderPersona(enabled = true) {
+export function useReminderPersona(connectionId?: string, enabled = true) {
   return useQuery({
-    queryKey: REMINDER_PERSONA_QUERY_KEY,
+    queryKey: reminderPersonaQueryKey(connectionId),
     queryFn: async () => {
-      const { data } = await api.get<ReminderPersonaData>('/settings/reminder-persona');
+      const { data } = await api.get<ReminderPersonaData>('/settings/reminder-persona', {
+        params: connectionId ? { connectionId } : undefined,
+      });
       return data;
     },
     enabled,
   });
 }
 
-export function useSetReminderPersona() {
+export function useSetReminderPersona(connectionId?: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (input: { prompt: string }) => {
-      const { data } = await api.put<ReminderPersonaData>('/settings/reminder-persona', input);
+      const { data } = await api.put<ReminderPersonaData>('/settings/reminder-persona', input, {
+        params: connectionId ? { connectionId } : undefined,
+      });
       return data;
     },
-    onSuccess: (data) => qc.setQueryData(REMINDER_PERSONA_QUERY_KEY, data),
+    onSuccess: (data) => qc.setQueryData(reminderPersonaQueryKey(connectionId), data),
   });
 }
 
@@ -113,29 +135,37 @@ export interface BehaviorSetting {
   value: string;
 }
 
-export const BEHAVIOR_QUERY_KEY = ['behavior-settings'] as const;
+export function behaviorQueryKey(connectionId?: string) {
+  return ['behavior-settings', connectionId] as const;
+}
 
-export function useBehaviorSettings(enabled = true) {
+/** @deprecated use behaviorQueryKey(connectionId) */
+export const BEHAVIOR_QUERY_KEY = behaviorQueryKey();
+
+export function useBehaviorSettings(connectionId?: string, enabled = true) {
   return useQuery({
-    queryKey: BEHAVIOR_QUERY_KEY,
+    queryKey: behaviorQueryKey(connectionId),
     queryFn: async () => {
-      const { data } = await api.get<{ settings: BehaviorSetting[] }>('/settings/behavior');
+      const { data } = await api.get<{ settings: BehaviorSetting[] }>('/settings/behavior', {
+        params: connectionId ? { connectionId } : undefined,
+      });
       return data.settings;
     },
     enabled,
   });
 }
 
-export function useSetBehavior() {
+export function useSetBehavior(connectionId?: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async ({ key, value }: { key: string; value: string | number | boolean }) => {
       const { data } = await api.put<{ key: string; value: string }>(
         `/settings/behavior/${key}`,
         { value },
+        { params: connectionId ? { connectionId } : undefined },
       );
       return data;
     },
-    onSuccess: () => void qc.invalidateQueries({ queryKey: BEHAVIOR_QUERY_KEY }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: behaviorQueryKey(connectionId) }),
   });
 }

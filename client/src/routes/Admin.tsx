@@ -23,6 +23,7 @@ import {
   type AccessTokenReveal,
 } from '@/hooks/useAccessTokens';
 import { AiProvidersManager } from '@/components/ai/AiProvidersManager';
+import { InstancePoolManager } from '@/components/admin/InstancePoolManager';
 import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
 
@@ -70,6 +71,10 @@ export default function Admin() {
 
         <div className="mt-4 border-t border-border pt-4">
           <InvitesManager />
+        </div>
+
+        <div className="mt-4 border-t border-border pt-4">
+          <InstancePoolManager />
         </div>
 
         <div className="mt-4 border-t border-border pt-4">

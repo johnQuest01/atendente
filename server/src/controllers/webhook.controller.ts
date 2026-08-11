@@ -191,6 +191,25 @@ export async function handleWhatsappWebhook(req: Request, res: Response): Promis
     return;
   }
 
+  // Callbacks de conexão/desconexão (onboarding embutido).
+  if (connection) {
+    const connRef = connection;
+    try {
+      const { handleConnectionWebhookEvent } = await import(
+        '../services/whatsapp-onboarding.service.js'
+      );
+      const handledConn = await runWithTenant(tenantId, () =>
+        handleConnectionWebhookEvent(tenantId, connRef, body),
+      );
+      if (handledConn) {
+        res.status(200).json({ ok: true, connectionEvent: true });
+        return;
+      }
+    } catch (err: unknown) {
+      logger.warn('Falha ao processar webhook de conexão', err);
+    }
+  }
+
   const inbound = parseInbound(provider, body);
   if (!inbound) {
     const mediaKeys = ['sticker', 'image', 'audio', 'video', 'document', 'text', 'reaction']
@@ -332,7 +351,7 @@ async function processInbound(
   // Aceita texto ou áudio — o handler transcreve internamente.
   if (
     (inbound.type === 'text' || inbound.type === 'audio') &&
-    (await isReminderOwner(tenantId, inbound.phone))
+    (await isReminderOwner(tenantId, inbound.phone, connectionId))
   ) {
     await hydrateProviderMedia(tenantId, inbound, connection);
     const handled = await handleOwnerMessage(tenantId, inbound, connectionId);

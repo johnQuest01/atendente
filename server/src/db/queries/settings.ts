@@ -1,5 +1,6 @@
 import { query, queryOne } from '../index';
 import { DEFAULT_AI_PERSONA, DEFAULT_REMINDER_PERSONA } from '../../config/persona';
+import { getConnectionById } from './whatsapp_connections';
 
 const AGENT_KEY = 'agent_enabled';
 const PERSONA_KEY = 'ai_persona';
@@ -112,8 +113,18 @@ export async function setAiPersona(tenantId: string, prompt: string): Promise<st
 
 const MEMORY_SCAN_KEY = 'memory_scan_enabled';
 
-/** A varredura de conversas está LIGADA para esta empresa? Default: false. */
-export async function isMemoryScanEnabled(tenantId: string): Promise<boolean> {
+/**
+ * Varredura ligada? Com connectionId usa o flag da conexão (fallback: tenant).
+ * Default: false.
+ */
+export async function isMemoryScanEnabled(
+  tenantId: string,
+  connectionId?: string | null,
+): Promise<boolean> {
+  if (connectionId) {
+    const conn = await getConnectionById(tenantId, connectionId);
+    if (conn?.memory_scan_enabled != null) return conn.memory_scan_enabled;
+  }
   return (await readSetting(tenantId, MEMORY_SCAN_KEY)) === 'true';
 }
 
@@ -131,12 +142,22 @@ export async function setMemoryScanEnabled(tenantId: string, enabled: boolean): 
  * Persona do assistente pessoal de lembretes. Molda o TOM das confirmações e
  * disparos ao dono. Cache curto: é lida no parse de cada lembrete.
  */
-export async function getReminderPersona(tenantId: string): Promise<string> {
-  const cached = reminderPersonaCache.get(tenantId);
+export async function getReminderPersona(
+  tenantId: string,
+  connectionId?: string | null,
+): Promise<string> {
+  if (connectionId) {
+    const conn = await getConnectionById(tenantId, connectionId);
+    if (conn?.reminder_assistant_persona?.trim()) {
+      return conn.reminder_assistant_persona.trim();
+    }
+  }
+  const cacheKey = tenantId;
+  const cached = reminderPersonaCache.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.prompt;
   const value = await readSetting(tenantId, REMINDER_PERSONA_KEY);
   const prompt = value && value.trim() ? value : DEFAULT_REMINDER_PERSONA;
-  reminderPersonaCache.set(tenantId, { prompt, at: Date.now() });
+  reminderPersonaCache.set(cacheKey, { prompt, at: Date.now() });
   return prompt;
 }
 

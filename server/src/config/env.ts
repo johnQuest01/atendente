@@ -55,6 +55,15 @@ const envSchema = z.object({
   ZAPI_TOKEN: z.string().optional(),
   ZAPI_BASE_URL: z.string().url().default('https://api.z-api.io/instances'),
   ZAPI_CLIENT_TOKEN: z.string().optional(),
+  /** Partner-Token do integrador (Bearer) — cria/assina instâncias via API. */
+  ZAPI_PARTNER_TOKEN: z.string().optional(),
+  /**
+   * Modo de provisionamento forçado: on-demand | pool | auto.
+   * auto (padrão): trial → pool; conta active → on-demand.
+   */
+  ZAPI_PROVISION_MODE: z.enum(['auto', 'on-demand', 'pool']).default('auto'),
+  /** Minutos até EXPIRADO se o cliente não escanear o QR. */
+  WHATSAPP_ONBOARDING_TIMEOUT_MINUTES: z.coerce.number().int().positive().default(10),
 
   // Evolution API (self-hosted)
   EVOLUTION_BASE_URL: z.string().url().default('http://localhost:8080'),
@@ -249,6 +258,7 @@ export const env = {
   hasEncryption: Boolean(data.ENCRYPTION_KEY),
   hasStt: data.STT_PROVIDER === 'openai' && Boolean(data.STT_API_KEY),
   hasZapi: Boolean(data.ZAPI_INSTANCE_ID && data.ZAPI_TOKEN),
+  hasZapiPartner: Boolean(data.ZAPI_PARTNER_TOKEN),
   hasEvolution: Boolean(data.EVOLUTION_API_KEY && data.EVOLUTION_INSTANCE),
   hasWhatsapp:
     data.WHATSAPP_PROVIDER === 'evolution'

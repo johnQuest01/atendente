@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/services/api';
-import { SYSTEM_STATUS_QUERY_KEY } from './useSystemStatus';
 
 export type WhatsappProvider = 'zapi' | 'evolution' | 'metacloud';
 
@@ -26,6 +25,10 @@ export interface WhatsappConnectionView {
   aiTemperature: number | null;
   aiMaxTokens: number | null;
   agentEnabled: boolean | null;
+  connectionStatus?: string | null;
+  providerMode?: 'web' | 'phoneless' | null;
+  instanceOrigin?: string | null;
+  webhookConfigured?: boolean;
   status: { ok: boolean; detail: string };
 }
 
@@ -88,7 +91,7 @@ export function useConfigureWebhook() {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: WHATSAPP_CONN_QUERY_KEY });
-      void qc.invalidateQueries({ queryKey: SYSTEM_STATUS_QUERY_KEY });
+      void qc.invalidateQueries({ queryKey: ['system-status'] });
     },
   });
 }
@@ -102,7 +105,7 @@ export function useCreateWhatsappConnection() {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: WHATSAPP_CONN_QUERY_KEY });
-      void qc.invalidateQueries({ queryKey: SYSTEM_STATUS_QUERY_KEY });
+      void qc.invalidateQueries({ queryKey: ['system-status'] });
     },
   });
 }
@@ -121,7 +124,7 @@ export function useSaveWhatsappConnection() {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: WHATSAPP_CONN_QUERY_KEY });
-      void qc.invalidateQueries({ queryKey: SYSTEM_STATUS_QUERY_KEY });
+      void qc.invalidateQueries({ queryKey: ['system-status'] });
     },
   });
 }
@@ -134,7 +137,7 @@ export function useDeleteWhatsappConnection() {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: WHATSAPP_CONN_QUERY_KEY });
-      void qc.invalidateQueries({ queryKey: SYSTEM_STATUS_QUERY_KEY });
+      void qc.invalidateQueries({ queryKey: ['system-status'] });
     },
   });
 }

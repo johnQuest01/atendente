@@ -11,13 +11,20 @@ export interface ReminderOwner {
   label: string | null;
 }
 
-export const REMINDER_OWNERS_QUERY_KEY = ['reminder-owners'] as const;
+export function reminderOwnersQueryKey(connectionId?: string) {
+  return ['reminder-owners', connectionId] as const;
+}
 
-export function useReminderOwners(enabled = true) {
+/** @deprecated use reminderOwnersQueryKey(connectionId) */
+export const REMINDER_OWNERS_QUERY_KEY = reminderOwnersQueryKey();
+
+export function useReminderOwners(connectionId?: string, enabled = true) {
   return useQuery({
-    queryKey: REMINDER_OWNERS_QUERY_KEY,
+    queryKey: reminderOwnersQueryKey(connectionId),
     queryFn: async () => {
-      const { data } = await api.get<{ owners: ReminderOwner[] }>('/settings/reminder-owners');
+      const { data } = await api.get<{ owners: ReminderOwner[] }>('/settings/reminder-owners', {
+        params: connectionId ? { connectionId } : undefined,
+      });
       return data.owners;
     },
     enabled,
@@ -25,27 +32,32 @@ export function useReminderOwners(enabled = true) {
   });
 }
 
-export function useAddReminderOwner() {
+export function useAddReminderOwner(connectionId?: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (input: { phone: string; label?: string }) => {
-      const { data } = await api.post<{ owners: ReminderOwner[] }>('/settings/reminder-owners', input);
+      const { data } = await api.post<{ owners: ReminderOwner[] }>(
+        '/settings/reminder-owners',
+        input,
+        { params: connectionId ? { connectionId } : undefined },
+      );
       return data.owners;
     },
-    onSuccess: (owners) => qc.setQueryData(REMINDER_OWNERS_QUERY_KEY, owners),
+    onSuccess: (owners) => qc.setQueryData(reminderOwnersQueryKey(connectionId), owners),
   });
 }
 
-export function useRemoveReminderOwner() {
+export function useRemoveReminderOwner(connectionId?: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (phone: string) => {
       const { data } = await api.delete<{ owners: ReminderOwner[] }>(
         `/settings/reminder-owners/${phone}`,
+        { params: connectionId ? { connectionId } : undefined },
       );
       return data.owners;
     },
-    onSuccess: (owners) => qc.setQueryData(REMINDER_OWNERS_QUERY_KEY, owners),
+    onSuccess: (owners) => qc.setQueryData(reminderOwnersQueryKey(connectionId), owners),
   });
 }
 
@@ -53,13 +65,20 @@ export function useRemoveReminderOwner() {
 // Varredura de conversas (recuperar compromissos) — só o liga/desliga
 // ---------------------------------------------------------------------------
 
-export const MEMORY_SCAN_QUERY_KEY = ['memory-scan'] as const;
+export function memoryScanQueryKey(connectionId?: string) {
+  return ['memory-scan', connectionId] as const;
+}
 
-export function useMemoryScan(enabled = true) {
+/** @deprecated use memoryScanQueryKey(connectionId) */
+export const MEMORY_SCAN_QUERY_KEY = memoryScanQueryKey();
+
+export function useMemoryScan(connectionId?: string, enabled = true) {
   return useQuery({
-    queryKey: MEMORY_SCAN_QUERY_KEY,
+    queryKey: memoryScanQueryKey(connectionId),
     queryFn: async () => {
-      const { data } = await api.get<{ enabled: boolean }>('/settings/memory-scan');
+      const { data } = await api.get<{ enabled: boolean }>('/settings/memory-scan', {
+        params: connectionId ? { connectionId } : undefined,
+      });
       return data.enabled;
     },
     enabled,
@@ -67,15 +86,17 @@ export function useMemoryScan(enabled = true) {
   });
 }
 
-export function useSetMemoryScan() {
+export function useSetMemoryScan(connectionId?: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (nextEnabled: boolean) => {
-      const { data } = await api.put<{ enabled: boolean }>('/settings/memory-scan', {
-        enabled: nextEnabled,
-      });
+      const { data } = await api.put<{ enabled: boolean }>(
+        '/settings/memory-scan',
+        { enabled: nextEnabled },
+        { params: connectionId ? { connectionId } : undefined },
+      );
       return data.enabled;
     },
-    onSuccess: (value) => qc.setQueryData(MEMORY_SCAN_QUERY_KEY, value),
+    onSuccess: (value) => qc.setQueryData(memoryScanQueryKey(connectionId), value),
   });
 }

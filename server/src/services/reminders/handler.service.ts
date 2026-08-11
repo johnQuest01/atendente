@@ -518,7 +518,7 @@ async function handleOwnerMessageInner(
   // hoje. Vive aqui de propósito — só roda para a whitelist —, com re-checagem
   // defensiva para o cliente jamais receber lembrete (isolamento máximo).
   if (await matchesReminderKeyword(tenantId, text, connectionId)) {
-    if (!(await isReminderOwner(tenantId, phone))) return true;
+    if (!(await isReminderOwner(tenantId, phone, connectionId))) return true;
     const todays = await getTodayReminders(tenantId, phone);
     setState(tenantId, phone, { lastList: todays.map((r) => r.id) });
     await sendReminderList(tenantId, phone, todays, QUERY_TITLE.hoje, tz);
@@ -554,11 +554,11 @@ async function handleOwnerMessageInner(
   // "RECUPERAR COMPROMISSOS". OFF por padrão; sob demanda; propõe e só grava
   // com a confirmação em massa. Custa token só aqui.
   if (/^varrer\b/.test(normalized) || /recuperar\s+compromiss/.test(normalized)) {
-    if (!(await isMemoryScanEnabled(tenantId))) {
+    if (!(await isMemoryScanEnabled(tenantId, connectionId))) {
       await reply(
         tenantId,
         phone,
-        'A varredura de conversas está desligada. Ligue em Configurações → Recuperar compromissos e tente de novo.',
+        'A varredura de conversas está desligada. Ligue em Lembretes → Recuperar compromissos nesta conexão e tente de novo.',
       );
       return true;
     }
