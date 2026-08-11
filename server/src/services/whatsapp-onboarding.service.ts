@@ -295,14 +295,14 @@ export async function restartWhatsappConnect(
     throw new AppError('Informe o número com DDI (ex.: 5511999999999).', 400, 'BAD_PHONE');
   }
 
-  // Já tem instância: só gera código (ou QR se não veio número).
+  // Já tem instância: só gera código (ou QR se não veio número / fallback).
   if (existing.secrets.instanceId && existing.secrets.token) {
     if (phoneDigits) {
       const code = await requestPhoneCode(tenantId, connectionId, phoneDigits);
       const updated = await getConnectionById(tenantId, connectionId);
       return {
         connection: updated ?? existing,
-        qrBase64: null,
+        qrBase64: code.qrBase64,
         phoneCode: code.code,
         phone: phoneDigits,
         status: (updated?.connection_status ?? 'AGUARDANDO_LEITURA') as ConnectionLifecycleStatus,
@@ -438,22 +438,52 @@ export async function requestPhoneCode(tenantId: string, connectionId: string, p
   if (digits.length < 10) {
     throw new AppError('Informe o número com DDI (ex.: 5511999999999).', 400, 'BAD_PHONE');
   }
-  const result = await zapiClient.getPhoneCode(credsOf(conn), digits);
-  if (result.challenge) {
+
+  try {
+    const result = await zapiClient.getPhoneCode(credsOf(conn), digits);
+    if (result.challenge) {
+      throw new AppError(
+        'Este aparelho pediu verificação extra (passkey). Use o QR Code abaixo.',
+        400,
+        'PASSKEY_REQUIRED',
+      );
+    }
+    if (result.code) {
+      await bumpOnboardingExpiry(tenantId, connectionId, env.WHATSAPP_ONBOARDING_TIMEOUT_MINUTES);
+      await pushStatus(tenantId, connectionId, 'AGUARDANDO_LEITURA', {
+        detail: 'Digite este código no WhatsApp do celular',
+        phoneCode: result.code,
+      });
+      return { code: result.code as string, qrBase64: null as string | null, fallback: 'code' as const };
+    }
+  } catch (err) {
+    if (err instanceof AppError && err.code === 'ZAPI_ALREADY_CONNECTED') throw err;
+    if (err instanceof AppError && err.code === 'PASSKEY_REQUIRED') {
+      // segue para QR
+    } else if (!(err instanceof AppError && err.code === 'ZAPI_PHONE_CODE_FAILED')) {
+      logger.warn('phone-code falhou — tentando QR', err);
+    } else {
+      logger.warn('phone-code sem código útil — tentando QR', err);
+    }
+  }
+
+  // Fallback: muitas contas web só liberam QR (ou a sessão precisa restaurar).
+  const qr = await refreshQr(tenantId, connectionId).catch(() => ({
+    qrBase64: null as string | null,
+    challenge: false,
+  }));
+  if (!qr.qrBase64) {
     throw new AppError(
-      'Este aparelho pediu verificação extra. Tente o QR Code.',
-      400,
-      'PASSKEY_REQUIRED',
+      'A Z-API não gerou código nem QR. Confirme que a instância está desconectada e as credenciais (ID/Token/Client-Token) estão corretas.',
+      502,
+      'NO_CODE',
     );
   }
-  if (!result.code) {
-    throw new AppError('A Z-API não devolveu o código.', 502, 'NO_CODE');
-  }
   await pushStatus(tenantId, connectionId, 'AGUARDANDO_LEITURA', {
-    detail: 'Digite este código no WhatsApp do celular',
-    phoneCode: result.code,
+    detail: 'Código indisponível nesta instância — escaneie o QR no WhatsApp',
+    qrBase64: qr.qrBase64,
   });
-  return { code: result.code };
+  return { code: null as string | null, qrBase64: qr.qrBase64, fallback: 'qr' as const };
 }
 
 export async function pollConnectionStatus(tenantId: string, connectionId: string) {

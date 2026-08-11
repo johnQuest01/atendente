@@ -49,6 +49,7 @@ export function WhatsappOnboarding() {
   const [phone, setPhone] = useState('');
   const [connectionId, setConnectionId] = useState<string | null>(null);
   const [phoneCode, setPhoneCode] = useState<string | null>(null);
+  const [qrBase64, setQrBase64] = useState<string | null>(null);
   const [status, setStatus] = useState<OnboardingStatus | null>(null);
   const [detail, setDetail] = useState<string | null>(null);
 
@@ -65,11 +66,13 @@ export function WhatsappOnboarding() {
         status?: OnboardingStatus;
         detail?: string | null;
         phoneCode?: string | null;
+        qrBase64?: string | null;
       };
       if (!p.connectionId || p.connectionId !== connectionId) return;
       if (p.status) setStatus(p.status);
       if (p.detail != null) setDetail(p.detail);
       if (p.phoneCode) setPhoneCode(p.phoneCode);
+      if (p.qrBase64) setQrBase64(p.qrBase64);
       if (p.status === 'CONECTADO') {
         toast('WhatsApp conectado!', 'success');
         navigate(`/conexoes/${p.connectionId}`);
@@ -101,13 +104,13 @@ export function WhatsappOnboarding() {
       });
       setConnectionId(result.connectionId);
       setPhoneCode(result.phoneCode);
+      setQrBase64(result.qrBase64);
       setStatus(result.status);
       setDetail(result.instructions);
-      if (!result.phoneCode) {
-        toast(
-          'Não foi possível gerar o código agora. Tente de novo em instantes.',
-          'error',
-        );
+      if (!result.phoneCode && result.qrBase64) {
+        toast('Código indisponível nesta instância — use o QR abaixo.', 'info');
+      } else if (!result.phoneCode && !result.qrBase64) {
+        toast('Não foi possível gerar pareamento agora. Tente de novo.', 'error');
       }
     } catch (err) {
       toast(getErrorMessage(err), 'error');
@@ -122,8 +125,10 @@ export function WhatsappOnboarding() {
     try {
       const r = await requestCode.mutateAsync(digits);
       setPhoneCode(r.code);
+      if (r.qrBase64) setQrBase64(r.qrBase64);
       setStatus('AGUARDANDO_LEITURA');
-      toast('Novo código gerado.', 'success');
+      if (r.code) toast('Novo código gerado.', 'success');
+      else if (r.qrBase64) toast('QR gerado — escaneie no celular.', 'info');
     } catch (err) {
       toast(getErrorMessage(err), 'error');
     }
@@ -166,7 +171,9 @@ export function WhatsappOnboarding() {
         <div>
           <h2 className="text-base font-bold text-text-primary">Confirme no celular</h2>
           <p className="text-sm text-text-secondary">
-            WhatsApp → Aparelhos conectados → Conectar com número de telefone
+            {phoneCode
+              ? 'WhatsApp → Aparelhos conectados → Conectar com número de telefone'
+              : 'WhatsApp → Aparelhos conectados → Conectar um aparelho → escaneie o QR'}
           </p>
         </div>
         {status && <Badge tone={statusTone(status)}>{STATUS_LABEL[status]}</Badge>}
@@ -174,23 +181,31 @@ export function WhatsappOnboarding() {
 
       {detail && <p className="text-xs text-text-secondary">{detail}</p>}
 
-      {phoneCode ? (
+      {phoneCode && (
         <p className="rounded-2xl bg-primary-light px-4 py-6 text-center text-3xl font-extrabold tracking-[0.35em] text-primary">
           {phoneCode}
         </p>
-      ) : start.isPending || requestCode.isPending ? (
-        <Spinner label="Gerando código…" />
-      ) : (
-        <p className="rounded-xl border border-border px-3 py-4 text-center text-sm text-text-secondary">
-          Código indisponível — toque em gerar novo.
-        </p>
+      )}
+
+      {qrBase64 && (
+        <div className="flex justify-center rounded-2xl border border-border bg-bg p-4">
+          <img
+            src={qrBase64}
+            alt="QR Code WhatsApp"
+            className="h-52 w-52 rounded-xl bg-surface object-contain"
+          />
+        </div>
+      )}
+
+      {!phoneCode && !qrBase64 && (start.isPending || requestCode.isPending) && (
+        <Spinner label="Gerando pareamento…" />
       )}
 
       <ol className="list-decimal space-y-1.5 pl-5 text-sm text-text-secondary">
         <li>Abra o WhatsApp deste número</li>
         <li>Menu → Aparelhos conectados</li>
-        <li>Conectar com número de telefone</li>
-        <li>Digite o código acima</li>
+        <li>{phoneCode ? 'Conectar com número de telefone' : 'Conectar um aparelho'}</li>
+        <li>{phoneCode ? 'Digite o código acima' : 'Escaneie o QR acima'}</li>
       </ol>
 
       <div className="flex flex-wrap gap-2">

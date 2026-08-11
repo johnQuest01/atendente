@@ -198,6 +198,16 @@ export class ZApiClient {
   /** Código de pareamento por número (doc: phone-code/{phone}). */
   async getPhoneCode(creds: ZApiInstanceCreds, phoneDigits: string): Promise<PhoneCodeResult> {
     const phone = phoneDigits.replace(/\D/g, '');
+    // Se já estiver conectada, a Z-API devolve 200 sem `value`.
+    const st = await this.getStatus(creds).catch(() => null);
+    if (st?.connected) {
+      throw new AppError(
+        'Esta instância já está conectada a um WhatsApp. Desconecte no painel Z-API (ou use Desconectar) e tente de novo.',
+        409,
+        'ZAPI_ALREADY_CONNECTED',
+      );
+    }
+
     const url = `${instanceBase(creds)}/phone-code/${phone}`;
     const res = await fetch(url, {
       method: 'GET',
@@ -206,14 +216,41 @@ export class ZApiClient {
     });
     const data = await readBody(res);
     if (!res.ok) {
-      logger.error(`Z-API phone-code HTTP ${res.status}`);
-      throw new AppError('Não foi possível gerar o código de pareamento.', 502, 'ZAPI_PHONE_CODE_FAILED');
+      const recErr = asRecord(data);
+      const hint =
+        typeof recErr.error === 'string'
+          ? recErr.error
+          : typeof recErr.message === 'string'
+            ? recErr.message
+            : `HTTP ${res.status}`;
+      logger.error(`Z-API phone-code HTTP ${res.status} keys=${Object.keys(recErr).join(',')}`);
+      throw new AppError(
+        `Não foi possível gerar o código de pareamento (${hint}). Tente o QR Code.`,
+        502,
+        'ZAPI_PHONE_CODE_FAILED',
+      );
     }
     const rec = asRecord(data);
     if (rec.challenge) {
       return { code: null, challenge: rec.challenge, raw: data };
     }
-    const code = typeof rec.value === 'string' ? rec.value : null;
+    const nested = asRecord(rec.data);
+    const candidates = [rec.value, rec.code, rec.pairingCode, rec.phoneCode, nested.value, nested.code];
+    let code: string | null = null;
+    for (const c of candidates) {
+      if (typeof c === 'string' && c.trim().length >= 4) {
+        code = c.trim();
+        break;
+      }
+    }
+    if (typeof data === 'string' && data.trim().length >= 4 && data.trim().length <= 32) {
+      code = data.trim();
+    }
+    if (!code) {
+      logger.warn(
+        `Z-API phone-code sem código. keys=${Object.keys(rec).join(',')} statusHint=${String(rec.error ?? rec.message ?? '')}`,
+      );
+    }
     return { code, challenge: null, raw: data };
   }
 

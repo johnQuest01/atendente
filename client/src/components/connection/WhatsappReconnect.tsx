@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/Input';
 import { Spinner } from '@/components/ui/States';
 import {
   useConnectStatus,
+  useRefreshQr,
   useRequestPhoneCode,
   useRestartWhatsappConnect,
   type OnboardingStatus,
@@ -16,7 +17,7 @@ import { getErrorMessage } from '@/services/api';
 
 const STATUS_LABEL: Record<OnboardingStatus, string> = {
   PROVISIONING: 'Preparando…',
-  AGUARDANDO_LEITURA: 'Aguardando você digitar o código',
+  AGUARDANDO_LEITURA: 'Aguardando confirmação',
   CONECTANDO: 'Conectando…',
   CONECTADO: 'Conectado',
   ERRO: 'Erro',
@@ -35,7 +36,7 @@ function normalizePhone(raw: string): string {
   return raw.replace(/\D/g, '');
 }
 
-/** Reconexão simples: número → código. */
+/** Reconexão: tenta código; se a Z-API não der, mostra QR. */
 export function WhatsappReconnect({
   connectionId,
   onConnected,
@@ -45,9 +46,11 @@ export function WhatsappReconnect({
 }) {
   const restart = useRestartWhatsappConnect();
   const requestCode = useRequestPhoneCode(connectionId);
+  const refreshQr = useRefreshQr(connectionId);
   const [active, setActive] = useState(false);
   const [phone, setPhone] = useState('');
   const [phoneCode, setPhoneCode] = useState<string | null>(null);
+  const [qrBase64, setQrBase64] = useState<string | null>(null);
   const [status, setStatus] = useState<OnboardingStatus | null>(null);
   const [detail, setDetail] = useState<string | null>(null);
 
@@ -63,11 +66,13 @@ export function WhatsappReconnect({
         status?: OnboardingStatus;
         detail?: string | null;
         phoneCode?: string | null;
+        qrBase64?: string | null;
       };
       if (!p.connectionId || p.connectionId !== connectionId) return;
       if (p.status) setStatus(p.status);
       if (p.detail != null) setDetail(p.detail);
       if (p.phoneCode) setPhoneCode(p.phoneCode);
+      if (p.qrBase64) setQrBase64(p.qrBase64);
       if (p.status === 'CONECTADO') {
         toast('WhatsApp conectado!', 'success');
         setActive(false);
@@ -95,14 +100,37 @@ export function WhatsappReconnect({
     }
     try {
       setActive(true);
+      setPhoneCode(null);
+      setQrBase64(null);
       const result = await restart.mutateAsync({ connectionId, phone: digits });
       setPhoneCode(result.phoneCode);
+      setQrBase64(result.qrBase64);
       setStatus(result.status);
       setDetail(result.instructions);
+      if (!result.phoneCode && !result.qrBase64) {
+        // Tenta phone-code (com fallback QR no backend).
+        const codeRes = await requestCode.mutateAsync(digits);
+        setPhoneCode(codeRes.code);
+        if (codeRes.qrBase64) setQrBase64(codeRes.qrBase64);
+        if (codeRes.fallback === 'qr') {
+          toast('Esta instância não gerou código — use o QR abaixo.', 'info');
+        }
+      }
     } catch (err) {
       toast(getErrorMessage(err), 'error');
       setStatus('ERRO');
       setDetail(getErrorMessage(err));
+      // Última tentativa: só QR
+      try {
+        const qr = await refreshQr.mutateAsync();
+        if (qr.qrBase64) {
+          setQrBase64(qr.qrBase64);
+          setStatus('AGUARDANDO_LEITURA');
+          setDetail('Escaneie o QR no WhatsApp → Aparelhos conectados');
+        }
+      } catch {
+        /* ignore */
+      }
     }
   }
 
@@ -112,8 +140,23 @@ export function WhatsappReconnect({
     try {
       const r = await requestCode.mutateAsync(digits);
       setPhoneCode(r.code);
+      if (r.qrBase64) setQrBase64(r.qrBase64);
       setStatus('AGUARDANDO_LEITURA');
-      toast('Novo código gerado.', 'success');
+      if (r.code) toast('Novo código gerado.', 'success');
+      else if (r.qrBase64) toast('QR gerado — escaneie no celular.', 'info');
+    } catch (err) {
+      toast(getErrorMessage(err), 'error');
+    }
+  }
+
+  async function handleRefreshQr() {
+    try {
+      const r = await refreshQr.mutateAsync();
+      if (r.qrBase64) {
+        setQrBase64(r.qrBase64);
+        setStatus('AGUARDANDO_LEITURA');
+        toast('QR atualizado.', 'success');
+      }
     } catch (err) {
       toast(getErrorMessage(err), 'error');
     }
@@ -125,7 +168,7 @@ export function WhatsappReconnect({
         <div>
           <h2 className="text-base font-bold text-text-primary">Reconectar WhatsApp</h2>
           <p className="text-sm text-text-secondary">
-            Digite o número para receber um novo código no app.
+            Digite o número. Geramos código ou QR — sem abrir a Z-API.
           </p>
         </div>
         <Input
@@ -137,7 +180,7 @@ export function WhatsappReconnect({
         />
         <Button
           fullWidth
-          loading={restart.isPending}
+          loading={restart.isPending || requestCode.isPending}
           disabled={normalizePhone(phone).length < 10}
           onClick={() => void handleStart()}
         >
@@ -153,7 +196,9 @@ export function WhatsappReconnect({
         <div>
           <h2 className="text-base font-bold text-text-primary">Confirme no celular</h2>
           <p className="text-sm text-text-secondary">
-            Aparelhos conectados → Conectar com número de telefone
+            {phoneCode
+              ? 'Aparelhos conectados → Conectar com número de telefone'
+              : 'Aparelhos conectados → Conectar um aparelho → escaneie o QR'}
           </p>
         </div>
         {status && <Badge tone={statusTone(status)}>{STATUS_LABEL[status]}</Badge>}
@@ -161,14 +206,24 @@ export function WhatsappReconnect({
 
       {detail && <p className="text-xs text-text-secondary">{detail}</p>}
 
-      {phoneCode ? (
+      {phoneCode && (
         <p className="rounded-2xl bg-primary-light px-4 py-6 text-center text-3xl font-extrabold tracking-[0.35em] text-primary">
           {phoneCode}
         </p>
-      ) : restart.isPending || requestCode.isPending ? (
-        <Spinner label="Gerando código…" />
-      ) : (
-        <p className="text-sm text-text-secondary">Código indisponível — gere um novo.</p>
+      )}
+
+      {qrBase64 && (
+        <div className="flex justify-center rounded-2xl border border-border bg-bg p-4">
+          <img
+            src={qrBase64}
+            alt="QR Code WhatsApp"
+            className="h-52 w-52 rounded-xl bg-surface object-contain"
+          />
+        </div>
+      )}
+
+      {!phoneCode && !qrBase64 && (restart.isPending || requestCode.isPending || refreshQr.isPending) && (
+        <Spinner label="Gerando pareamento…" />
       )}
 
       <div className="flex flex-wrap gap-2">
@@ -178,6 +233,13 @@ export function WhatsappReconnect({
           onClick={() => void handleRefreshCode()}
         >
           Gerar novo código
+        </Button>
+        <Button
+          variant="secondary"
+          loading={refreshQr.isPending}
+          onClick={() => void handleRefreshQr()}
+        >
+          Mostrar / atualizar QR
         </Button>
         <Button variant="ghost" onClick={() => setActive(false)}>
           Fechar

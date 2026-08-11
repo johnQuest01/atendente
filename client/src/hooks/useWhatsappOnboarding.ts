@@ -86,10 +86,11 @@ export function useRequestPhoneCode(connectionId: string | undefined) {
   return useMutation({
     mutationFn: async (phone: string) => {
       if (!connectionId) throw new Error('Sem conexão');
-      const { data } = await api.post<{ code: string }>(
-        `/whatsapp/connect/${connectionId}/phone-code`,
-        { phone },
-      );
+      const { data } = await api.post<{
+        code: string | null;
+        qrBase64?: string | null;
+        fallback?: 'code' | 'qr';
+      }>(`/whatsapp/connect/${connectionId}/phone-code`, { phone });
       return data;
     },
   });
