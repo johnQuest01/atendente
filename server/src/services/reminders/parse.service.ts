@@ -59,27 +59,32 @@ function buildSystemPrompt(now: Date, tz: string, persona?: string | null, bulk 
   const personaBlock = persona?.trim()
     ? [
         '',
-        'TOM ao redigir o confirmation_text (siga este estilo de secretária):',
+        'TOM ao redigir o confirmation_text (como pessoa anotando, nunca como IA):',
         persona.trim(),
       ].join('\n')
     : '';
   const formatLine = bulk
-    ? 'O usuário pode ter enviado VÁRIOS lembretes numa mensagem. Responda APENAS com um ' +
-      'ARRAY JSON (um objeto por lembrete, no máximo 20; se houver só um, um array de um item), ' +
+    ? 'O usuário pode ter enviado VÁRIOS compromissos numa mensagem. Responda APENAS com um ' +
+      'ARRAY JSON (um objeto por item, no máximo 20; se houver só um, um array de um item), ' +
       'sem texto antes ou depois. Cada objeto tem o formato:'
     : 'Responda APENAS com JSON válido, sem texto antes ou depois, no formato:';
   return [
-    `Você é um extrator de lembretes. Agora é ${agora} (${weekdayNamePt(now, tz)}), fuso ${tz}.`,
+    `Extraia o que a pessoa pediu para anotar. Agora é ${agora} (${weekdayNamePt(now, tz)}), fuso ${tz}.`,
+    'Escreva como quem anota no caderno — nunca como assistente, robô ou IA.',
     formatLine,
     '{',
-    '  "task": "descrição curta do que fazer",',
+    '  "task": "só a ação/assunto, curto (ex.: Ir dormir, Pagar fornecedor) — SEM a palavra lembrete",',
     '  "type": "unico" | "recorrente",',
     '  "due_at": "YYYY-MM-DDTHH:mm do PRIMEIRO disparo (sempre preencha, inclusive se for recorrente)",',
     '  "recurrence": "daily | weekly:MON..SUN | monthly:N — apenas se recorrente, senão null",',
     '  "remind_before_minutes": "minutos de aviso ANTECIPADO se o usuário pediu, senão null",',
     '  "category": "importante" | "rotina" | "data_especifica",',
-    '  "confirmation_text": "uma frase curta em pt-BR confirmando o que você entendeu"',
+    '  "confirmation_text": "1 frase humana confirmando o que anotou (ex.: Anotei: ir dormir amanhã às 22h)"',
     '}',
+    '',
+    'Regras de task e confirmation_text:',
+    '- task NUNCA começa com "Lembrete", "Lembrar de" genérico ou "Aviso:"; só o que fazer.',
+    '- confirmation_text NÃO usa "lembrete cadastrado", "agendei", "sistema" nem se apresenta como IA.',
     '',
     'Regras de data, sempre a partir do agora informado acima:',
     '- "hoje" é a data de hoje; "amanhã" é o dia seguinte.',
@@ -176,8 +181,9 @@ function resolveParsed(data: z.infer<typeof parsedSchema>, now: Date, tz: string
     else logger.warn(`Lembretes: aviso de ${clamped}min antes não cabe até o compromisso — ignorado.`);
   }
 
+  const task = stripReminderLabel(data.task);
   return {
-    task: data.task,
+    task,
     category: data.category,
     recurrence,
     nextFireAt,
@@ -185,10 +191,18 @@ function resolveParsed(data: z.infer<typeof parsedSchema>, now: Date, tz: string
     // Anexamos a data resolvida: é a checagem que o dono realmente precisa ver
     // antes de confirmar, e não dá para confiar que o modelo a escreveu certo.
     confirmationText:
-      `${data.confirmation_text}\nData: ${formatForOwner(nextFireAt, tz)}` +
+      `${data.confirmation_text}\n${formatForOwner(nextFireAt, tz)}` +
       `${recurrence ? ` · repete ${describeRecurrence(recurrence)}` : ''}` +
-      `${leadMinutes ? `\nAviso: ${describeLead(leadMinutes)}` : ''}`,
+      `${leadMinutes ? `\nTe aviso ${describeLead(leadMinutes)}` : ''}`,
   };
+}
+
+/** Evita task tipo "Lembrete: ir dormir" — no disparo deve sair só "Ir dormir". */
+function stripReminderLabel(task: string): string {
+  return task
+    .replace(/^(lembrete|aviso|alerta)\s*[:\-–—]?\s*/i, '')
+    .replace(/^lembrar\s+de\s+/i, '')
+    .trim() || task.trim();
 }
 
 /**

@@ -168,22 +168,17 @@ function isNegative(text: string): boolean {
 }
 
 const HELP_TEXT = [
-  '*Seu assistente de lembretes*',
-  '',
-  'Para criar, é só falar naturalmente (texto ou áudio):',
+  'Pode mandar o que quiser anotar (texto ou áudio), tipo:',
   '_"me lembra amanhã às 9h de pagar o fornecedor"_',
   '_"toda sexta cobrar os inadimplentes"_',
-  '_"reunião quinta às 15h, me avise 1 hora antes"_',
-  '_"me lembra daqui a 10 minutos de ligar pro cliente"_',
+  '_"reunião quinta às 15h, me avisa 1 hora antes"_',
+  '_"daqui a 10 minutos ligar pro cliente"_',
   '',
-  'Para consultar, pergunte à vontade:',
-  '_"o que temos para hoje?"_ · _"meus compromissos da semana"_',
-  'Ou mande a palavra: *HOJE*, *AMANHÃ*, *SEMANA*, *MÊS*, *ROTINA*, *IMPORTANTES*, *TODOS*',
-  'Para fechar: *CONCLUIR 2* · Para remover: *CANCELAR 2*',
-  '(o número é o da última lista que eu te mandei)',
+  'Pra ver o que tem: _"o que temos pra hoje?"_ · _"compromissos da semana"_',
+  'Ou: *HOJE* · *AMANHÃ* · *SEMANA* · *MÊS* · *ROTINA* · *IMPORTANTES* · *TODOS*',
+  'Pra fechar: *CONCLUIR 2* · Pra tirar: *CANCELAR 2*',
   '',
-  'Manda vários de uma vez que eu confirmo todos juntos.',
-  'Se a varredura estiver ligada: *RECUPERAR COMPROMISSOS* ou *VARRER 7 DIAS*.',
+  'Pode mandar vários de uma vez — eu confirmo antes de salvar.',
 ].join('\n');
 
 /** Intervalos de consulta, calculados no fuso do dono. */
@@ -317,11 +312,11 @@ async function sendReminderList(
 ): Promise<void> {
   if (reminders.length === 0) {
     const label = /\d/.test(title) ? `em ${title}` : title.toLowerCase();
-    await reply(tenantId, phone, `Nenhum compromisso ${label}.`);
+    await reply(tenantId, phone, `Nada anotado ${label}.`);
     return;
   }
   const total = reminders.length;
-  await reply(tenantId, phone, `*${title}* — ${total} compromisso${total > 1 ? 's' : ''}:`);
+  await reply(tenantId, phone, `*${title}* — ${total}:`);
   const shown = reminders.slice(0, LIST_SEND_CAP);
   for (let i = 0; i < shown.length; i++) {
     const r = shown[i];
@@ -495,8 +490,8 @@ async function handleOwnerMessageInner(
         tenantId,
         phone,
         items.length === 1
-          ? `Anotado! Te aviso ${formatForOwner(items[0].nextFireAt, tz)}.`
-          : `Salvei os ${items.length} lembretes.`,
+          ? `Pronto, anotei. Te chamo ${formatForOwner(items[0].nextFireAt, tz)}.`
+          : `Pronto, anotei os ${items.length}.`,
       );
       return true;
     }
@@ -645,7 +640,7 @@ function toPendingItem(p: ParsedReminder): PendingItem {
 /** UMA confirmação, numerada quando há vários (Parte 1: massa). */
 function renderConfirmation(items: PendingItem[], tz: string): string {
   if (items.length === 1) {
-    return `${items[0].confirmationText}\n\nConfirma? (responda *sim* ou me corrija)`;
+    return `${items[0].confirmationText}\n\nFecha assim? (*sim* ou me corrige)`;
   }
   const lines = items.map((it, i) => {
     const when = formatForOwner(it.nextFireAt, tz);
@@ -654,11 +649,11 @@ function renderConfirmation(items: PendingItem[], tz: string): string {
     return `${i + 1}. ${it.task}\n   ${when}${repeat}${lead}`;
   });
   return [
-    `Entendi ${items.length} lembretes:`,
+    `Anotei ${items.length}:`,
     '',
     ...lines,
     '',
-    'Responda SIM para salvar todos, ou diga o número a corrigir (ex.: "2 na verdade às 16h").',
+    'Manda *SIM* pra salvar todos, ou corrige pelo número (ex.: "2 na verdade às 16h").',
   ].join('\n');
 }
 
@@ -679,7 +674,7 @@ async function handleCreate(
       tenantId,
       phone,
       looksLikeReminder
-        ? 'Entendi que é um lembrete, mas não consegui identificar a data. Pode repetir dizendo quando?'
+        ? 'Peguei a ideia, mas não ficou clara a data. Manda de novo dizendo quando?'
         : HELP_TEXT,
     );
     return true;

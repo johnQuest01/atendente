@@ -28,8 +28,9 @@ let timer: NodeJS.Timeout | null = null;
 let running = false;
 
 function reminderText(reminder: Reminder): string {
-  const repeat = reminder.recurrence ? `\nRepete: ${describeRecurrence(reminder.recurrence)}` : '';
-  return `Lembrete\n${reminder.task}${repeat}`;
+  // Só a tarefa — sem prefixo "Lembrete", para parecer um toque humano.
+  const repeat = reminder.recurrence ? `\n(repete ${describeRecurrence(reminder.recurrence)})` : '';
+  return `${reminder.task}${repeat}`;
 }
 
 async function whatsappForReminder(reminder: Reminder) {
@@ -94,7 +95,7 @@ async function fireLead(reminder: Reminder): Promise<void> {
 
   const quando = formatForOwner(new Date(reminder.next_fire_at), reminder.timezone);
   const antes = reminder.lead_minutes ? describeLead(reminder.lead_minutes) : 'em breve';
-  const text = `Lembrete antecipado (${antes})\n${reminder.task}\nHorário: ${quando}`;
+  const text = `${reminder.task}\n${quando} · te aviso ${antes}`;
 
   try {
     const wa = await whatsappForReminder(reminder);
