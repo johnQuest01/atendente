@@ -85,9 +85,7 @@ export class PoolProvisioner implements InstanceProvisioner {
     const claimed = await claimFreePoolInstance(ctx.tenantId, ctx.providerMode);
     if (!claimed) {
       throw new AppError(
-        env.hasZapiPartner
-          ? 'Não há instância livre no pool. Tente de novo ou fale com o suporte.'
-          : 'Pool vazio e sem ZAPI_PARTNER_TOKEN. Em Empresas → Pool WhatsApp, adicione uma instância já assinada da Z-API, ou use Credenciais manuais nesta tela.',
+        'Não há instância disponível agora. O suporte precisa cadastrar uma instância paga (sem número) no pool.',
         503,
         'POOL_EMPTY',
       );

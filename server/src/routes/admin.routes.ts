@@ -36,6 +36,7 @@ import {
 import {
   addPoolBodySchema,
   getInstancePool,
+  postImportEnvToPool,
   postInstancePool,
 } from '../controllers/instance-pool.controller';
 
@@ -120,12 +121,13 @@ router.post(
   asyncHandler(adminAiProviders.listModelsForSaved),
 );
 
-// Pool de instâncias Z-API (trials de 7 dias). Instâncias devem estar assinadas.
+// Pool de instâncias Z-API (pagas, sem número). Cliente só digita o telefone.
 router.get('/whatsapp/instance-pool', asyncHandler(getInstancePool));
 router.post(
   '/whatsapp/instance-pool',
   validate({ body: addPoolBodySchema }),
   asyncHandler(postInstancePool),
 );
+router.post('/whatsapp/instance-pool/import-env', asyncHandler(postImportEnvToPool));
 
 export default router;

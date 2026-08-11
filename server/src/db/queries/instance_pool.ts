@@ -57,13 +57,14 @@ export async function addPoolInstance(input: {
   return row as InstancePoolRow;
 }
 
-/** Reserva uma instância livre (FOR UPDATE SKIP LOCKED). */
+/** Reserva uma instância livre (FOR UPDATE SKIP LOCKED). Prefere o modo pedido. */
 export async function claimFreePoolInstance(
   tenantId: string,
   providerMode: PoolProviderMode = 'web',
 ): Promise<{ row: InstancePoolRow; secrets: PoolSecrets } | null> {
   return withTransaction(async (client) => {
-    const { rows } = await client.query<InstancePoolRow>(
+    // 1) Preferência pelo modo (web/phoneless). 2) Qualquer livre (provisório).
+    let { rows } = await client.query<InstancePoolRow>(
       `SELECT * FROM instance_pool
         WHERE state = 'free' AND provider_mode = $1
         ORDER BY created_at ASC
@@ -71,6 +72,15 @@ export async function claimFreePoolInstance(
         FOR UPDATE SKIP LOCKED`,
       [providerMode],
     );
+    if (!rows[0]) {
+      ({ rows } = await client.query<InstancePoolRow>(
+        `SELECT * FROM instance_pool
+          WHERE state = 'free'
+          ORDER BY created_at ASC
+          LIMIT 1
+          FOR UPDATE SKIP LOCKED`,
+      ));
+    }
     const row = rows[0];
     if (!row) return null;
 
@@ -86,6 +96,20 @@ export async function claimFreePoolInstance(
     const next = updated[0];
     return { row: next, secrets: decodeSecrets(next.secrets_encrypted) };
   });
+}
+
+/** True se este Instance ID já está no pool (livre ou em uso). */
+export async function poolHasInstanceId(instanceId: string): Promise<boolean> {
+  const { rows } = await query<InstancePoolRow>(`SELECT * FROM instance_pool`);
+  for (const row of rows) {
+    try {
+      const secrets = decodeSecrets(row.secrets_encrypted);
+      if (secrets.instanceId === instanceId) return true;
+    } catch {
+      /* ignore decrypt errors */
+    }
+  }
+  return false;
 }
 
 export async function bindPoolToConnection(poolId: string, connectionId: string): Promise<void> {

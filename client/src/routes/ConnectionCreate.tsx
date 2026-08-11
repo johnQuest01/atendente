@@ -9,17 +9,20 @@ import {
   useSaveWhatsappConnection,
   useWhatsappConnections,
 } from '@/hooks/useWhatsappConnection';
+import { useAuth } from '@/hooks/useAuth';
 import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
 
 /**
- * Fase 2: onboarding embutido (QR/código via nosso backend).
- * Credenciais manuais Z-API ficam em ?manual=1 (legado/avançado).
+ * Cliente: só número + código.
+ * Superadmin: ainda pode abrir ?manual=1 (legado).
  */
 export default function ConnectionCreate() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const manual = params.get('manual') === '1';
+  const { user } = useAuth();
+  const isSuper = user?.role === 'superadmin';
+  const manual = isSuper && params.get('manual') === '1';
   const { data } = useWhatsappConnections();
   const save = useSaveWhatsappConnection();
   const encryptionOk = data?.encryptionAvailable !== false;
@@ -28,11 +31,7 @@ export default function ConnectionCreate() {
     <>
       <PageHeader
         title={manual ? 'Credenciais manuais' : 'Nova conexão'}
-        subtitle={
-          manual
-            ? 'Cole Instance ID e Token da Z-API (avançado)'
-            : 'Conecte o WhatsApp sem sair do app'
-        }
+        subtitle={manual ? 'Avançado (só suporte)' : 'Conecte com seu número WhatsApp'}
         leading={
           <Button
             size="sm"
@@ -65,20 +64,7 @@ export default function ConnectionCreate() {
             />
           </Card>
         ) : (
-          <>
-            <WhatsappOnboarding />
-            <p className="rounded-xl border border-border bg-bg px-3 py-3 text-center text-xs text-text-secondary">
-              Sem Partner Token da Z-API ainda? Cole Instance ID e Token em{' '}
-              <button
-                type="button"
-                className="font-semibold text-primary underline-offset-2 hover:underline"
-                onClick={() => navigate('/conexoes/nova?manual=1')}
-              >
-                Credenciais manuais
-              </button>
-              , ou abasteça o pool em Empresas (superadmin).
-            </p>
-          </>
+          <WhatsappOnboarding />
         )}
       </div>
     </>

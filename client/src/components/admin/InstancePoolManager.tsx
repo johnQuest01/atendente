@@ -22,11 +22,12 @@ interface PoolResponse {
   instances: PoolInstance[];
   free: { web: number; phoneless: number };
   encryptionAvailable: boolean;
+  envInstanceConfigured?: boolean;
 }
 
 /**
- * Superadmin: abastece o pool de instâncias assinadas (trial 7 dias).
- * Tokens nunca são listados de volta — só id/estado/label.
+ * Você (ops) cadastra instâncias Z-API já pagas e SEM número.
+ * O cliente só digita o telefone no app — nunca abre a Z-API.
  */
 export function InstancePoolManager() {
   const qc = useQueryClient();
@@ -51,8 +52,20 @@ export function InstancePoolManager() {
       return res;
     },
     onSuccess: () => {
-      toast('Instância adicionada ao pool.', 'success');
+      toast('Instância pronta no pool — clientes já podem conectar.', 'success');
       setOpen(false);
+      void qc.invalidateQueries({ queryKey: ['admin-instance-pool'] });
+    },
+    onError: (err) => toast(getErrorMessage(err), 'error'),
+  });
+
+  const importEnv = useMutation({
+    mutationFn: async () => {
+      const { data: res } = await api.post('/admin/whatsapp/instance-pool/import-env');
+      return res;
+    },
+    onSuccess: () => {
+      toast('Instância do servidor adicionada ao pool.', 'success');
       void qc.invalidateQueries({ queryKey: ['admin-instance-pool'] });
     },
     onError: (err) => toast(getErrorMessage(err), 'error'),
@@ -68,15 +81,33 @@ export function InstancePoolManager() {
     <div className="flex flex-col gap-3">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-base font-bold text-text-primary">Pool WhatsApp (trial)</h2>
+          <h2 className="text-base font-bold text-text-primary">Instâncias prontas (pool)</h2>
           <p className="text-sm text-text-secondary">
-            Instâncias já assinadas na Z-API, recicladas nos trials de 7 dias.
+            Cadastre aqui instâncias <strong>já pagas na Z-API e sem número</strong>. O cliente só
+            digita o telefone e recebe o código — sem abrir o painel da Z-API.
           </p>
         </div>
         <Button size="sm" onClick={() => setOpen(true)}>
           Adicionar
         </Button>
       </div>
+
+      {data?.envInstanceConfigured && (
+        <Card className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs text-text-secondary">
+            Há uma instância nos secrets do servidor (ZAPI_INSTANCE_ID). Só importe se ela estiver{' '}
+            <strong>paga e sem número conectado</strong>.
+          </p>
+          <Button
+            size="sm"
+            variant="secondary"
+            loading={importEnv.isPending}
+            onClick={() => void importEnv.mutateAsync()}
+          >
+            Usar instância do servidor
+          </Button>
+        </Card>
+      )}
 
       {isLoading && <Spinner label="Carregando pool..." />}
       {isError && (
@@ -91,13 +122,19 @@ export function InstancePoolManager() {
       {data && (
         <Card className="flex flex-col gap-2">
           <p className="text-xs text-text-secondary">
-            Livres — web: {data.free.web} · phoneless: {data.free.phoneless}
+            Livres: {data.free.web + data.free.phoneless} · Em uso:{' '}
+            {data.instances.filter((i) => i.state === 'in_use').length}
             {!data.encryptionAvailable && ' · ENCRYPTION_KEY ausente'}
           </p>
           {data.instances.length === 0 ? (
             <EmptyState
-              title="Pool vazio"
-              description="Adicione ao menos 1 instância assinada para cobrir trials simultâneos."
+              title="Nenhuma instância no pool"
+              description="No painel Z-API, copie ID + Token de uma instância paga sem número e adicione aqui."
+              action={
+                <Button size="sm" onClick={() => setOpen(true)}>
+                  Adicionar instância
+                </Button>
+              }
             />
           ) : (
             <ul className="flex flex-col divide-y divide-border">
@@ -110,7 +147,7 @@ export function InstancePoolManager() {
                     <p className="text-xs text-text-secondary">{row.provider_mode}</p>
                   </div>
                   <Badge tone={row.state === 'free' ? 'success' : 'warning'}>
-                    {row.state === 'free' ? 'Livre' : 'Em uso'}
+                    {row.state === 'free' ? 'Livre (pronta)' : 'Em uso'}
                   </Badge>
                 </li>
               ))}
@@ -119,16 +156,17 @@ export function InstancePoolManager() {
         </Card>
       )}
 
-      <Modal open={open} onClose={() => setOpen(false)} title="Adicionar ao pool">
+      <Modal open={open} onClose={() => setOpen(false)} title="Adicionar instância paga">
         <div className="flex flex-col gap-3">
           <p className="text-xs text-text-secondary">
-            A instância precisa estar criada e assinada na Z-API. Os tokens ficam cifrados.
+            Na Z-API: instância assinada, <strong>sem WhatsApp conectado</strong>. Cole os dados
+            aqui uma vez — o cliente nunca vê isso.
           </p>
           <Input
-            label="Label"
+            label="Apelido (opcional)"
             value={label}
             onChange={(e) => setLabel(e.target.value)}
-            placeholder="Trial pool #1"
+            placeholder="Ex.: Reserva 1"
           />
           <Input
             label="Instance ID"
@@ -166,18 +204,20 @@ export function InstancePoolManager() {
               loading={add.isPending}
               disabled={!instanceId.trim() || !token.trim()}
               onClick={() =>
-                void add.mutateAsync({
-                  instanceId: instanceId.trim(),
-                  token: token.trim(),
-                  clientToken: clientToken.trim() || undefined,
-                  providerMode,
-                  label: label.trim() || undefined,
-                }).then(() => {
-                  setInstanceId('');
-                  setToken('');
-                  setClientToken('');
-                  setLabel('');
-                })
+                void add
+                  .mutateAsync({
+                    instanceId: instanceId.trim(),
+                    token: token.trim(),
+                    clientToken: clientToken.trim() || undefined,
+                    providerMode,
+                    label: label.trim() || undefined,
+                  })
+                  .then(() => {
+                    setInstanceId('');
+                    setToken('');
+                    setClientToken('');
+                    setLabel('');
+                  })
               }
             >
               Salvar no pool
