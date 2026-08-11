@@ -29,8 +29,8 @@ interface ChatState {
 const HISTORY_TTL_MS = 30 * 60_000;
 const MAX_TURNS = 8;
 /** Modo rápido: poucas tokens, resposta curta no WhatsApp. */
-const FAST_MAX_TOKENS = 350;
-const FAST_TEMPERATURE = 0.3;
+const FAST_MAX_TOKENS = 220;
+const FAST_TEMPERATURE = 0.2;
 
 const history = new Map<string, ChatState>();
 
@@ -105,10 +105,10 @@ export async function freeChatOwner(
     if (hits?.length) {
       searchBlock = formatSearchContext(hits);
       logger.info(`Agente: busca web com ${hits.length} resultado(s).`);
+    } else {
+      searchBlock =
+        'A busca não trouxe resultados úteis. Responda com o que souber e diga que não achou fonte atual.';
     }
-  } else if (opts.webSearchEnabled && !hasWebSearchConfigured() && messageLikelyNeedsSearch(message)) {
-    searchBlock =
-      'Busca na web pedida, mas WEB_SEARCH_API_KEY não está configurada no servidor. Responda com o que souber e avise que a busca está desligada.';
   }
 
   const prior = getHistory(tenantId, phone);

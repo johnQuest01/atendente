@@ -114,9 +114,8 @@ function OwnerModesCard({
             </Badge>
           </div>
           <p className="mt-1 text-xs text-text-secondary">
-            No Agente, pesquisa e traz resultados atualizados (“cotação do dólar”, “horário dos
-            Correios”…). Requer chave Tavily no servidor.
-            {!searchReady && agent ? ' Ainda não configurada no servidor.' : ''}
+            No Agente, pesquisa e traz resultados (“cotação do dólar”, “horário dos Correios”…).
+            Funciona sem chave (DuckDuckGo); com Tavily no servidor fica ainda melhor.
           </p>
         </div>
         <Toggle

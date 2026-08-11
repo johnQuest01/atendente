@@ -87,8 +87,10 @@ const envSchema = z.object({
   STT_MODEL: z.string().default('whisper-1'),
   STT_LANGUAGE: z.string().default('pt'),
 
-  // Busca na web (modo Agente do dono). Tavily é rápido; "none" desliga.
-  WEB_SEARCH_PROVIDER: z.enum(['none', 'tavily']).default('none'),
+  // Busca na web (modo Agente do dono). Tavily é rápido; "none" / duckduckgo
+  // usam DuckDuckGo sem chave (fallback). Com chave Tavily, prefira:
+  //   WEB_SEARCH_PROVIDER=tavily  WEB_SEARCH_API_KEY=tvly-...
+  WEB_SEARCH_PROVIDER: z.enum(['none', 'tavily', 'duckduckgo']).default('duckduckgo'),
   WEB_SEARCH_API_KEY: z.string().optional(),
 
   UPLOAD_DIR: z.string().default('./uploads'),
@@ -261,7 +263,7 @@ export const env = {
   hasAnthropic: Boolean(data.ANTHROPIC_API_KEY),
   hasEncryption: Boolean(data.ENCRYPTION_KEY),
   hasStt: data.STT_PROVIDER === 'openai' && Boolean(data.STT_API_KEY),
-  hasWebSearch: data.WEB_SEARCH_PROVIDER === 'tavily' && Boolean(data.WEB_SEARCH_API_KEY),
+  hasWebSearch: true, // DuckDuckGo sempre disponível; Tavily quando houver chave
   hasZapi: Boolean(data.ZAPI_INSTANCE_ID && data.ZAPI_TOKEN),
   hasZapiPartner: Boolean(data.ZAPI_PARTNER_TOKEN),
   hasEvolution: Boolean(data.EVOLUTION_API_KEY && data.EVOLUTION_INSTANCE),
