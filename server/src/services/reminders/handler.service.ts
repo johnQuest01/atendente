@@ -20,6 +20,7 @@ import type { NormalizedInbound } from '../whatsapp/types';
 import type { Reminder } from '../../types';
 import { describeLead, describeRecurrence, parseReminders, type ParsedReminder } from './parse.service';
 import { DEFAULT_TZ, formatForOwner, fromWallClock, toWallClock } from './time';
+import { freeChatOwner, getOwnerModeFlags } from '../owner-chat.service';
 
 /**
  * Assistente pessoal do dono. O mesmo número que atende clientes aceita comandos
@@ -178,7 +179,18 @@ const HELP_TEXT = [
   'Ou: *HOJE* · *AMANHÃ* · *SEMANA* · *MÊS* · *ROTINA* · *IMPORTANTES* · *TODOS*',
   'Pra fechar: *CONCLUIR 2* · Pra tirar: *CANCELAR 2*',
   '',
-  'Pode mandar vários de uma vez — eu confirmo antes de salvar.',
+  'Com o *Agente* ligado: pergunta livre, texto, pesquisa — eu respondo rápido no zap.',
+  'Pode mandar vários lembretes de uma vez — eu confirmo antes de salvar.',
+].join('\n');
+
+const HELP_AGENT_ONLY = [
+  'Modo *Agente* ligado — manda pergunta, texto ou "pesquisa X".',
+  'Pra anotar compromisso, ligue a *Secretária* no painel (Lembretes).',
+].join('\n');
+
+const HELP_BOTH_OFF = [
+  'Secretária e Agente estão desligados neste WhatsApp.',
+  'Ligue as alavancas em *Lembretes → Secretária e Agente*.',
 ].join('\n');
 
 /** Intervalos de consulta, calculados no fuso do dono. */
@@ -466,6 +478,7 @@ async function handleOwnerMessageInner(
   if (!text || !text.trim()) return true;
   const normalized = normalize(text);
   const owner = getState(tenantId, phone);
+  const flags = await getOwnerModeFlags(tenantId, connectionId);
 
   // 1. Confirmação pendente tem prioridade sobre tudo.
   if (owner.pending) {
@@ -532,6 +545,8 @@ async function handleOwnerMessageInner(
   }
 
   // 2. Consulta — palavra solta ou pergunta em linguagem natural. Sem IA.
+  // Só com Secretária ligada (agenda).
+  if (flags.secretary) {
   const queryKey = detectQuery(normalized);
   if (queryKey) {
     const filter = rangeFor(queryKey, tz);
@@ -618,14 +633,53 @@ async function handleOwnerMessageInner(
     );
     return true;
   }
+  } // flags.secretary
 
   if (normalized === 'ajuda' || normalized === 'menu' || normalized === '?') {
-    await reply(tenantId, phone, HELP_TEXT);
+    await reply(
+      tenantId,
+      phone,
+      flags.secretary ? HELP_TEXT : flags.agent ? HELP_AGENT_ONLY : HELP_BOTH_OFF,
+    );
     return true;
   }
 
-  // 4. Cadastro em linguagem natural.
-  return handleCreate(tenantId, phone, text, tz, text);
+  // 4. Secretária: cadastro em linguagem natural (gatilho forte).
+  const wantsReminder =
+    CREATE_TRIGGERS.test(text) || STRONG_CREATE.test(normalized);
+  if (wantsReminder && flags.secretary) {
+    return handleCreate(tenantId, phone, text, tz, text);
+  }
+  if (wantsReminder && !flags.secretary) {
+    await reply(
+      tenantId,
+      phone,
+      'Pra anotar compromisso, ligue a *Secretária* em Lembretes → Secretária e Agente.',
+    );
+    return true;
+  }
+
+  // 5. Agente: chat livre + busca (rápido), quando não for agenda.
+  if (flags.agent) {
+    const answer = await freeChatOwner(tenantId, phone, text, {
+      connectionId,
+      webSearchEnabled: flags.webSearch,
+    });
+    await reply(
+      tenantId,
+      phone,
+      answer ?? 'Não rolou agora. Manda de novo em uma frase?',
+    );
+    return true;
+  }
+
+  // 6. Só secretária (sem agente): tenta criar; senão menu.
+  if (flags.secretary) {
+    return handleCreate(tenantId, phone, text, tz, text);
+  }
+
+  await reply(tenantId, phone, HELP_BOTH_OFF);
+  return true;
 }
 
 function toPendingItem(p: ParsedReminder): PendingItem {

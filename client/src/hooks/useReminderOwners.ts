@@ -100,3 +100,47 @@ export function useSetMemoryScan(connectionId?: string) {
     onSuccess: (value) => qc.setQueryData(memoryScanQueryKey(connectionId), value),
   });
 }
+
+// ---------------------------------------------------------------------------
+// Alavancas Secretária + Agente
+// ---------------------------------------------------------------------------
+
+export interface OwnerModes {
+  secretary: boolean;
+  agent: boolean;
+  webSearch: boolean;
+  webSearchConfigured: boolean;
+}
+
+export function ownerModesQueryKey(connectionId?: string) {
+  return ['owner-modes', connectionId] as const;
+}
+
+export function useOwnerModes(connectionId?: string, enabled = true) {
+  return useQuery({
+    queryKey: ownerModesQueryKey(connectionId),
+    queryFn: async () => {
+      const { data } = await api.get<OwnerModes>('/settings/owner-modes', {
+        params: connectionId ? { connectionId } : undefined,
+      });
+      return data;
+    },
+    enabled: Boolean(connectionId) && enabled,
+    staleTime: 15_000,
+  });
+}
+
+export function useSetOwnerModes(connectionId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (patch: Partial<Pick<OwnerModes, 'secretary' | 'agent' | 'webSearch'>>) => {
+      const { data } = await api.put<OwnerModes>(
+        '/settings/owner-modes',
+        patch,
+        { params: connectionId ? { connectionId } : undefined },
+      );
+      return data;
+    },
+    onSuccess: (value) => qc.setQueryData(ownerModesQueryKey(connectionId), value),
+  });
+}

@@ -23,6 +23,9 @@ import {
   getMemoryScan,
   putMemoryScan,
   updateMemoryScanSchema,
+  getOwnerModes,
+  putOwnerModes,
+  updateOwnerModesSchema,
   getSystemStatus,
   listWhatsappConnections,
   getWhatsappConnection,
@@ -96,6 +99,15 @@ router.put(
   adminOnly,
   validate({ body: updateMemoryScanSchema }),
   asyncHandler(putMemoryScan),
+);
+
+// Alavancas Secretária + Agente (chat livre / busca web) por conexão.
+router.get('/owner-modes', adminOnly, asyncHandler(getOwnerModes));
+router.put(
+  '/owner-modes',
+  adminOnly,
+  validate({ body: updateOwnerModesSchema }),
+  asyncHandler(putOwnerModes),
 );
 
 // Status REAL das integrações (banco, Claude, WhatsApp, STT).

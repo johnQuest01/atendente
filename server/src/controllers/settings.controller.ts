@@ -25,6 +25,7 @@ import {
 import { getHealthReport } from '../services/health.service';
 import { previewReply } from '../services/ai.service';
 import { parseReminder } from '../services/reminders/parse.service';
+import { getOwnerModeFlags } from '../services/owner-chat.service';
 import { listProducts } from '../db/queries/products';
 import { listScripts } from '../db/queries/messages_scripts';
 import { getWhatsappByConnection, invalidateTenantWhatsapp } from '../services/whatsapp.service';
@@ -411,6 +412,62 @@ export async function putMemoryScan(req: Request, res: Response): Promise<void> 
   }
   await setMemoryScanEnabled(tenantId, enabled);
   res.json({ enabled });
+}
+
+// ---------------------------------------------------------------------------
+// Alavancas Secretária + Agente (por conexão)
+// ---------------------------------------------------------------------------
+
+export async function getOwnerModes(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const connectionId = parseConnectionIdQuery(req);
+  if (!connectionId) {
+    res.status(400).json({ error: 'connectionId obrigatório' });
+    return;
+  }
+  await requireConnection(tenantId, connectionId);
+  const flags = await getOwnerModeFlags(tenantId, connectionId);
+  res.json({
+    secretary: flags.secretary,
+    agent: flags.agent,
+    webSearch: flags.webSearch,
+    webSearchConfigured: env.hasWebSearch,
+  });
+}
+
+export const updateOwnerModesSchema = z.object({
+  secretary: z.boolean().optional(),
+  agent: z.boolean().optional(),
+  webSearch: z.boolean().optional(),
+});
+
+export async function putOwnerModes(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const connectionId = parseConnectionIdQuery(req);
+  if (!connectionId) {
+    res.status(400).json({ error: 'connectionId obrigatório' });
+    return;
+  }
+  await requireConnection(tenantId, connectionId);
+  const body = req.body as z.infer<typeof updateOwnerModesSchema>;
+
+  // Busca web só faz sentido com Agente ligado.
+  let webSearch = body.webSearch;
+  if (body.agent === false) webSearch = false;
+
+  await patchConnectionConfig(tenantId, connectionId, {
+    ownerSecretaryEnabled: body.secretary,
+    ownerFreeChatEnabled: body.agent,
+    ownerWebSearchEnabled: webSearch,
+  });
+
+  const flags = await getOwnerModeFlags(tenantId, connectionId);
+  res.json({
+    secretary: flags.secretary,
+    agent: flags.agent,
+    webSearch: flags.webSearch,
+    webSearchConfigured: env.hasWebSearch,
+  });
 }
 
 /**
