@@ -34,12 +34,18 @@ export interface InstanceProvisioner {
   provision(ctx: ProvisionContext): Promise<ProvisionedInstance>;
 }
 
-/** Conta em trial (7 dias) → pool pago. Conta active → on-demand. */
+/**
+ * Conta em trial (7 dias) → pool pago. Conta active → on-demand.
+ * Se on-demand exige Partner-Token e ele não está configurado, cai no pool
+ * (evita travar o onboarding enquanto o token de parceiro não chega).
+ */
 export function resolveProvisionMode(tenant: TenantRow): InstanceOrigin {
-  if (env.ZAPI_PROVISION_MODE === 'on-demand') return 'on_demand';
   if (env.ZAPI_PROVISION_MODE === 'pool') return 'pool';
+  if (env.ZAPI_PROVISION_MODE === 'on-demand') {
+    return env.hasZapiPartner ? 'on_demand' : 'pool';
+  }
   // auto
-  if (tenant.account_status === 'active') return 'on_demand';
+  if (tenant.account_status === 'active' && env.hasZapiPartner) return 'on_demand';
   return 'pool';
 }
 
@@ -49,7 +55,7 @@ export class OnDemandProvisioner implements InstanceProvisioner {
   async provision(ctx: ProvisionContext): Promise<ProvisionedInstance> {
     if (!env.hasZapiPartner) {
       throw new AppError(
-        'Falta ZAPI_PARTNER_TOKEN no servidor para criar a conexão automaticamente.',
+        'Falta ZAPI_PARTNER_TOKEN no servidor. Enquanto isso: Empresar → Pool WhatsApp (adicionar instância assinada) ou use credenciais manuais.',
         503,
         'ZAPI_PARTNER_MISSING',
       );
@@ -79,7 +85,9 @@ export class PoolProvisioner implements InstanceProvisioner {
     const claimed = await claimFreePoolInstance(ctx.tenantId, ctx.providerMode);
     if (!claimed) {
       throw new AppError(
-        'Não há instância disponível no momento para o período de teste. Tente de novo em alguns minutos ou fale com o suporte.',
+        env.hasZapiPartner
+          ? 'Não há instância livre no pool. Tente de novo ou fale com o suporte.'
+          : 'Pool vazio e sem ZAPI_PARTNER_TOKEN. Em Empresas → Pool WhatsApp, adicione uma instância já assinada da Z-API, ou use Credenciais manuais nesta tela.',
         503,
         'POOL_EMPTY',
       );

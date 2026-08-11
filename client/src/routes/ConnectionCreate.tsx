@@ -67,15 +67,16 @@ export default function ConnectionCreate() {
         ) : (
           <>
             <WhatsappOnboarding />
-            <p className="text-center text-xs text-text-secondary">
-              Preferir colar Instance ID / Token manualmente?{' '}
+            <p className="rounded-xl border border-border bg-bg px-3 py-3 text-center text-xs text-text-secondary">
+              Sem Partner Token da Z-API ainda? Cole Instance ID e Token em{' '}
               <button
                 type="button"
                 className="font-semibold text-primary underline-offset-2 hover:underline"
                 onClick={() => navigate('/conexoes/nova?manual=1')}
               >
-                Credenciais manuais (avançado)
+                Credenciais manuais
               </button>
+              , ou abasteça o pool em Empresas (superadmin).
             </p>
           </>
         )}

@@ -139,9 +139,18 @@ export function WhatsappOnboarding() {
         );
       }
     } catch (err) {
-      toast(getErrorMessage(err), 'error');
+      const msg = getErrorMessage(err);
+      toast(msg, 'error');
       setStatus('ERRO');
-      setDetail(getErrorMessage(err));
+      setDetail(msg);
+      // Erros de provisionamento: orientar o atalho de credenciais manuais.
+      if (
+        msg.includes('ZAPI_PARTNER_TOKEN') ||
+        msg.includes('Pool vazio') ||
+        msg.includes('POOL')
+      ) {
+        toast('Enquanto o pool/parceiro não está pronto, use Credenciais manuais abaixo.', 'info');
+      }
     }
   }
 
