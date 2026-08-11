@@ -38,6 +38,8 @@ import { invalidateTenantWhatsapp } from './whatsapp.service';
 export interface ConnectStartInput {
   label?: string;
   providerMode?: ProviderMode;
+  /** Número com DDI — fluxo principal: gera código de pareamento na hora. */
+  phone?: string;
 }
 
 function webhookUrlFor(webhookToken: string): string {
@@ -73,7 +75,8 @@ async function pushStatus(
 /**
  * 1) Provisiona instância (pool se trial, on-demand se pago).
  * 2) Persiste conexão cifrada.
- * 3) Configura webhooks e obtém primeiro QR.
+ * 3) Configura webhooks.
+ * 4) Se veio `phone`, gera código de pareamento (fluxo principal); senão QR.
  */
 export async function startWhatsappConnect(
   tenantId: string,
@@ -81,6 +84,8 @@ export async function startWhatsappConnect(
 ): Promise<{
   connection: WhatsappConnection;
   qrBase64: string | null;
+  phoneCode: string | null;
+  phone: string | null;
   status: ConnectionLifecycleStatus;
   providerMode: ProviderMode;
   phonelessWarning: boolean;
@@ -95,6 +100,10 @@ export async function startWhatsappConnect(
 
   const providerMode: ProviderMode = input.providerMode ?? 'web';
   const label = (input.label?.trim() || 'WhatsApp').slice(0, 120);
+  const phoneDigits = input.phone?.replace(/\D/g, '') || null;
+  if (phoneDigits && phoneDigits.length < 10) {
+    throw new AppError('Informe o número com DDI (ex.: 5511999999999).', 400, 'BAD_PHONE');
+  }
 
   // Token de webhook antecipado — mesma URL na criação Z-API e no banco.
   const webhookToken = generateWebhookToken();
@@ -144,45 +153,91 @@ export async function startWhatsappConnect(
     await bindPoolToConnection(provisioned.poolInstanceId, connection.id);
   }
 
-  const realUrl = webhookUrl;
   try {
-    await zapiClient.configureEveryWebhook(credsOf(connection), realUrl, true);
+    await zapiClient.configureEveryWebhook(credsOf(connection), webhookUrl, true);
     await markWebhookConfigured(tenantId, connection.id, true);
   } catch (err) {
     logger.warn('Webhook não configurado na criação — tentaremos de novo ao conectar', err);
   }
 
+  let phoneCode: string | null = null;
   let qrBase64: string | null = null;
-  try {
-    const qr = await zapiClient.getQrCodeImage(credsOf(connection));
-    qrBase64 = qr.imageBase64;
-    if (qr.challenge) {
-      await pushStatus(tenantId, connection.id, 'ERRO', {
-        detail:
-          'Este aparelho pediu verificação extra (passkey). Use o pareamento por código ou tente de novo.',
+
+  // Fluxo principal: número → código de pareamento.
+  if (phoneDigits) {
+    try {
+      const result = await zapiClient.getPhoneCode(credsOf(connection), phoneDigits);
+      if (result.challenge) {
+        await pushStatus(tenantId, connection.id, 'ERRO', {
+          detail:
+            'Este aparelho pediu verificação extra (passkey). Tente o QR Code ou outro número.',
+        });
+        const updated = await getConnectionById(tenantId, connection.id);
+        return {
+          connection: updated ?? connection,
+          qrBase64: null,
+          phoneCode: null,
+          phone: phoneDigits,
+          status: 'ERRO',
+          providerMode,
+          phonelessWarning: providerMode === 'phoneless',
+        };
+      }
+      phoneCode = result.code;
+      if (!phoneCode) {
+        throw new AppError('A Z-API não devolveu o código.', 502, 'NO_CODE');
+      }
+      await pushStatus(tenantId, connection.id, 'AGUARDANDO_LEITURA', {
+        detail: 'Digite este código no WhatsApp do celular',
+        phone: phoneDigits,
+        phoneCode,
       });
-      const updated = await getConnectionById(tenantId, connection.id);
-      return {
-        connection: updated ?? connection,
-        qrBase64: null,
-        status: 'ERRO',
-        providerMode,
-        phonelessWarning: providerMode === 'phoneless',
-      };
+    } catch (err) {
+      if (err instanceof AppError && err.code === 'NO_CODE') throw err;
+      logger.warn('Código de pareamento inicial falhou — fallback QR', err);
     }
-  } catch (err) {
-    logger.warn('QR inicial falhou', err);
   }
 
-  await pushStatus(tenantId, connection.id, 'AGUARDANDO_LEITURA', {
-    detail: 'Abra o WhatsApp → Aparelhos conectados → Conectar aparelho',
-    qrBase64,
-  });
+  // QR: pedido explícito sem número, ou fallback se o código falhou.
+  if (!phoneCode) {
+    try {
+      const qr = await zapiClient.getQrCodeImage(credsOf(connection));
+      qrBase64 = qr.imageBase64;
+      if (qr.challenge) {
+        await pushStatus(tenantId, connection.id, 'ERRO', {
+          detail:
+            'Este aparelho pediu verificação extra (passkey). Use o pareamento por código ou tente de novo.',
+        });
+        const updated = await getConnectionById(tenantId, connection.id);
+        return {
+          connection: updated ?? connection,
+          qrBase64: null,
+          phoneCode: null,
+          phone: phoneDigits,
+          status: 'ERRO',
+          providerMode,
+          phonelessWarning: providerMode === 'phoneless',
+        };
+      }
+    } catch (err) {
+      logger.warn('QR inicial falhou', err);
+    }
+
+    await pushStatus(tenantId, connection.id, 'AGUARDANDO_LEITURA', {
+      detail: phoneDigits
+        ? 'Não foi possível gerar o código — escaneie o QR abaixo'
+        : 'Abra o WhatsApp → Aparelhos conectados → Conectar aparelho',
+      phone: phoneDigits,
+      qrBase64,
+    });
+  }
 
   const updated = await getConnectionById(tenantId, connection.id);
   return {
     connection: updated ?? connection,
     qrBase64,
+    phoneCode,
+    phone: phoneDigits,
     status: 'AGUARDANDO_LEITURA',
     providerMode,
     phonelessWarning: providerMode === 'phoneless',
@@ -215,8 +270,9 @@ export async function refreshQr(tenantId: string, connectionId: string) {
 }
 
 /**
- * Reconecta uma conexão existente: se ainda há credenciais, só gera QR;
- * se foram limpas (disconnect), provisiona de novo na mesma linha.
+ * Reconecta uma conexão existente.
+ * Com `phone`: gera código de pareamento.
+ * Sem credenciais: re-provisiona na mesma linha.
  */
 export async function restartWhatsappConnect(
   tenantId: string,
@@ -225,6 +281,8 @@ export async function restartWhatsappConnect(
 ): Promise<{
   connection: WhatsappConnection;
   qrBase64: string | null;
+  phoneCode: string | null;
+  phone: string | null;
   status: ConnectionLifecycleStatus;
   providerMode: ProviderMode;
   phonelessWarning: boolean;
@@ -232,12 +290,33 @@ export async function restartWhatsappConnect(
   const existing = await getConnectionById(tenantId, connectionId);
   if (!existing) throw new AppError('Conexão não encontrada.', 404, 'NOT_FOUND');
 
+  const phoneDigits = input.phone?.replace(/\D/g, '') || null;
+  if (phoneDigits && phoneDigits.length < 10) {
+    throw new AppError('Informe o número com DDI (ex.: 5511999999999).', 400, 'BAD_PHONE');
+  }
+
+  // Já tem instância: só gera código (ou QR se não veio número).
   if (existing.secrets.instanceId && existing.secrets.token) {
+    if (phoneDigits) {
+      const code = await requestPhoneCode(tenantId, connectionId, phoneDigits);
+      const updated = await getConnectionById(tenantId, connectionId);
+      return {
+        connection: updated ?? existing,
+        qrBase64: null,
+        phoneCode: code.code,
+        phone: phoneDigits,
+        status: (updated?.connection_status ?? 'AGUARDANDO_LEITURA') as ConnectionLifecycleStatus,
+        providerMode: existing.provider_mode,
+        phonelessWarning: existing.provider_mode === 'phoneless',
+      };
+    }
     const qr = await refreshQr(tenantId, connectionId);
     const updated = await getConnectionById(tenantId, connectionId);
     return {
       connection: updated ?? existing,
       qrBase64: qr.qrBase64,
+      phoneCode: null,
+      phone: null,
       status: (updated?.connection_status ?? 'AGUARDANDO_LEITURA') as ConnectionLifecycleStatus,
       providerMode: existing.provider_mode,
       phonelessWarning: existing.provider_mode === 'phoneless',
@@ -307,23 +386,45 @@ export async function restartWhatsappConnect(
     logger.warn('Webhook no reconnect falhou — tentaremos ao conectar', err);
   }
 
+  let phoneCode: string | null = null;
   let qrBase64: string | null = null;
-  try {
-    const qr = await zapiClient.getQrCodeImage(credsOf(connection));
-    qrBase64 = qr.imageBase64;
-  } catch (err) {
-    logger.warn('QR no reconnect falhou', err);
+
+  if (phoneDigits) {
+    try {
+      const result = await zapiClient.getPhoneCode(credsOf(connection), phoneDigits);
+      phoneCode = result.code;
+      if (phoneCode) {
+        await pushStatus(tenantId, connection.id, 'AGUARDANDO_LEITURA', {
+          detail: 'Digite este código no WhatsApp do celular',
+          phone: phoneDigits,
+          phoneCode,
+        });
+      }
+    } catch (err) {
+      logger.warn('Código no reconnect falhou — fallback QR', err);
+    }
   }
 
-  await pushStatus(tenantId, connection.id, 'AGUARDANDO_LEITURA', {
-    detail: 'Abra o WhatsApp → Aparelhos conectados → Conectar aparelho',
-    qrBase64,
-  });
+  if (!phoneCode) {
+    try {
+      const qr = await zapiClient.getQrCodeImage(credsOf(connection));
+      qrBase64 = qr.imageBase64;
+    } catch (err) {
+      logger.warn('QR no reconnect falhou', err);
+    }
+    await pushStatus(tenantId, connection.id, 'AGUARDANDO_LEITURA', {
+      detail: 'Abra o WhatsApp → Aparelhos conectados → Conectar aparelho',
+      phone: phoneDigits,
+      qrBase64,
+    });
+  }
 
   const updated = await getConnectionById(tenantId, connection.id);
   return {
     connection: updated ?? connection,
     qrBase64,
+    phoneCode,
+    phone: phoneDigits,
     status: 'AGUARDANDO_LEITURA',
     providerMode,
     phonelessWarning: providerMode === 'phoneless',

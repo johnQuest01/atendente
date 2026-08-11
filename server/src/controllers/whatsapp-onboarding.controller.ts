@@ -31,6 +31,8 @@ export const connectBodySchema = z.object({
   label: z.string().trim().min(1).max(120).optional(),
   /** web = aparelhos conectados (padrão); phoneless = número dedicado / mobile. */
   providerMode: z.enum(['web', 'phoneless']).optional().default('web'),
+  /** Número com DDI — gera código de pareamento na hora (fluxo principal). */
+  phone: z.string().trim().min(10).max(20).optional(),
 });
 
 export const connectionIdParamSchema = z.object({
@@ -58,18 +60,23 @@ export async function postConnect(req: Request, res: Response): Promise<void> {
   const result = await startWhatsappConnect(tenantId, {
     label: body.label,
     providerMode: body.providerMode,
+    phone: body.phone,
   });
+  const byCode = Boolean(result.phoneCode);
   res.status(201).json({
     connectionId: result.connection.id,
     label: result.connection.label,
     status: result.status,
     qrBase64: result.qrBase64,
+    phoneCode: result.phoneCode,
+    phone: result.phone,
     providerMode: result.providerMode,
     phonelessWarning: result.phonelessWarning,
     webhookConfigured: result.connection.webhook_configured,
     timeoutMinutes: env.WHATSAPP_ONBOARDING_TIMEOUT_MINUTES,
-    instructions:
-      'No celular: WhatsApp → Aparelhos conectados → Conectar um aparelho → escaneie o QR.',
+    instructions: byCode
+      ? 'No celular: WhatsApp → Aparelhos conectados → Conectar com número de telefone → digite o código.'
+      : 'No celular: WhatsApp → Aparelhos conectados → Conectar um aparelho → escaneie o QR.',
   });
 }
 
@@ -135,18 +142,23 @@ export async function postReconnect(req: Request, res: Response): Promise<void> 
   const result = await restartWhatsappConnect(tenantId, connectionId, {
     label: body.label,
     providerMode: body.providerMode,
+    phone: body.phone,
   });
+  const byCode = Boolean(result.phoneCode);
   res.json({
     connectionId: result.connection.id,
     label: result.connection.label,
     status: result.status,
     qrBase64: result.qrBase64,
+    phoneCode: result.phoneCode,
+    phone: result.phone,
     providerMode: result.providerMode,
     phonelessWarning: result.phonelessWarning,
     webhookConfigured: result.connection.webhook_configured,
     timeoutMinutes: env.WHATSAPP_ONBOARDING_TIMEOUT_MINUTES,
-    instructions:
-      'No celular: WhatsApp → Aparelhos conectados → Conectar um aparelho → escaneie o QR.',
+    instructions: byCode
+      ? 'No celular: WhatsApp → Aparelhos conectados → Conectar com número de telefone → digite o código.'
+      : 'No celular: WhatsApp → Aparelhos conectados → Conectar um aparelho → escaneie o QR.',
   });
 }
 

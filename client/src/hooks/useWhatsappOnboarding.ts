@@ -33,6 +33,8 @@ export interface ConnectStartResult {
   label: string;
   status: OnboardingStatus;
   qrBase64: string | null;
+  phoneCode: string | null;
+  phone: string | null;
   providerMode: 'web' | 'phoneless';
   phonelessWarning: boolean;
   webhookConfigured: boolean;
@@ -54,7 +56,11 @@ export interface ConnectStatusResult {
 export function useStartWhatsappConnect() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (input: { label?: string; providerMode?: 'web' | 'phoneless' }) => {
+    mutationFn: async (input: {
+      label?: string;
+      providerMode?: 'web' | 'phoneless';
+      phone?: string;
+    }) => {
       const { data } = await api.post<ConnectStartResult>('/whatsapp/connect', input);
       return data;
     },
@@ -125,10 +131,15 @@ export function useRestartWhatsappConnect() {
       connectionId: string;
       label?: string;
       providerMode?: 'web' | 'phoneless';
+      phone?: string;
     }) => {
       const { data } = await api.post<ConnectStartResult>(
         `/whatsapp/connect/${input.connectionId}/reconnect`,
-        { label: input.label, providerMode: input.providerMode },
+        {
+          label: input.label,
+          providerMode: input.providerMode,
+          phone: input.phone,
+        },
       );
       return data;
     },
