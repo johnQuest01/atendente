@@ -11,6 +11,7 @@ import {
   useRestartWhatsappConnect,
   type OnboardingStatus,
 } from '@/hooks/useWhatsappOnboarding';
+import { useAutoRefreshQr } from '@/hooks/useAutoRefreshQr';
 import { useSocket } from '@/hooks/useSocket';
 import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
@@ -56,8 +57,23 @@ export function WhatsappReconnect({
 
   const polling = useConnectStatus(
     connectionId,
-    active && status !== 'CONECTADO' && status !== 'ERRO',
+    active && status !== 'CONECTADO' && status !== 'ERRO' && status !== 'EXPIRADO',
   );
+
+  const waiting =
+    active &&
+    status !== 'CONECTADO' &&
+    status !== 'ERRO' &&
+    status !== 'EXPIRADO';
+
+  const autoQr = useAutoRefreshQr({
+    connectionId,
+    enabled: waiting && Boolean(qrBase64 || (!phoneCode && status === 'AGUARDANDO_LEITURA')),
+    onQr: (qr) => {
+      setQrBase64(qr);
+      setDetail('QR atualizado — se o WhatsApp pedir, escaneie de novo');
+    },
+  });
 
   useSocket({
     'whatsapp:status': (payload: unknown) => {
@@ -154,7 +170,9 @@ export function WhatsappReconnect({
       const r = await refreshQr.mutateAsync();
       if (r.qrBase64) {
         setQrBase64(r.qrBase64);
+        setPhoneCode(null);
         setStatus('AGUARDANDO_LEITURA');
+        setDetail('Escaneie o QR — ele atualiza sozinho se o WhatsApp pedir de novo');
         toast('QR atualizado.', 'success');
       }
     } catch (err) {
@@ -213,12 +231,17 @@ export function WhatsappReconnect({
       )}
 
       {qrBase64 && (
-        <div className="flex justify-center rounded-2xl border border-border bg-bg p-4">
+        <div className="flex flex-col items-center gap-2 rounded-2xl border border-border bg-bg p-4">
           <img
             src={qrBase64}
             alt="QR Code WhatsApp"
             className="h-52 w-52 rounded-xl bg-surface object-contain"
           />
+          <p className="text-center text-xs text-text-secondary">
+            {autoQr.refreshing
+              ? 'Atualizando QR…'
+              : 'O QR renova sozinho ~a cada 18s se o WhatsApp pedir para escanear de novo'}
+          </p>
         </div>
       )}
 
@@ -239,7 +262,7 @@ export function WhatsappReconnect({
           loading={refreshQr.isPending}
           onClick={() => void handleRefreshQr()}
         >
-          Mostrar / atualizar QR
+          Atualizar QR agora
         </Button>
         <Button variant="ghost" onClick={() => setActive(false)}>
           Fechar
