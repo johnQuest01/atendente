@@ -129,8 +129,43 @@ function normalize(text: string): string {
     .replace(/[\u0300-\u036f]/g, '');
 }
 
+/** Remove pontuação do Whisper ("Sim.", "Ok!") para casar com comandos curtos. */
+function normalizeCommand(text: string): string {
+  return normalize(text)
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 const AFFIRMATIVE = new Set(['sim', 's', 'ok', 'okay', 'isso', 'confirmar', 'confirma', 'pode', 'certo', 'blz', 'beleza', 'positivo', '1', '👍']);
 const NEGATIVE = new Set(['nao', 'n', 'cancela', 'cancelar', 'esquece', 'deixa', 'nada', '0']);
+const AFFIRMATIVE_PHRASES = new Set([
+  'sim pode',
+  'sim confirma',
+  'sim confirmo',
+  'pode sim',
+  'pode salvar',
+  'ok pode',
+  'isso mesmo',
+  'isso ai',
+  'fechado',
+]);
+const NEGATIVE_PHRASES = new Set(['nao pode', 'nao quero', 'deixa pra la', 'melhor nao']);
+
+function isAffirmative(text: string): boolean {
+  const n = normalizeCommand(text);
+  if (!n) return false;
+  if (AFFIRMATIVE.has(n) || AFFIRMATIVE_PHRASES.has(n)) return true;
+  // Áudio curto: "Sim, pode." → "sim pode"
+  return n.split(/\s+/).length <= 3 && /^(sim|ok|isso)\b/.test(n);
+}
+
+function isNegative(text: string): boolean {
+  const n = normalizeCommand(text);
+  if (!n) return false;
+  if (NEGATIVE.has(n) || NEGATIVE_PHRASES.has(n)) return true;
+  return n.split(/\s+/).length <= 3 && /^(nao|cancela|cancelar|esquece)\b/.test(n);
+}
 
 const HELP_TEXT = [
   '*Seu assistente de lembretes*',
@@ -367,6 +402,13 @@ async function matchesReminderKeyword(
   text: string,
   connectionId?: string | null,
 ): Promise<boolean> {
+  const normalized = normalizeCommand(text);
+  // Keywords tipo "Hoje"/"Amanhã" são gatilho CURTO de consulta. Sem este
+  // filtro, "me lembra hoje às 15h de ligar" casa a keyword e lista a agenda
+  // em vez de criar o lembrete (bug comum em áudio).
+  if (STRONG_CREATE.test(normalized) || CREATE_TRIGGERS.test(text)) return false;
+  if (normalized.split(/\s+/).filter(Boolean).length > 4) return false;
+
   const keywords = await getActiveKeywords(tenantId, connectionId);
   return keywords.some(
     (k) => k.content_type === 'reminders_today' && keywordMatches(text, k.keyword),
@@ -423,7 +465,7 @@ async function handleOwnerMessageInner(
       );
       return true;
     }
-    logger.info(`Lembretes: áudio do dono transcrito (${text.length} chars).`);
+    logger.info(`Lembretes: áudio do dono transcrito (${text.length} chars): "${text.slice(0, 120)}"`);
   }
 
   if (!text || !text.trim()) return true;
@@ -434,7 +476,7 @@ async function handleOwnerMessageInner(
   if (owner.pending) {
     const { items, source } = owner.pending;
 
-    if (AFFIRMATIVE.has(normalized)) {
+    if (isAffirmative(text)) {
       const replyConnectionId = ownerReplyConnection.get(stateKey(tenantId, phone)) ?? null;
       const inputs: CreateReminderInput[] = items.map((p) => ({
         ownerPhone: phone,
@@ -459,7 +501,7 @@ async function handleOwnerMessageInner(
       return true;
     }
 
-    if (NEGATIVE.has(normalized)) {
+    if (isNegative(text)) {
       setState(tenantId, phone, { pending: undefined });
       await reply(tenantId, phone, 'Beleza, descartei.');
       return true;
