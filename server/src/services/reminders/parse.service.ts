@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import { logger } from '../../config/logger';
 import { complete } from '../ai/orchestrator';
+import { listReminders } from '../../db/queries/reminders';
 import { getReminderPersona } from '../../db/queries/settings';
-import type { ReminderCategory } from '../../types';
-import { DEFAULT_TZ, formatForOwner, isValidRecurrence, parseLocalIso, toWallClock, weekdayNamePt } from './time';
+import type { Reminder, ReminderCategory } from '../../types';
+import { DEFAULT_TZ, formatForOwner, fromWallClock, isValidRecurrence, parseLocalIso, toWallClock, weekdayNamePt } from './time';
 
 /**
  * Interpretação do lembrete em linguagem natural. Usa o orquestrador de IA da
@@ -12,6 +13,9 @@ import { DEFAULT_TZ, formatForOwner, isValidRecurrence, parseLocalIso, toWallClo
  * A data relativa é resolvida pelo MODELO, mas com a data/hora atual injetada
  * no prompt: sem isso ele chuta "hoje" a partir do treino. E o horário volta
  * como relógio de parede, convertido aqui para UTC no fuso do dono.
+ *
+ * O caderno do dono (lembretes pendentes no banco) entra no prompt para frases
+ * abertas do tipo "não esquece do compromisso de hoje" saberem do que se trata.
  */
 
 const parsedSchema = z.object({
@@ -22,6 +26,8 @@ const parsedSchema = z.object({
   remind_before_minutes: z.coerce.number().int().nullable().optional(),
   category: z.enum(['importante', 'rotina', 'data_especifica']),
   confirmation_text: z.string().trim().min(1).max(400),
+  /** create = novo; acknowledge = só confirma algo já anotado (não duplicar). */
+  action: z.enum(['create', 'acknowledge']).optional().default('create'),
 });
 
 export interface ParsedReminder {
@@ -32,6 +38,7 @@ export interface ParsedReminder {
   /** Minutos de aviso prévio, quando o dono pediu ("1h antes" = 60). */
   leadMinutes: number | null;
   confirmationText: string;
+  action: 'create' | 'acknowledge';
 }
 
 /** Teto de 7 dias — bate com o CHECK da migration 025. */
@@ -49,7 +56,65 @@ export function describeLead(minutes: number): string {
   return `${minutes} min antes`;
 }
 
-function buildSystemPrompt(now: Date, tz: string, persona?: string | null, bulk = false): string {
+/** Quantos dias à frente carregar do banco para o contexto do prompt. */
+const AGENDA_DAYS = 14;
+const AGENDA_LIMIT = 40;
+
+/** Lê o caderno do dono (pendentes) para a IA não “esquecer” o que já foi anotado. */
+export async function loadOwnerAgenda(
+  tenantId: string,
+  ownerPhone: string,
+  tz: string = DEFAULT_TZ,
+): Promise<Reminder[]> {
+  const now = new Date();
+  const wc = toWallClock(now, tz);
+  const until = fromWallClock({ ...wc, day: wc.day + AGENDA_DAYS, hour: 23, minute: 59 }, tz);
+  try {
+    return await listReminders(tenantId, ownerPhone, {
+      from: now,
+      until,
+      statuses: ['pendente'],
+      limit: AGENDA_LIMIT,
+    });
+  } catch (err) {
+    logger.warn('Lembretes: falha ao carregar agenda do banco para o parse', err);
+    return [];
+  }
+}
+
+function formatAgendaBlock(reminders: Reminder[], tz: string): string {
+  if (reminders.length === 0) {
+    return [
+      '',
+      'CADERNO DO DONO (banco): (vazio — nada pendente nos próximos dias).',
+      'Se ele falar de "o compromisso de hoje" e o caderno estiver vazio, diga isso no confirmation_text e use action=acknowledge.',
+    ].join('\n');
+  }
+  const lines = reminders.map((r, i) => {
+    const when = formatForOwner(new Date(r.next_fire_at), r.timezone || tz);
+    const repeat = r.recurrence ? ` · repete ${describeRecurrence(r.recurrence)}` : '';
+    return `${i + 1}. ${r.task} — ${when}${repeat}`;
+  });
+  return [
+    '',
+    'CADERNO DO DONO (já salvo no banco — use isto para frases abertas):',
+    ...lines,
+    '',
+    'Se ele disser "o compromisso de hoje", "aquela reunião", "não esquece de me avisar do de hoje", etc.:',
+    '- Identifique o item no caderno (task e horário reais).',
+    '- action=acknowledge (NÃO invente outro igual; o alarme já está salvo).',
+    '- confirmation_text humano citando o nome real (ex.: "Pode deixar — te chamo pra Ir dormir às 22h.").',
+    'Só use action=create para compromisso NOVO que ainda não está no caderno.',
+  ].join('\n');
+}
+
+function buildSystemPrompt(
+  now: Date,
+  tz: string,
+  persona?: string | null,
+  bulk = false,
+  agenda: Reminder[] = [],
+): string {
   const wc = toWallClock(now, tz);
   const pad = (n: number) => String(n).padStart(2, '0');
   const agora = `${wc.year}-${pad(wc.month)}-${pad(wc.day)}T${pad(wc.hour)}:${pad(wc.minute)}`;
@@ -71,16 +136,22 @@ function buildSystemPrompt(now: Date, tz: string, persona?: string | null, bulk 
   return [
     `Extraia o que a pessoa pediu para anotar. Agora é ${agora} (${weekdayNamePt(now, tz)}), fuso ${tz}.`,
     'Escreva como quem anota no caderno — nunca como assistente, robô ou IA.',
+    'Você TEM o caderno real do banco abaixo: use-o. Não finja que não sabe o que já foi anotado.',
     formatLine,
     '{',
     '  "task": "só a ação/assunto, curto (ex.: Ir dormir, Pagar fornecedor) — SEM a palavra lembrete",',
     '  "type": "unico" | "recorrente",',
-    '  "due_at": "YYYY-MM-DDTHH:mm do PRIMEIRO disparo (sempre preencha, inclusive se for recorrente)",',
+    '  "due_at": "YYYY-MM-DDTHH:mm do PRIMEIRO disparo (sempre preencha em create; em acknowledge use o horário do caderno)",',
     '  "recurrence": "daily | weekly:MON..SUN | monthly:N — apenas se recorrente, senão null",',
     '  "remind_before_minutes": "minutos de aviso ANTECIPADO se o usuário pediu, senão null",',
     '  "category": "importante" | "rotina" | "data_especifica",',
-    '  "confirmation_text": "1 frase humana confirmando o que anotou (ex.: Anotei: ir dormir amanhã às 22h)"',
+    '  "confirmation_text": "1 frase humana (ex.: Anotei: ir dormir amanhã às 22h / Pode deixar — te chamo pra X)",',
+    '  "action": "create" | "acknowledge"',
     '}',
+    '',
+    'Regras de action:',
+    '- create: compromisso novo a salvar.',
+    '- acknowledge: ele fala de algo JÁ no caderno ("não esquece do de hoje", "me avisa da reunião"); não duplicar.',
     '',
     'Regras de task e confirmation_text:',
     '- task NUNCA começa com "Lembrete", "Lembrar de" genérico ou "Aviso:"; só o que fazer.',
@@ -106,6 +177,7 @@ function buildSystemPrompt(now: Date, tz: string, persona?: string | null, bulk 
     '',
     'Categorias: "importante" para pagamentos/prazos críticos; "rotina" para hábitos repetidos;',
     '"data_especifica" para compromissos pontuais.',
+    formatAgendaBlock(agenda, tz),
     personaBlock,
   ].join('\n');
 }
@@ -144,6 +216,22 @@ const MAX_BULK = 20;
  * due_at, data no passado, etc.) — o item é simplesmente ignorado.
  */
 function resolveParsed(data: z.infer<typeof parsedSchema>, now: Date, tz: string): ParsedReminder | null {
+  const action = data.action ?? 'create';
+  const task = stripReminderLabel(data.task);
+
+  if (action === 'acknowledge') {
+    const nextFireAt = data.due_at ? parseLocalIso(data.due_at, tz) : null;
+    return {
+      task,
+      category: data.category,
+      recurrence: null,
+      nextFireAt: nextFireAt && nextFireAt.getTime() > now.getTime() ? nextFireAt : now,
+      leadMinutes: null,
+      confirmationText: data.confirmation_text,
+      action: 'acknowledge',
+    };
+  }
+
   if (!data.due_at) {
     logger.warn('Lembretes: IA não devolveu due_at.');
     return null;
@@ -181,7 +269,6 @@ function resolveParsed(data: z.infer<typeof parsedSchema>, now: Date, tz: string
     else logger.warn(`Lembretes: aviso de ${clamped}min antes não cabe até o compromisso — ignorado.`);
   }
 
-  const task = stripReminderLabel(data.task);
   return {
     task,
     category: data.category,
@@ -194,6 +281,7 @@ function resolveParsed(data: z.infer<typeof parsedSchema>, now: Date, tz: string
       `${data.confirmation_text}\n${formatForOwner(nextFireAt, tz)}` +
       `${recurrence ? ` · repete ${describeRecurrence(recurrence)}` : ''}` +
       `${leadMinutes ? `\nTe aviso ${describeLead(leadMinutes)}` : ''}`,
+    action: 'create',
   };
 }
 
@@ -213,6 +301,8 @@ function stripReminderLabel(task: string): string {
 export interface ParseReminderOptions {
   /** Persona a usar no lugar da salva (playground do painel). */
   personaOverride?: string | null;
+  /** Dono: carrega o caderno dele do banco para frases abertas. */
+  ownerPhone?: string;
 }
 
 export async function parseReminder(
@@ -224,9 +314,10 @@ export async function parseReminder(
   const now = new Date();
   const persona =
     opts.personaOverride !== undefined ? opts.personaOverride : await getReminderPersona(tenantId);
+  const agenda = opts.ownerPhone ? await loadOwnerAgenda(tenantId, opts.ownerPhone, tz) : [];
   const result = await complete(
     {
-      system: buildSystemPrompt(now, tz, persona),
+      system: buildSystemPrompt(now, tz, persona, false, agenda),
       messages: [{ role: 'user', content: message.slice(0, 1000) }],
       maxTokens: 400,
       temperature: 0,
@@ -263,12 +354,18 @@ export async function parseReminders(
   tenantId: string,
   message: string,
   tz: string = DEFAULT_TZ,
+  opts: ParseReminderOptions = {},
 ): Promise<ParsedReminder[]> {
   const now = new Date();
-  const persona = await getReminderPersona(tenantId);
+  const persona =
+    opts.personaOverride !== undefined ? opts.personaOverride : await getReminderPersona(tenantId);
+  const agenda = opts.ownerPhone ? await loadOwnerAgenda(tenantId, opts.ownerPhone, tz) : [];
+  if (agenda.length > 0) {
+    logger.info(`Lembretes: parse com ${agenda.length} item(ns) do caderno no contexto.`);
+  }
   const result = await complete(
     {
-      system: buildSystemPrompt(now, tz, persona, true),
+      system: buildSystemPrompt(now, tz, persona, true, agenda),
       messages: [{ role: 'user', content: message.slice(0, 2000) }],
       // Mais itens = mais tokens; ainda modesto. O orquestrador dobra se truncar.
       maxTokens: 900,

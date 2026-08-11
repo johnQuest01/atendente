@@ -163,6 +163,7 @@ export async function scanForCommitments(
       nextFireAt,
       leadMinutes: null,
       confirmationText: `${parsed.data.task}\nData: ${formatForOwner(nextFireAt, DEFAULT_TZ)}`,
+      action: 'create',
       snippet: parsed.data.snippet ?? '',
     });
   }

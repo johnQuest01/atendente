@@ -509,7 +509,9 @@ async function handleOwnerMessageInner(
       const idx = Number(numbered[1]) - 1;
       if (idx >= 0 && idx < items.length) {
         const correction = text.replace(/^\s*\d{1,2}[).:\-]?\s*/, '').trim() || text;
-        const reparsed = await parseReminders(tenantId, `${items[idx].task}\nCorreção: ${correction}`, tz);
+        const reparsed = await parseReminders(tenantId, `${items[idx].task}\nCorreção: ${correction}`, tz, {
+          ownerPhone: phone,
+        });
         if (reparsed.length > 0) {
           const nextItems = items.slice();
           nextItems[idx] = toPendingItem(reparsed[0]);
@@ -665,7 +667,7 @@ async function handleCreate(
   originalText: string,
 ): Promise<boolean> {
   const looksLikeReminder = CREATE_TRIGGERS.test(message);
-  const parsed = await parseReminders(tenantId, message, tz);
+  const parsed = await parseReminders(tenantId, message, tz, { ownerPhone: phone });
 
   if (parsed.length === 0) {
     // Sem gatilho claro E sem interpretação: provavelmente não era um lembrete.
@@ -680,7 +682,15 @@ async function handleCreate(
     return true;
   }
 
-  const items = parsed.map(toPendingItem);
+  // Frase aberta sobre algo JÁ no caderno — confirma sem duplicar no banco.
+  const acks = parsed.filter((p) => p.action === 'acknowledge');
+  const creates = parsed.filter((p) => p.action !== 'acknowledge');
+  if (creates.length === 0 && acks.length > 0) {
+    await reply(tenantId, phone, acks.map((a) => a.confirmationText).join('\n\n'));
+    return true;
+  }
+
+  const items = creates.map(toPendingItem);
   setState(tenantId, phone, { pending: { items, source: originalText } });
   await reply(tenantId, phone, renderConfirmation(items, tz));
   return true;
