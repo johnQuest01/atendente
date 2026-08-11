@@ -285,10 +285,21 @@ const SCOPE_WORDS: Array<[RegExp, string]> = [
  */
 const STRONG_CREATE = /\b(lembr|anota|marca|avisa|nao me deixa esquecer)/;
 
+/** Frases de busca/fato — não são consulta de agenda ("cotação do dólar hoje"). */
+const WEB_OR_FACT_TASK =
+  /\b(pesquis|busca|buscar|procure|procura|google|na internet|na web|cotac|dolar|dolar|euro|bitcoin|noticia|noticias|selic|ipca|clima|temperatura|preco do|preco da|quanto esta|quanto custa)\b/;
+
+function looksLikeWebOrFactTask(normalized: string): boolean {
+  return WEB_OR_FACT_TASK.test(normalized);
+}
+
 function detectQuery(normalized: string): string | null {
   // 1) Palavra solta, como sempre funcionou.
   const exact = QUERY_WORDS[normalized];
   if (exact) return exact;
+
+  // "qual a cotação do dólar hoje" / "busca na internet..." → Agente, não agenda.
+  if (looksLikeWebOrFactTask(normalized)) return null;
 
   const asks = ASK_OPENERS.test(normalized);
   const isQuestion = normalized.trim().endsWith('?');
@@ -300,11 +311,16 @@ function detectQuery(normalized: string): string | null {
   // a frase seja explicitamente uma pergunta ("o que você tem pra me lembrar?").
   if (STRONG_CREATE.test(normalized) && !asks) return null;
 
-  // Pergunta explícita, ou frase curta girando em torno da agenda
-  // ("agenda hoje", "meus compromissos"). O limite de 3 palavras evita
-  // confundir com "agenda uma reunião amanhã", que é cadastro.
+  // Pergunta de agenda precisa citar agenda/compromisso, OU ser bem curta só com
+  // o escopo ("o que temos hoje?"). "qual ... hoje" sem substantivo de agenda
+  // não conta — evita roubar perguntas factuais do Agente.
   const looksLikeQuery =
-    asks || (isQuestion && (mentionsAgenda || scope !== null)) || (mentionsAgenda && words <= 3);
+    (asks && mentionsAgenda) ||
+    (asks && scope !== null && words <= 5 && mentionsAgenda) ||
+    (isQuestion && mentionsAgenda) ||
+    (mentionsAgenda && words <= 3) ||
+    // "o que temos para hoje?" / "o que tem hoje?" — sem a palavra compromisso
+    (asks && scope !== null && words <= 6 && /\b(temos|tem|rola|vai ter|tenho)\b/.test(normalized));
   if (!looksLikeQuery) return null;
 
   return scope ?? 'todos';
@@ -427,6 +443,7 @@ async function matchesReminderKeyword(
   // filtro, "me lembra hoje às 15h de ligar" casa a keyword e lista a agenda
   // em vez de criar o lembrete (bug comum em áudio).
   if (STRONG_CREATE.test(normalized) || CREATE_TRIGGERS.test(text)) return false;
+  if (looksLikeWebOrFactTask(normalized)) return false;
   if (normalized.split(/\s+/).filter(Boolean).length > 4) return false;
 
   const keywords = await getActiveKeywords(tenantId, connectionId);
