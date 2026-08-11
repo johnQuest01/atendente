@@ -475,7 +475,7 @@ async function processInbound(
   // CAMINHO RÁPIDO: primeiro tentamos casar uma palavra-chave (áudio/script/
   // produto). Se casar, disparamos NA HORA — sem buscar histórico nem catálogo,
   // que só são necessários para o Claude. Isso deixa o envio de áudio bem rápido.
-  const match = await matchIntent(tenantId, replyText);
+  const match = await matchIntent(tenantId, replyText, conversation.connection_id);
   logger.info(
     `Classificação da mensagem "${replyText.slice(0, 60)}": tipo=${match.content_type} ` +
       `id=${match.content_id ?? 'n/d'} palavra-chave=${match.keyword ?? 'n/d'}`,

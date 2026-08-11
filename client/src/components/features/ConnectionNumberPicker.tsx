@@ -80,7 +80,7 @@ export function ConnectionNumberPicker({
         label={label}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        hint="Agenda, histórico e colar conversa usam só este número."
+        hint="Só este número/instância usa o que você cadastrar aqui."
       >
         <option value="">Selecione o número…</option>
         {connections.map((c) => (

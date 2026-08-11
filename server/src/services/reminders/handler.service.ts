@@ -362,8 +362,12 @@ const CREATE_TRIGGERS = /\b(lembr|anota|agenda|marca|avisa|nao me deixa esquecer
  * a mensagem do dono casa com ela? Zero IA — só leitura das keywords + match
  * normalizado. As de outros tipos são ignoradas aqui (são do fluxo de vendas).
  */
-async function matchesReminderKeyword(tenantId: string, text: string): Promise<boolean> {
-  const keywords = await getActiveKeywords(tenantId);
+async function matchesReminderKeyword(
+  tenantId: string,
+  text: string,
+  connectionId?: string | null,
+): Promise<boolean> {
+  const keywords = await getActiveKeywords(tenantId, connectionId);
   return keywords.some(
     (k) => k.content_type === 'reminders_today' && keywordMatches(text, k.keyword),
   );
@@ -385,7 +389,7 @@ export async function handleOwnerMessage(
   if (connectionId) ownerReplyConnection.set(key, connectionId);
 
   try {
-    return await handleOwnerMessageInner(tenantId, inbound, phone, tz);
+    return await handleOwnerMessageInner(tenantId, inbound, phone, tz, connectionId);
   } finally {
     ownerReplyConnection.delete(key);
   }
@@ -396,6 +400,7 @@ async function handleOwnerMessageInner(
   inbound: NormalizedInbound,
   phone: string,
   tz: string,
+  connectionId?: string | null,
 ): Promise<boolean> {
   if (alreadyHandled(inbound.providerMessageId)) {
     logger.info(`Lembretes: webhook repetido ignorado (${inbound.providerMessageId}).`);
@@ -512,7 +517,7 @@ async function handleOwnerMessageInner(
   // Zero IA: casa a frase que o dono cadastrou no painel e responde a lista de
   // hoje. Vive aqui de propósito — só roda para a whitelist —, com re-checagem
   // defensiva para o cliente jamais receber lembrete (isolamento máximo).
-  if (await matchesReminderKeyword(tenantId, text)) {
+  if (await matchesReminderKeyword(tenantId, text, connectionId)) {
     if (!(await isReminderOwner(tenantId, phone))) return true;
     const todays = await getTodayReminders(tenantId, phone);
     setState(tenantId, phone, { lastList: todays.map((r) => r.id) });

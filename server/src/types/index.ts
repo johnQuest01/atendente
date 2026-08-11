@@ -167,6 +167,8 @@ export interface Keyword {
   content_id: string | null;
   priority: number;
   is_active: boolean;
+  /** Instância WhatsApp; NULL = todas (legado). */
+  connection_id?: string | null;
 }
 
 /**

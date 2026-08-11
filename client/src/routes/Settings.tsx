@@ -43,10 +43,11 @@ import { useKeywords, useCreateKeyword, useDeleteKeyword } from '@/hooks/useKeyw
 import { useAiUsage } from '@/hooks/useAiProviders';
 import { AiProvidersManager } from '@/components/ai/AiProvidersManager';
 import { ContactsHistoryCard } from '@/components/features/ContactsHistoryCard';
+import { ConnectionNumberPicker } from '@/components/features/ConnectionNumberPicker';
 import { useSocket } from '@/hooks/useSocket';
 import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
-import { initials } from '@/utils/formatters';
+import { formatPhone, initials } from '@/utils/formatters';
 import { splitDispatchKeywords } from '@/utils/dispatchKeywords';
 import type { UserRole } from '@/types';
 
@@ -550,26 +551,41 @@ function ReminderOwnersCard() {
 
 /**
  * Palavras de disparo dos compromissos do dia. Quando um número autorizado manda
- * uma dessas, a secretária responde os compromissos de HOJE (zero IA). As palavras
- * padrão (HOJE, AMANHÃ, SEMANA, MÊS, TODOS) já funcionam sem cadastrar nada.
+ * uma dessas no WhatsApp da instância escolhida, a secretária responde os
+ * compromissos de HOJE (zero IA). As palavras padrão (HOJE, AMANHÃ, SEMANA, MÊS,
+ * TODOS) já funcionam sem cadastrar nada.
  */
 function DispatchKeywordsCard() {
   const { data: keywords, isLoading } = useKeywords();
+  const { data: waData } = useWhatsappConnections();
   const create = useCreateKeyword();
   const remove = useDeleteKeyword();
   const [word, setWord] = useState('');
+  const [connectionId, setConnectionId] = useState('');
   const [saving, setSaving] = useState(false);
 
+  const connections = waData?.connections ?? [];
   const words = (keywords ?? []).filter((k) => k.content_type === 'reminders_today');
-  const existing = new Set(words.map((k) => k.keyword.trim().toLowerCase()));
+  const existing = new Set(
+    words.map((k) => `${k.connection_id ?? ''}:${k.keyword.trim().toLowerCase()}`),
+  );
+
+  function phoneLabel(connId: string | null | undefined): string {
+    if (!connId) return 'todos os números';
+    const c = connections.find((x) => x.id === connId);
+    if (!c) return 'número';
+    const digits = c.phoneNumber?.replace(/\D/g, '') ?? '';
+    return digits.length >= 10 ? formatPhone(digits) : c.label;
+  }
 
   async function add() {
+    if (!connectionId) return toast('Escolha de qual número esta palavra vale.', 'error');
     const parts = splitDispatchKeywords(word);
     if (parts.length === 0) return;
 
-    const toCreate = parts.filter((p) => !existing.has(p));
+    const toCreate = parts.filter((p) => !existing.has(`${connectionId}:${p}`));
     if (toCreate.length === 0) {
-      toast('Essas palavras já estão cadastradas.', 'info');
+      toast('Essas palavras já estão cadastradas neste número.', 'info');
       setWord('');
       return;
     }
@@ -586,6 +602,7 @@ function DispatchKeywordsCard() {
             content_type: 'reminders_today',
             content_id: null,
             priority: 1,
+            connection_id: connectionId,
           });
           ok += 1;
         } catch {
@@ -613,12 +630,12 @@ function DispatchKeywordsCard() {
       <div>
         <h2 className="text-base font-bold text-text-primary">Palavras de disparo</h2>
         <p className="text-sm text-text-secondary">
-          Quando um número autorizado mandar uma destas palavras, eu respondo os compromissos de
-          hoje — sem gastar IA. Maiúsculas/minúsculas não importam. Separe várias com{' '}
-          <strong>ponto</strong> ou <strong>vírgula</strong> (ex.:{' '}
-          <em>hoje. amanha. mes, e todos</em>). As palavras <strong>HOJE</strong>,{' '}
-          <strong>AMANHÃ</strong>, <strong>SEMANA</strong>, <strong>MÊS</strong> e{' '}
-          <strong>TODOS</strong> já funcionam sem cadastrar.
+          Quando um número autorizado mandar uma destas palavras <strong>no WhatsApp
+          escolhido</strong>, eu respondo os compromissos de hoje — sem gastar IA.
+          Maiúsculas/minúsculas não importam. Separe várias com <strong>ponto</strong> ou{' '}
+          <strong>vírgula</strong> (ex.: <em>hoje. amanha. mes, e todos</em>). As palavras{' '}
+          <strong>HOJE</strong>, <strong>AMANHÃ</strong>, <strong>SEMANA</strong>,{' '}
+          <strong>MÊS</strong> e <strong>TODOS</strong> já funcionam sem cadastrar.
         </p>
       </div>
 
@@ -626,9 +643,10 @@ function DispatchKeywordsCard() {
 
       {words.map((k) => (
         <div key={k.id} className="flex items-center gap-2 rounded-xl border border-border px-3 py-2">
-          <span className="min-w-0 flex-1 truncate text-sm font-semibold text-text-primary">
-            {k.keyword}
-          </span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold text-text-primary">{k.keyword}</p>
+            <p className="truncate text-xs text-text-secondary">{phoneLabel(k.connection_id)}</p>
+          </div>
           <Button
             size="sm"
             variant="ghost"
@@ -652,10 +670,16 @@ function DispatchKeywordsCard() {
       )}
 
       <div className="flex flex-col gap-2 rounded-xl border border-border bg-bg p-3">
+        <ConnectionNumberPicker
+          value={connectionId}
+          onChange={setConnectionId}
+          label="Disparar em qual número?"
+          cards={connections.length > 1}
+        />
         <Input
           label="Nova palavra de disparo"
           placeholder="Ex.: resumo. agenda do dia, e balanço"
-          hint="Ponto ou vírgula separa várias. HOJE e HOJE são a mesma."
+          hint="Ponto ou vírgula separa várias. Vale só no número escolhido acima."
           value={word}
           onChange={(e) => setWord(e.target.value)}
           onKeyDown={(e) => {
@@ -665,7 +689,12 @@ function DispatchKeywordsCard() {
             }
           }}
         />
-        <Button size="sm" onClick={() => void add()} loading={saving || create.isPending} disabled={!word.trim()}>
+        <Button
+          size="sm"
+          onClick={() => void add()}
+          loading={saving || create.isPending}
+          disabled={!word.trim() || !connectionId}
+        >
           Adicionar palavra
         </Button>
       </div>

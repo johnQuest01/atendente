@@ -10,11 +10,15 @@ import type { MatchResult } from '../types';
  *   2. Campo `keywords` cadastrado no próprio áudio (atalho intuitivo no app)
  * Se nada bater, retorna fallback para o Claude.
  */
-export async function matchIntent(tenantId: string, messageText: string): Promise<MatchResult> {
+export async function matchIntent(
+  tenantId: string,
+  messageText: string,
+  connectionId?: string | null,
+): Promise<MatchResult> {
   const haystack = normalizeForMatch(messageText);
 
   // 1) Palavras-chave explícitas (tabela keywords), já ordenadas por prioridade.
-  const keywords = await getActiveKeywords(tenantId);
+  const keywords = await getActiveKeywords(tenantId, connectionId);
   for (const kw of keywords) {
     // 'reminders_today' é ação exclusiva do DONO (disparo de lembretes). No fluxo
     // do cliente ela é ignorada — cliente nunca aciona nem recebe lembrete.
@@ -54,9 +58,12 @@ export async function matchIntent(tenantId: string, messageText: string): Promis
  * dos áudios). Útil para dar contexto à transcrição de áudio (Whisper prompt),
  * melhorando o reconhecimento exatamente das frases que disparam respostas.
  */
-export async function getTriggerPhrases(tenantId: string): Promise<string[]> {
+export async function getTriggerPhrases(
+  tenantId: string,
+  connectionId?: string | null,
+): Promise<string[]> {
   const set = new Set<string>();
-  const keywords = await getActiveKeywords(tenantId);
+  const keywords = await getActiveKeywords(tenantId, connectionId);
   for (const kw of keywords) if (kw.keyword) set.add(kw.keyword.trim());
   const audios = await listAudios(tenantId, true);
   for (const audio of audios) {

@@ -8,6 +8,7 @@ export interface KeywordInput {
   content_type: ContentType;
   content_id?: string | null;
   priority: number;
+  connection_id?: string | null;
 }
 
 export function useKeywords() {
