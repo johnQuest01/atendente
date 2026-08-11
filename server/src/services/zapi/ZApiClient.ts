@@ -282,6 +282,73 @@ export class ZApiClient {
       throw new AppError('Falha ao configurar webhook na Z-API.', 502, 'ZAPI_WEBHOOK_FAILED');
     }
   }
+
+  /** Dados/config da instância (GET /me). */
+  async getInstanceMe(creds: ZApiInstanceCreds): Promise<{
+    autoReadMessage: boolean;
+    callRejectAuto: boolean;
+    callRejectMessage: string;
+    receiveCallbackSentByMe: boolean;
+    connected: boolean;
+  }> {
+    const url = `${instanceBase(creds)}/me`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: instanceHeaders(),
+      signal: AbortSignal.timeout(12_000),
+    });
+    const data = asRecord(await readBody(res));
+    if (!res.ok) {
+      throw new AppError(
+        `Não foi possível ler as configurações da instância (HTTP ${res.status}).`,
+        502,
+        'ZAPI_ME_FAILED',
+      );
+    }
+    return {
+      autoReadMessage: Boolean(data.autoReadMessage),
+      callRejectAuto: Boolean(data.callRejectAuto),
+      callRejectMessage: typeof data.callRejectMessage === 'string' ? data.callRejectMessage : '',
+      receiveCallbackSentByMe: Boolean(data.receiveCallbackSentByMe),
+      connected: Boolean(data.connected),
+    };
+  }
+
+  private async putBooleanSetting(
+    creds: ZApiInstanceCreds,
+    path: string,
+    value: boolean,
+    errorCode: string,
+  ): Promise<void> {
+    const url = `${instanceBase(creds)}${path}`;
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: instanceHeaders(),
+      body: JSON.stringify({ value }),
+      signal: AbortSignal.timeout(12_000),
+    });
+    if (!res.ok) {
+      // Alguns endpoints aceitam POST
+      const res2 = await fetch(url, {
+        method: 'POST',
+        headers: instanceHeaders(),
+        body: JSON.stringify({ value }),
+        signal: AbortSignal.timeout(12_000),
+      });
+      if (!res2.ok) {
+        logger.error(`Z-API ${path} HTTP ${res.status}/${res2.status}`);
+        throw new AppError(`Falha ao atualizar ${path} (HTTP ${res2.status}).`, 502, errorCode);
+      }
+    }
+  }
+
+  async setAutoReadMessage(creds: ZApiInstanceCreds, value: boolean): Promise<void> {
+    await this.putBooleanSetting(creds, '/update-auto-read-message', value, 'ZAPI_AUTO_READ_FAILED');
+  }
+
+  async setCallRejectAuto(creds: ZApiInstanceCreds, value: boolean): Promise<void> {
+    await this.putBooleanSetting(creds, '/update-call-reject-auto', value, 'ZAPI_CALL_REJECT_FAILED');
+  }
 }
 
 export const zapiClient = new ZApiClient();

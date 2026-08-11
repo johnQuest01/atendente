@@ -313,8 +313,11 @@ export function parseInbound(
 }
 
 function parseZapiInbound(body: Record<string, unknown>): NormalizedInbound | null {
+  // Atendimento 1:1 — grupos não entram no fluxo da IA (filtro no app, não na Z-API).
+  if (body.isGroup === true || body.isGroupMsg === true) return null;
   const phoneRaw = body.phone as string | undefined;
   if (!phoneRaw) return null;
+  if (String(phoneRaw).includes('@g.us') || String(phoneRaw).endsWith('-group')) return null;
 
   const fromMe = Boolean(body.fromMe);
   const text = body.text as { message?: string } | undefined;

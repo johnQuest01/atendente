@@ -31,6 +31,9 @@ import {
   putWhatsappConnectionById,
   deleteWhatsappConnection,
   configureWhatsappWebhook,
+  getZapiInstanceSettings,
+  patchZapiInstanceSettings,
+  patchZapiInstanceSettingsSchema,
   updateWhatsappSchema,
   whatsappConnectionIdSchema,
 } from '../controllers/settings.controller';
@@ -135,6 +138,18 @@ router.post(
   adminOnly,
   validate({ params: whatsappConnectionIdSchema }),
   asyncHandler(configureWhatsappWebhook),
+);
+router.get(
+  '/whatsapp/:id/instance-settings',
+  adminOnly,
+  validate({ params: whatsappConnectionIdSchema }),
+  asyncHandler(getZapiInstanceSettings),
+);
+router.patch(
+  '/whatsapp/:id/instance-settings',
+  adminOnly,
+  validate({ params: whatsappConnectionIdSchema, body: patchZapiInstanceSettingsSchema }),
+  asyncHandler(patchZapiInstanceSettings),
 );
 
 // Assistente pessoal de lembretes: quais números da empresa falam com ele em

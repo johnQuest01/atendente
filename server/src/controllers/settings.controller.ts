@@ -50,6 +50,7 @@ import { hasEncryptionKey } from '../utils/crypto';
 import { env } from '../config/env';
 import { AppError, NotFoundError } from '../utils/errors';
 import { emitAgentStatus } from '../socket';
+import { zapiClient } from '../services/zapi/ZApiClient';
 import { parseConnectionIdQuery, requireConnection } from './connectionScope';
 
 export const updateAgentSchema = z.object({
@@ -673,4 +674,73 @@ export async function configureWhatsappWebhook(req: Request, res: Response): Pro
   const url = `${env.PUBLIC_BASE_URL}/webhook/whatsapp/${conn.webhook_token}`;
   const result = await wa.configureWebhook(url);
   res.status(result.ok ? 200 : 502).json({ ...result, webhookUrl: url });
+}
+
+export const patchZapiInstanceSettingsSchema = z.object({
+  autoReadMessage: z.boolean().optional(),
+  callRejectAuto: z.boolean().optional(),
+});
+
+function zapiCredsFromConnection(conn: {
+  secrets: { instanceId?: string; token?: string };
+}): { instanceId: string; token: string } {
+  const instanceId = conn.secrets.instanceId;
+  const token = conn.secrets.token;
+  if (!instanceId || !token) {
+    throw new AppError('Conexão sem credenciais Z-API.', 400, 'NO_CREDS');
+  }
+  return { instanceId, token };
+}
+
+/** Lê toggles da instância Z-API (sem abrir o painel). */
+export async function getZapiInstanceSettings(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const { id } = req.params as z.infer<typeof whatsappConnectionIdSchema>;
+  const conn = await getConnectionById(tenantId, id);
+  if (!conn) throw new NotFoundError('Conexão WhatsApp');
+  if (conn.provider !== 'zapi') {
+    throw new AppError('Configurações avançadas só para Z-API.', 400, 'PROVIDER_UNSUPPORTED');
+  }
+  const me = await zapiClient.getInstanceMe(zapiCredsFromConnection(conn));
+  res.json({
+    connectionId: id,
+    provider: 'zapi',
+    autoReadMessage: me.autoReadMessage,
+    callRejectAuto: me.callRejectAuto,
+    callRejectMessage: me.callRejectMessage,
+    receiveCallbackSentByMe: me.receiveCallbackSentByMe,
+    connected: me.connected,
+    note: 'Filtros de grupo/mídia ficam no nosso backend (grupos são ignorados). Webhooks já apontam para o app.',
+  });
+}
+
+/** Atualiza toggles na Z-API pela API (ler automático / rejeitar chamada). */
+export async function patchZapiInstanceSettings(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const { id } = req.params as z.infer<typeof whatsappConnectionIdSchema>;
+  const body = req.body as z.infer<typeof patchZapiInstanceSettingsSchema>;
+  const conn = await getConnectionById(tenantId, id);
+  if (!conn) throw new NotFoundError('Conexão WhatsApp');
+  if (conn.provider !== 'zapi') {
+    throw new AppError('Configurações avançadas só para Z-API.', 400, 'PROVIDER_UNSUPPORTED');
+  }
+  if (body.autoReadMessage === undefined && body.callRejectAuto === undefined) {
+    throw new AppError('Nada para atualizar.', 400, 'EMPTY_PATCH');
+  }
+  const creds = zapiCredsFromConnection(conn);
+  if (typeof body.autoReadMessage === 'boolean') {
+    await zapiClient.setAutoReadMessage(creds, body.autoReadMessage);
+  }
+  if (typeof body.callRejectAuto === 'boolean') {
+    await zapiClient.setCallRejectAuto(creds, body.callRejectAuto);
+  }
+  const me = await zapiClient.getInstanceMe(creds);
+  res.json({
+    connectionId: id,
+    autoReadMessage: me.autoReadMessage,
+    callRejectAuto: me.callRejectAuto,
+    callRejectMessage: me.callRejectMessage,
+    receiveCallbackSentByMe: me.receiveCallbackSentByMe,
+    connected: me.connected,
+  });
 }

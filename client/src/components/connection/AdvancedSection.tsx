@@ -12,6 +12,11 @@ import {
   type BehaviorSetting,
 } from '@/hooks/usePersona';
 import { useAiUsage } from '@/hooks/useAiProviders';
+import {
+  usePatchZapiInstanceSettings,
+  useWhatsappConnections,
+  useZapiInstanceSettings,
+} from '@/hooks/useWhatsappConnection';
 import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
 
@@ -160,6 +165,94 @@ function AiModelCard({
   );
 }
 
+function WhatsappInstanceSettingsCard({
+  connectionId,
+  canEdit,
+}: {
+  connectionId: string;
+  canEdit: boolean;
+}) {
+  const { data: connections } = useWhatsappConnections();
+  const conn = connections?.connections.find((c) => c.id === connectionId);
+  const isZapi = (conn?.provider ?? 'zapi') === 'zapi';
+  const { data, isLoading, isError, refetch } = useZapiInstanceSettings(connectionId, isZapi);
+  const patch = usePatchZapiInstanceSettings(connectionId);
+
+  if (!isZapi) return null;
+
+  function setToggle(key: 'autoReadMessage' | 'callRejectAuto', value: boolean) {
+    patch.mutate(
+      { [key]: value },
+      {
+        onSuccess: () => toast('Configuração salva na Z-API.', 'success'),
+        onError: (err) => toast(getErrorMessage(err), 'error'),
+      },
+    );
+  }
+
+  return (
+    <Card className="flex flex-col gap-3">
+      <div>
+        <h2 className="text-base font-bold text-text-primary">Configurações WhatsApp</h2>
+        <p className="text-sm text-text-secondary">
+          Ajustes na instância pela API — sem abrir o painel da Z-API. Webhooks já apontam para o
+          app. Grupos são ignorados no atendimento.
+        </p>
+      </div>
+
+      {isLoading && <Spinner label="Carregando configurações..." />}
+      {isError && (
+        <p className="text-sm text-danger">
+          Não foi possível ler as opções.{' '}
+          <button type="button" className="underline" onClick={() => void refetch()}>
+            Tentar de novo
+          </button>
+        </p>
+      )}
+
+      {data && (
+        <>
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-bg px-3 py-2.5">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-text-primary">Ler mensagens automático</p>
+              <p className="text-xs text-text-secondary">
+                Marca como lida na API ao receber (o cliente vê os checks azuis).
+              </p>
+            </div>
+            <Toggle
+              checked={data.autoReadMessage}
+              disabled={!canEdit || patch.isPending}
+              onChange={(next) => setToggle('autoReadMessage', next)}
+              label="Ler mensagens automático"
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-border bg-bg px-3 py-2.5">
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-text-primary">Rejeitar chamadas automático</p>
+              <p className="text-xs text-text-secondary">
+                Recusa ligações de voz no número conectado à API.
+              </p>
+            </div>
+            <Toggle
+              checked={data.callRejectAuto}
+              disabled={!canEdit || patch.isPending}
+              onChange={(next) => setToggle('callRejectAuto', next)}
+              label="Rejeitar chamadas automático"
+            />
+          </div>
+
+          <p className="text-xs text-text-secondary">
+            Eco das mensagens enviadas por você no celular:{' '}
+            <strong>{data.receiveCallbackSentByMe ? 'ligado' : 'desligado'}</strong> (necessário
+            para a IA pausar quando você responde).
+          </p>
+        </>
+      )}
+    </Card>
+  );
+}
+
 export function AdvancedSection({
   connectionId,
   canEdit,
@@ -169,6 +262,7 @@ export function AdvancedSection({
 }) {
   return (
     <div className="flex flex-col gap-4">
+      <WhatsappInstanceSettingsCard connectionId={connectionId} canEdit={canEdit} />
       <AiModelCard connectionId={connectionId} canEdit={canEdit} />
       <BehaviorSettingsCard connectionId={connectionId} canEdit={canEdit} />
     </div>

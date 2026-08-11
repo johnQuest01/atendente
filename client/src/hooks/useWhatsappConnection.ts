@@ -96,6 +96,46 @@ export function useConfigureWebhook() {
   });
 }
 
+export interface ZapiInstanceSettings {
+  connectionId: string;
+  provider: string;
+  autoReadMessage: boolean;
+  callRejectAuto: boolean;
+  callRejectMessage: string;
+  receiveCallbackSentByMe: boolean;
+  connected: boolean;
+  note?: string;
+}
+
+export function useZapiInstanceSettings(connectionId: string, enabled = true) {
+  return useQuery({
+    queryKey: ['zapi-instance-settings', connectionId],
+    enabled: Boolean(connectionId) && enabled,
+    queryFn: async () => {
+      const { data } = await api.get<ZapiInstanceSettings>(
+        `/settings/whatsapp/${connectionId}/instance-settings`,
+      );
+      return data;
+    },
+  });
+}
+
+export function usePatchZapiInstanceSettings(connectionId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (patch: { autoReadMessage?: boolean; callRejectAuto?: boolean }) => {
+      const { data } = await api.patch<ZapiInstanceSettings>(
+        `/settings/whatsapp/${connectionId}/instance-settings`,
+        patch,
+      );
+      return data;
+    },
+    onSuccess: (data) => {
+      qc.setQueryData(['zapi-instance-settings', connectionId], data);
+    },
+  });
+}
+
 export function useCreateWhatsappConnection() {
   const qc = useQueryClient();
   return useMutation({
