@@ -69,9 +69,9 @@ export function WhatsappReconnect({
   const autoQr = useAutoRefreshQr({
     connectionId,
     enabled: waiting && Boolean(qrBase64 || (!phoneCode && status === 'AGUARDANDO_LEITURA')),
+    currentQr: qrBase64,
     onQr: (qr) => {
       setQrBase64(qr);
-      setDetail('QR atualizado — se o WhatsApp pedir, escaneie de novo');
     },
   });
 
@@ -172,7 +172,7 @@ export function WhatsappReconnect({
         setQrBase64(r.qrBase64);
         setPhoneCode(null);
         setStatus('AGUARDANDO_LEITURA');
-        setDetail('Escaneie o QR — ele atualiza sozinho se o WhatsApp pedir de novo');
+        setDetail('Escaneie o QR — a imagem atualiza quando houver um novo');
         toast('QR atualizado.', 'success');
       }
     } catch (err) {
@@ -233,14 +233,13 @@ export function WhatsappReconnect({
       {qrBase64 && (
         <div className="flex flex-col items-center gap-2 rounded-2xl border border-border bg-bg p-4">
           <img
+            key={qrBase64.slice(0, 64)}
             src={qrBase64}
             alt="QR Code WhatsApp"
             className="h-52 w-52 rounded-xl bg-surface object-contain"
           />
           <p className="text-center text-xs text-text-secondary">
-            {autoQr.refreshing
-              ? 'Atualizando QR…'
-              : 'O QR renova sozinho ~a cada 18s se o WhatsApp pedir para escanear de novo'}
+            {autoQr.checking ? 'Buscando QR atualizado…' : 'Escaneie quando o WhatsApp pedir'}
           </p>
         </div>
       )}

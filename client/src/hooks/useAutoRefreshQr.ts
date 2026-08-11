@@ -1,66 +1,63 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRefreshQr } from '@/hooks/useWhatsappOnboarding';
 
-const QR_INTERVAL_MS = 18_000;
-/** WhatsApp pede novo scan rápido — primeira renovação um pouco antes. */
-const QR_FIRST_REFRESH_MS = 12_000;
-const QR_MAX_AUTO = 20;
+/** Intervalo silencioso para buscar QR novo na Z-API (WhatsApp invalida o anterior). */
+const POLL_MS = 15_000;
 
 /**
- * Renova o QR sozinho enquanto o pareamento está pendente.
- * O WhatsApp invalida o QR ~20s e muitas vezes pede para escanear de novo.
+ * Busca QR em background e só notifica a UI quando o conteúdo mudou.
+ * A tela não “recarrega”: só a imagem do QR é trocada se vier um QR diferente.
  */
 export function useAutoRefreshQr(opts: {
   connectionId: string | undefined;
-  /** true enquanto aguarda leitura e há (ou deve haver) QR na tela */
   enabled: boolean;
+  currentQr: string | null;
   onQr: (qrBase64: string) => void;
-}): { refreshing: boolean; attempts: number; exhausted: boolean } {
+}): { checking: boolean } {
   const refreshQr = useRefreshQr(opts.connectionId);
   const onQrRef = useRef(opts.onQr);
+  const currentQrRef = useRef(opts.currentQr);
   onQrRef.current = opts.onQr;
-  const attemptsRef = useRef(0);
-  const exhaustedRef = useRef(false);
+  currentQrRef.current = opts.currentQr;
+  const [checking, setChecking] = useState(false);
+  const inFlight = useRef(false);
 
   useEffect(() => {
     if (!opts.enabled || !opts.connectionId) return;
 
-    attemptsRef.current = 0;
-    exhaustedRef.current = false;
     let cancelled = false;
 
-    const tick = () => {
-      if (cancelled || exhaustedRef.current) return;
-      if (attemptsRef.current >= QR_MAX_AUTO) {
-        exhaustedRef.current = true;
-        return;
-      }
+    const poll = () => {
+      if (cancelled || inFlight.current) return;
+      inFlight.current = true;
+      setChecking(true);
       void refreshQr
         .mutateAsync()
         .then((r) => {
           if (cancelled) return;
-          attemptsRef.current += 1;
-          if (r.qrBase64) onQrRef.current(r.qrBase64);
-          if (attemptsRef.current >= QR_MAX_AUTO) exhaustedRef.current = true;
+          const next = r.qrBase64;
+          if (next && next !== currentQrRef.current) {
+            onQrRef.current(next);
+          }
         })
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => {
+          inFlight.current = false;
+          if (!cancelled) setChecking(false);
+        });
     };
 
-    const first = setTimeout(tick, QR_FIRST_REFRESH_MS);
-    const interval = setInterval(tick, QR_INTERVAL_MS);
+    // Primeira checagem após o QR atual “envelhecer” um pouco.
+    const first = setTimeout(poll, POLL_MS);
+    const interval = setInterval(poll, POLL_MS);
 
     return () => {
       cancelled = true;
       clearTimeout(first);
       clearInterval(interval);
     };
-    // refreshQr.mutateAsync é estável o bastante; reage a conexão/enabled
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opts.enabled, opts.connectionId]);
 
-  return {
-    refreshing: refreshQr.isPending,
-    attempts: attemptsRef.current,
-    exhausted: exhaustedRef.current,
-  };
+  return { checking };
 }
