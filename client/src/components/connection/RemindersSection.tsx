@@ -63,8 +63,8 @@ function OwnerModesCard({
             <Badge tone={secretary ? 'success' : 'neutral'}>{secretary ? 'Ligada' : 'Desligada'}</Badge>
           </div>
           <p className="mt-1 text-xs text-text-secondary">
-            Anotar compromissos, consultar agenda (*HOJE*, *SEMANA*…) e te avisar na hora. Fale
-            natural: “me lembra amanhã às 9h…”.
+            Anotar compromissos, consultar agenda e mandar msg a contatos (“mande um boa noite para
+            o Wender”). Fale natural no WhatsApp.
           </p>
         </div>
         <Toggle

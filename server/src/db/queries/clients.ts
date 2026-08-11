@@ -190,6 +190,69 @@ export async function listClientsForExport(
   return rows;
 }
 
+/**
+ * Busca contatos pelo nome (lista da secretária). Preferência a quem já
+ * conversou na conexão; match parcial case-insensitive.
+ */
+export async function findClientsByName(
+  tenantId: string,
+  nameQuery: string,
+  opts?: { connectionId?: string | null; limit?: number },
+): Promise<Client[]> {
+  const q = nameQuery.trim();
+  if (!q || q.length < 2) return [];
+  const limit = Math.min(Math.max(opts?.limit ?? 8, 1), 20);
+  const like = `%${q}%`;
+  const connectionId = opts?.connectionId ?? null;
+
+  if (connectionId) {
+    const { rows } = await query<Client>(
+      `SELECT cl.*
+         FROM clients cl
+         LEFT JOIN conversations c
+           ON c.client_id = cl.id
+          AND c.tenant_id = cl.tenant_id
+          AND c.connection_id = $4
+        WHERE cl.tenant_id = $1
+          AND cl.is_active = true
+          AND (cl.name ILIKE $2 OR cl.company_name ILIKE $2)
+        GROUP BY cl.id
+        ORDER BY
+          MAX(CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END) DESC,
+          CASE
+            WHEN lower(COALESCE(cl.name, '')) = lower($3) THEN 0
+            WHEN cl.name ILIKE $3 || '%' THEN 1
+            ELSE 2
+          END,
+          cl.last_contact_at DESC NULLS LAST
+        LIMIT $5`,
+      [tenantId, like, q, connectionId, limit],
+    );
+    if (rows.length > 0) return rows;
+  }
+
+  const { rows } = await query<Client>(
+    `SELECT * FROM clients
+      WHERE tenant_id = $1
+        AND is_active = true
+        AND (name ILIKE $2 OR company_name ILIKE $2)
+      ORDER BY
+        CASE
+          WHEN lower(COALESCE(name, '')) = lower($3) THEN 0
+          WHEN name ILIKE $3 || '%' THEN 1
+          ELSE 2
+        END,
+        last_contact_at DESC NULLS LAST
+      LIMIT $4`,
+    [tenantId, like, q, limit],
+  );
+  return rows;
+}
+
+export async function getClientById(tenantId: string, id: string): Promise<Client | null> {
+  return queryOne<Client>('SELECT * FROM clients WHERE tenant_id = $1 AND id = $2', [tenantId, id]);
+}
+
 export async function updateClient(
   tenantId: string,
   id: string,

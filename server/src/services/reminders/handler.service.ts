@@ -21,6 +21,13 @@ import type { Reminder } from '../../types';
 import { describeLead, describeRecurrence, parseReminders, type ParsedReminder } from './parse.service';
 import { DEFAULT_TZ, formatForOwner, fromWallClock, toWallClock } from './time';
 import { freeChatOwner, getOwnerModeFlags } from '../owner-chat.service';
+import {
+  displayName,
+  parseRelayIntent,
+  resolveRelayContacts,
+  sendOwnerRelay,
+  type RelayCandidate,
+} from '../owner-relay.service';
 
 /**
  * Assistente pessoal do dono. O mesmo número que atende clientes aceita comandos
@@ -56,6 +63,11 @@ interface OwnerState {
     items: PendingItem[];
     /** Texto original, para o dono poder corrigir sem repetir tudo. */
     source: string;
+  };
+  /** Escolha de contato quando há vários "Wender". */
+  pendingRelay?: {
+    body: string;
+    candidates: RelayCandidate[];
   };
   lastList?: string[];
 }
@@ -180,6 +192,7 @@ const HELP_TEXT = [
   'Pra fechar: *CONCLUIR 2* · Pra tirar: *CANCELAR 2*',
   '',
   'Com o *Agente* ligado: pergunta livre, texto, pesquisa — eu respondo rápido no zap.',
+  'Pra mandar msg a contato: _"mande um boa noite para o Wender agora"_',
   'Pode mandar vários lembretes de uma vez — eu confirmo antes de salvar.',
 ].join('\n');
 
@@ -480,6 +493,45 @@ async function handleOwnerMessageInner(
   const owner = getState(tenantId, phone);
   const flags = await getOwnerModeFlags(tenantId, connectionId);
 
+  // 0.5. Escolha de contato pendente ("1", "2"…) depois de vários matches.
+  if (owner.pendingRelay) {
+    const pick = normalized.match(/^(\d{1,2})$/);
+    if (pick) {
+      const idx = Number(pick[1]) - 1;
+      const cand = owner.pendingRelay.candidates[idx];
+      if (!cand) {
+        await reply(tenantId, phone, 'Número inválido. Manda o da lista.');
+        return true;
+      }
+      const body = owner.pendingRelay.body;
+      setState(tenantId, phone, { pendingRelay: undefined });
+      try {
+        const sent = await sendOwnerRelay({
+          tenantId,
+          connectionId,
+          clientId: cand.id,
+          body,
+        });
+        await reply(
+          tenantId,
+          phone,
+          sent.ok
+            ? `Pronto — mandei pra *${sent.name}*: "${body}"`
+            : `Não consegui enviar: ${sent.error}`,
+        );
+      } catch (err) {
+        logger.warn('Secretária: falha no relay', err);
+        await reply(tenantId, phone, 'Falhou o envio. Tenta de novo?');
+      }
+      return true;
+    }
+    if (isNegative(text)) {
+      setState(tenantId, phone, { pendingRelay: undefined });
+      await reply(tenantId, phone, 'Beleza, cancelei o envio.');
+      return true;
+    }
+  }
+
   // 1. Confirmação pendente tem prioridade sobre tudo.
   if (owner.pending) {
     const { items, source } = owner.pending;
@@ -642,6 +694,57 @@ async function handleOwnerMessageInner(
       flags.secretary ? HELP_TEXT : flags.agent ? HELP_AGENT_ONLY : HELP_BOTH_OFF,
     );
     return true;
+  }
+
+  // 3.8. Mandar mensagem a contato da lista (secretária).
+  // Ex.: "mande um boa noite para o wender agora"
+  if (flags.secretary) {
+    const relay = parseRelayIntent(text);
+    if (relay) {
+      const candidates = await resolveRelayContacts(tenantId, relay.contactQuery, connectionId);
+      if (candidates.length === 0) {
+        await reply(
+          tenantId,
+          phone,
+          `Não achei *${relay.contactQuery}* nos contatos deste WhatsApp. ` +
+            'O nome precisa estar na agenda (quem já conversou ou foi importado).',
+        );
+        return true;
+      }
+      if (candidates.length > 1) {
+        setState(tenantId, phone, {
+          pendingRelay: { body: relay.body, candidates },
+        });
+        const lines = candidates.map(
+          (c, i) => `${i + 1}. ${displayName(c)} · ${c.phone}`,
+        );
+        await reply(
+          tenantId,
+          phone,
+          `Achei mais de um:\n${lines.join('\n')}\n\nManda o *número* pra eu enviar, ou *não* pra cancelar.`,
+        );
+        return true;
+      }
+      try {
+        const sent = await sendOwnerRelay({
+          tenantId,
+          connectionId,
+          clientId: candidates[0].id,
+          body: relay.body,
+        });
+        await reply(
+          tenantId,
+          phone,
+          sent.ok
+            ? `Pronto — mandei pra *${sent.name}*: "${relay.body}"`
+            : `Não consegui enviar: ${sent.error}`,
+        );
+      } catch (err) {
+        logger.warn('Secretária: falha no relay', err);
+        await reply(tenantId, phone, 'Falhou o envio. Tenta de novo?');
+      }
+      return true;
+    }
   }
 
   // 4. Secretária: cadastro em linguagem natural (gatilho forte).
