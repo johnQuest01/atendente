@@ -346,11 +346,14 @@ async function processInbound(
   const connectionId = connection?.id ?? null;
   const aiCfg = await resolveConnectionAi(tenantId, connection);
 
-  // Assistente pessoal do dono (lembretes). Entra ANTES de findOrCreateClient
+  // Assistente pessoal do dono (lembretes/agente). Entra ANTES de findOrCreateClient
   // para o dono não virar cliente nem abrir conversa comercial no painel.
-  // Aceita texto ou áudio — o handler transcreve internamente.
+  // Aceita texto, áudio e imagem/vídeo (visão).
   if (
-    (inbound.type === 'text' || inbound.type === 'audio') &&
+    (inbound.type === 'text' ||
+      inbound.type === 'audio' ||
+      inbound.type === 'image' ||
+      inbound.type === 'video') &&
     (await isReminderOwner(tenantId, inbound.phone, connectionId))
   ) {
     await hydrateProviderMedia(tenantId, inbound, connection);

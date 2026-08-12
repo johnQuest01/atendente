@@ -191,6 +191,24 @@ export async function hasVisionProvider(
   return chain.providers.some((p) => modelSupportsVision(p.kind, p.creds.model, p.creds.baseUrl));
 }
 
+function requestHasImages(req: AiCompletionRequest): boolean {
+  return req.messages.some((m) => m.role === 'user' && Boolean(m.images?.length));
+}
+
+/**
+ * Com imagem no turno: só modelos com visão (e na frente da fila). Sem imagem,
+ * a ordem da corrente fica igual.
+ */
+function orderProvidersForVision(
+  providers: ResolvedProvider[],
+  hasImages: boolean,
+): ResolvedProvider[] {
+  if (!hasImages) return providers;
+  return providers.filter((p) =>
+    modelSupportsVision(p.kind, p.creds.model, p.creds.baseUrl),
+  );
+}
+
 function isInCooldown(id: string, now: number): boolean {
   const until = cooldownUntil.get(id);
   return until !== undefined && until > now;
@@ -326,13 +344,21 @@ export async function complete(
   const effectiveReq =
     opts.tools || req.tools?.length ? withInjectedTools(req) : req;
 
+  // Turno com imagem: só provedores com visão (evita resposta "cega" inventando produto).
+  const hasImages = requestHasImages(effectiveReq);
+  const providers = orderProvidersForVision(chain.providers, hasImages);
+  if (hasImages && providers.length === 0) {
+    logger.warn('IA: turno com imagem, mas nenhum provedor com visão na corrente.');
+    return null;
+  }
+
   const now = Date.now();
   const skipped: ResolvedProvider[] = [];
   const triedLabels: string[] = [];
   let attempted = false;
   let result: CompleteResult | null = null;
 
-  for (const provider of chain.providers) {
+  for (const provider of providers) {
     if (isInCooldown(provider.id, now)) {
       skipped.push(provider);
       continue;

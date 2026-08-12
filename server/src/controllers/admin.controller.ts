@@ -1,19 +1,38 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import { createTenant, getTenantById, listTenants, updateTenant } from '../db/queries/tenants';
+import { DEFAULT_TENANT_ID } from '../config/tenant';
+import {
+  createTenant,
+  deleteTenant,
+  getTenantById,
+  listTenants,
+  updateTenant,
+} from '../db/queries/tenants';
 import { createUser, findUserByEmail } from '../db/queries/users';
 import { hashPassword } from '../utils/password';
 import { invalidateTenantAccess } from '../middleware/tenantAccess.middleware';
-import { ConflictError, NotFoundError } from '../utils/errors';
+import { AppError, ConflictError, NotFoundError } from '../utils/errors';
 
 /**
  * Controllers do SUPER-ADMIN (dono da plataforma): gestao de empresas (tenants)
  * e do administrador inicial de cada empresa. Protegido por requireSuperAdmin.
  */
 
-export async function getTenants(_req: Request, res: Response): Promise<void> {
+function canDeleteTenant(tenantId: string, actorTenantId: string | undefined): boolean {
+  if (tenantId === DEFAULT_TENANT_ID) return false;
+  if (actorTenantId && tenantId === actorTenantId) return false;
+  return true;
+}
+
+export async function getTenants(req: Request, res: Response): Promise<void> {
   const tenants = await listTenants();
-  res.json({ tenants });
+  const mine = req.user!.tenant_id;
+  res.json({
+    tenants: tenants.map((t) => ({
+      ...t,
+      can_delete: canDeleteTenant(t.id, mine),
+    })),
+  });
 }
 
 export const createTenantSchema = z.object({
@@ -83,4 +102,29 @@ export async function patchTenant(req: Request, res: Response): Promise<void> {
   // Reativar empresa ou estender o teste tem que valer na hora, não em 60s.
   invalidateTenantAccess(id);
   res.json({ tenant });
+}
+
+/**
+ * Remove empresa e dados (usuários, WhatsApp, conversas…).
+ * Bloqueia a empresa padrão da plataforma e a empresa do próprio superadmin.
+ */
+export async function removeTenant(req: Request, res: Response): Promise<void> {
+  const { id } = req.params as z.infer<typeof tenantIdParamSchema>;
+  const existing = await getTenantById(id);
+  if (!existing) throw new NotFoundError('Empresa');
+
+  if (!canDeleteTenant(id, req.user!.tenant_id)) {
+    throw new AppError(
+      id === DEFAULT_TENANT_ID
+        ? 'A empresa padrão da plataforma não pode ser removida.'
+        : 'Você não pode remover a sua própria empresa.',
+      403,
+      'TENANT_DELETE_FORBIDDEN',
+    );
+  }
+
+  const ok = await deleteTenant(id);
+  if (!ok) throw new NotFoundError('Empresa');
+  invalidateTenantAccess(id);
+  res.json({ ok: true, id, name: existing.name });
 }

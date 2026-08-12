@@ -26,9 +26,43 @@ function buildCatalog(products: Product[] | undefined): string {
   const lines = products.slice(0, 40).map((p) => {
     const price = p.price_wholesale ? formatBRL(Number(p.price_wholesale)) : 'sob consulta';
     const min = `mín. ${p.min_quantity}${p.unit ? ` ${p.unit}` : ''}`;
-    return `- ${p.name}: ${price} (${min})`;
+    const bits = [`${p.name}: ${price} (${min})`];
+    if (p.category?.trim()) bits.push(`categoria: ${p.category.trim()}`);
+    if (p.description?.trim()) bits.push(p.description.trim().slice(0, 180));
+    if (p.keywords?.length) bits.push(`palavras: ${p.keywords.slice(0, 10).join(', ')}`);
+    if (p.image_urls?.length) bits.push('tem foto de referência');
+    return `- ${bits.join(' | ')}`;
   });
   return `\n\nCATÁLOGO DISPONÍVEL (use SEMPRE estes preços e condições; nunca invente valores):\n${lines.join('\n')}`;
+}
+
+/** Limite de fotos do catálogo anexadas junto à foto do cliente (comparação visual). */
+const MAX_CATALOG_REF_IMAGES = 8;
+
+/**
+ * Seleciona fotos de referência do catálogo para a IA comparar visualmente com
+ * a mídia do cliente (ex.: "vocês têm esse produto?").
+ */
+function pickCatalogReferenceImages(products: Product[] | undefined): {
+  images: ChatImage[];
+  legend: string;
+} {
+  if (!products?.length) return { images: [], legend: '' };
+  const images: ChatImage[] = [];
+  const names: string[] = [];
+  for (const p of products) {
+    if (images.length >= MAX_CATALOG_REF_IMAGES) break;
+    const url = p.image_urls?.[0]?.trim();
+    if (!url) continue;
+    images.push({ url });
+    names.push(p.name);
+  }
+  if (!images.length) return { images: [], legend: '' };
+  const legend =
+    '\n\n[REFERÊNCIAS DO NOSSO CATÁLOGO — fotos anexadas NESTA ORDEM, depois da foto/vídeo do cliente:]\n' +
+    names.map((n, i) => `${i + 1}) ${n}`).join('\n') +
+    '\nCompare visualmente a mídia do cliente com essas referências antes de afirmar se temos o item.';
+  return { images, legend };
 }
 
 /**
@@ -201,11 +235,13 @@ export interface GenerateReplyInput {
  * catálogo para responder "vocês têm esse produto?" sem inventar itens.
  */
 const VISION_INSTRUCTION =
-  '\n\nATENÇÃO — O CLIENTE ENVIOU IMAGEM(NS)/VÍDEO. Analise visualmente o que foi enviado e ' +
-  'responda com base no CATÁLOGO acima: se reconhecer um produto igual ou parecido, confirme se ' +
-  'temos, o preço de atacado e o pedido mínimo; se não tiver certeza do item, descreva o que vê e ' +
-  'pergunte os detalhes que faltam (cor, tamanho, marca, modelo). NUNCA afirme que temos um produto ' +
-  'que não está no catálogo — nesse caso, diga que vai verificar.';
+  '\n\nATENÇÃO — O CLIENTE ENVIOU IMAGEM(NS)/VÍDEO (ex.: foto de produto perguntando se temos). ' +
+  '1) Descreva o que vê com precisão (tipo, cor, marca/modelo se legível, detalhes). ' +
+  '2) Cruze com o CATÁLOGO (texto + fotos de referência anexadas, se houver): só confirme que TEMOS ' +
+  'se for o mesmo item ou equivalente claro no catálogo — aí diga nome, preço de atacado e pedido mínimo. ' +
+  '3) Se for parecido mas não idêntico, diga a diferença e ofereça o mais próximo do catálogo. ' +
+  '4) Se não tiver certeza, descreva o que vê e peça 1–2 detalhes (marca, modelo, tamanho) — NÃO chute. ' +
+  '5) NUNCA afirme que temos um produto que não está no catálogo; nesse caso diga que vai verificar com a equipe.';
 
 /**
  * Instrução extra ligada quando o operador humano já respondeu na conversa:
@@ -243,7 +279,23 @@ export async function generateReply(
   }
 
   const hasImages = Boolean(input.attachImages?.length);
-  if (hasImages) attachImagesToLastUser(messages, input.attachImages as ChatImage[]);
+  if (hasImages) {
+    attachImagesToLastUser(messages, input.attachImages as ChatImage[]);
+    // Fotos do catálogo anexadas na mesma mensagem → comparação visual mais precisa.
+    const refs = pickCatalogReferenceImages(input.products);
+    if (refs.images.length) {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i]!.role === 'user') {
+          messages[i] = {
+            ...messages[i]!,
+            content: `${messages[i]!.content || ''}${refs.legend}`,
+            images: [...(messages[i]!.images ?? []), ...refs.images],
+          };
+          break;
+        }
+      }
+    }
+  }
 
   const hasHumanTurns = input.history.some((m) => m.origin === 'human');
   const memoryBlock = input.client

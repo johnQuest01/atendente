@@ -1,6 +1,7 @@
 import { logger } from '../config/logger';
-import { complete } from './ai/orchestrator';
+import { complete, hasVisionProvider } from './ai/orchestrator';
 import { isWebSearchToolAvailable } from './ai/tools';
+import type { ChatImage, ChatMessage } from './ai/types';
 import { getReminderPersona } from '../db/queries/settings';
 import { getConnectionById } from '../db/queries/whatsapp_connections';
 import {
@@ -21,15 +22,22 @@ import {
 
 /** Modo rápido: poucas tokens, resposta curta no WhatsApp. */
 const FAST_MAX_TOKENS = 280;
+const VISION_MAX_TOKENS = 500;
 const FAST_TEMPERATURE = 0.2;
 /** Espera msgs extras do dono antes de chamar a IA (anti-perda). */
 const BATCH_DEBOUNCE_MS = 1600;
 const HISTORY_LIMIT = 80;
 
+const OWNER_VISION_HINT =
+  '\n\nATENÇÃO — O DONO ENVIOU IMAGEM/VÍDEO. Analise o que aparece na mídia e responda com base nisso. ' +
+  'Descreva o que vê com clareza; se ele pediu opinião ou ação, use o que enxergou. Não diga que não consegue ver fotos.';
+
 export interface FreeChatOptions {
   connectionId?: string | null;
   /** Busca web ligada nesta conexão. */
   webSearchEnabled?: boolean;
+  /** Imagens/quadros para visão (anexados ao último turno user). */
+  images?: ChatImage[];
 }
 
 /** `merged` = outra mensagem do lote já gerou a resposta; não envie de novo. */
@@ -87,8 +95,8 @@ function buildFastSystem(
 /** Junta user consecutivos no fim (várias msgs rápidas) num único turno. */
 function historyToModelMessages(
   rows: Array<{ role: 'user' | 'assistant'; content: string }>,
-): Array<{ role: 'user' | 'assistant'; content: string }> {
-  const out: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+): ChatMessage[] {
+  const out: ChatMessage[] = [];
   for (const row of rows) {
     const content = row.content.trim().slice(0, 6000);
     if (!content) continue;
@@ -104,6 +112,19 @@ function historyToModelMessages(
   return out.slice(-48);
 }
 
+function attachImagesToLastUser(messages: ChatMessage[], images: ChatImage[]): void {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]!.role === 'user') {
+      messages[i] = {
+        ...messages[i]!,
+        images: [...(messages[i]!.images ?? []), ...images],
+      };
+      return;
+    }
+  }
+  messages.push({ role: 'user', content: 'O que você vê nesta imagem?', images });
+}
+
 async function runFreeChatOnce(
   tenantId: string,
   phone: string,
@@ -116,6 +137,11 @@ async function runFreeChatOnce(
     const when = formatForOwner(new Date(r.next_fire_at), r.timezone || tz);
     return `${i + 1}. ${r.task} — ${when}`;
   });
+
+  const hasImages = Boolean(opts.images?.length);
+  if (hasImages && !(await hasVisionProvider(tenantId, opts.connectionId))) {
+    return 'Recebi a foto, mas nenhuma IA com visão está ligada agora. Me descreve o que tem nela?';
+  }
 
   const [dbRows, memoryBlock] = await Promise.all([
     listOwnerChatHistory(tenantId, phone, {
@@ -133,21 +159,28 @@ async function runFreeChatOnce(
     return null;
   }
 
+  if (hasImages && opts.images?.length) {
+    attachImagesToLastUser(messages, opts.images);
+  }
+
   // Busca via function calling (fase 3): o modelo decide quando chamar web_search.
   const webSearchOn = Boolean(opts.webSearchEnabled);
-  const toolSearchAvailable = webSearchOn && isWebSearchToolAvailable();
+  const toolSearchAvailable = webSearchOn && isWebSearchToolAvailable() && !hasImages;
+
+  const system =
+    buildFastSystem(
+      persona,
+      agendaLines,
+      memoryBlock,
+      webSearchOn,
+      toolSearchAvailable,
+    ) + (hasImages ? OWNER_VISION_HINT : '');
 
   const result = await complete(
     {
-      system: buildFastSystem(
-        persona,
-        agendaLines,
-        memoryBlock,
-        webSearchOn,
-        toolSearchAvailable,
-      ),
+      system,
       messages,
-      maxTokens: FAST_MAX_TOKENS,
+      maxTokens: hasImages ? VISION_MAX_TOKENS : FAST_MAX_TOKENS,
       temperature: FAST_TEMPERATURE,
     },
     tenantId,
@@ -221,24 +254,31 @@ export async function freeChatOwner(
   opts: FreeChatOptions = {},
 ): Promise<FreeChatResult> {
   const trimmed = message.trim();
-  if (!trimmed) return { status: 'reply', text: null };
+  if (!trimmed && !opts.images?.length) return { status: 'reply', text: null };
 
   // Mensagem do dono já deve estar em owner_chat_messages (handler).
   const k = batchKey(tenantId, phone, opts.connectionId);
+  // Com imagem: responde mais rápido (sem esperar lote longo).
+  const waitMs = opts.images?.length ? 400 : BATCH_DEBOUNCE_MS;
 
   return new Promise<FreeChatResult>((resolve) => {
     const existing = batches.get(k);
     if (existing) {
       clearTimeout(existing.timer);
       existing.waiters.push(resolve);
-      existing.opts = opts;
-      existing.timer = setTimeout(() => void flushBatch(tenantId, phone, k), BATCH_DEBOUNCE_MS);
+      existing.opts = {
+        ...opts,
+        images: [...(existing.opts.images ?? []), ...(opts.images ?? [])],
+        webSearchEnabled: opts.webSearchEnabled ?? existing.opts.webSearchEnabled,
+        connectionId: opts.connectionId ?? existing.opts.connectionId,
+      };
+      existing.timer = setTimeout(() => void flushBatch(tenantId, phone, k), waitMs);
       return;
     }
     batches.set(k, {
       opts,
       waiters: [resolve],
-      timer: setTimeout(() => void flushBatch(tenantId, phone, k), BATCH_DEBOUNCE_MS),
+      timer: setTimeout(() => void flushBatch(tenantId, phone, k), waitMs),
     });
   });
 }

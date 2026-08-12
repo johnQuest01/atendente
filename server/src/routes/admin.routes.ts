@@ -7,6 +7,7 @@ import {
   postTenant,
   createTenantSchema,
   patchTenant,
+  removeTenant,
   updateTenantSchema,
   tenantIdParamSchema,
 } from '../controllers/admin.controller';
@@ -51,6 +52,11 @@ router.patch(
   '/tenants/:id',
   validate({ params: tenantIdParamSchema, body: updateTenantSchema }),
   asyncHandler(patchTenant),
+);
+router.delete(
+  '/tenants/:id',
+  validate({ params: tenantIdParamSchema }),
+  asyncHandler(removeTenant),
 );
 
 // Convites de acesso: como ainda não há gateway de pagamento, é assim que uma

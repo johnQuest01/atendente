@@ -13,6 +13,7 @@ import {
   useTenants,
   useCreateTenant,
   useUpdateTenant,
+  useDeleteTenant,
   type TenantSummary,
 } from '@/hooks/useTenants';
 import { useInvites, useCreateInvite, useRevokeInvite, inviteStatus } from '@/hooks/useInvites';
@@ -224,7 +225,9 @@ function InvitesManager() {
 
 function TenantRow({ tenant }: { tenant: TenantSummary }) {
   const update = useUpdateTenant();
+  const remove = useDeleteTenant();
   const [editingLimit, setEditingLimit] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   function toggleActive() {
     update.mutate(
@@ -235,6 +238,16 @@ function TenantRow({ tenant }: { tenant: TenantSummary }) {
         onError: (err) => toast(getErrorMessage(err), 'error'),
       },
     );
+  }
+
+  function confirmRemove() {
+    remove.mutate(tenant.id, {
+      onSuccess: () => {
+        setConfirmDelete(false);
+        toast(`Empresa "${tenant.name}" removida.`, 'success');
+      },
+      onError: (err) => toast(getErrorMessage(err), 'error'),
+    });
   }
 
   const limitTxt =
@@ -277,14 +290,21 @@ function TenantRow({ tenant }: { tenant: TenantSummary }) {
               : 'sem WhatsApp'}
           </p>
         </div>
-        <Button
-          size="sm"
-          variant={tenant.is_active ? 'secondary' : 'primary'}
-          loading={update.isPending}
-          onClick={toggleActive}
-        >
-          {tenant.is_active ? 'Desativar' : 'Ativar'}
-        </Button>
+        <div className="flex shrink-0 flex-col gap-1 sm:flex-row">
+          <Button
+            size="sm"
+            variant={tenant.is_active ? 'secondary' : 'primary'}
+            loading={update.isPending}
+            onClick={toggleActive}
+          >
+            {tenant.is_active ? 'Desativar' : 'Ativar'}
+          </Button>
+          {tenant.can_delete === true && (
+            <Button size="sm" variant="danger" onClick={() => setConfirmDelete(true)}>
+              Remover
+            </Button>
+          )}
+        </div>
       </div>
 
       <div className="flex items-center justify-between gap-2 border-t border-border pt-2">
@@ -316,6 +336,28 @@ function TenantRow({ tenant }: { tenant: TenantSummary }) {
         onClose={() => setEditingLimit(false)}
         tenant={tenant}
       />
+
+      <Modal
+        open={confirmDelete}
+        onClose={() => setConfirmDelete(false)}
+        title="Remover empresa?"
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setConfirmDelete(false)} disabled={remove.isPending}>
+              Cancelar
+            </Button>
+            <Button variant="primary" loading={remove.isPending} onClick={confirmRemove}>
+              Remover de vez
+            </Button>
+          </div>
+        }
+      >
+        <p className="text-sm text-text-secondary">
+          Isso apaga <strong>{tenant.name}</strong> e tudo ligado a ela: usuários, WhatsApp,
+          conversas, produtos e configurações. Instâncias do pool voltam a ficar livres. Não dá
+          para desfazer.
+        </p>
+      </Modal>
     </Card>
   );
 }

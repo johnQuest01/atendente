@@ -15,6 +15,8 @@ export interface TenantSummary {
   ai_used: number;
   /** Fim do período de teste (null = sem prazo). */
   trial_ends_at: string | null;
+  /** false = empresa padrão ou a sua — não pode apagar. */
+  can_delete?: boolean;
 }
 
 export interface CreateTenantInput {
@@ -61,6 +63,19 @@ export function useUpdateTenant() {
       trial_ends_at?: string | null;
     }) => {
       const { data } = await api.patch(`/admin/tenants/${id}`, patch);
+      return data;
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: TENANTS_QUERY_KEY }),
+  });
+}
+
+export function useDeleteTenant() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { data } = await api.delete<{ ok: boolean; id: string; name: string }>(
+        `/admin/tenants/${id}`,
+      );
       return data;
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: TENANTS_QUERY_KEY }),

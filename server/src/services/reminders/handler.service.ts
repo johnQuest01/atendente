@@ -18,6 +18,8 @@ import { getTenantWhatsapp, getWhatsappByConnection } from '../whatsapp.service'
 import { transcribeAudioFromBase64, transcribeAudioFromUrl } from '../transcription.service';
 import type { NormalizedInbound } from '../whatsapp/types';
 import type { Reminder } from '../../types';
+import type { ChatImage } from '../ai/types';
+import { extractVideoFrames } from '../ai/video-frames';
 import { describeLead, describeRecurrence, parseReminders, type ParsedReminder } from './parse.service';
 import { DEFAULT_TZ, formatForOwner, fromWallClock, toWallClock } from './time';
 import {
@@ -139,6 +141,26 @@ async function transcribeOwnerAudio(inbound: NormalizedInbound): Promise<string 
   }
   if (inbound.mediaUrl) return transcribeAudioFromUrl(inbound.mediaUrl, OWNER_STT_PROMPT);
   return null;
+}
+
+/** Prepara imagem/vídeo do dono para a IA com visão. */
+async function buildOwnerVisionImages(inbound: NormalizedInbound): Promise<ChatImage[]> {
+  if (inbound.type === 'image') {
+    if (inbound.mediaUrl) {
+      return [{ url: inbound.mediaUrl, mime: inbound.mediaMime ?? undefined }];
+    }
+    if (inbound.mediaBase64) {
+      return [{ base64: inbound.mediaBase64, mime: inbound.mediaMime ?? 'image/jpeg' }];
+    }
+    return [];
+  }
+  if (inbound.type === 'video') {
+    const source = inbound.mediaUrl;
+    if (!source) return [];
+    const frames = await extractVideoFrames(source).catch(() => []);
+    return frames.map((f) => ({ base64: f.base64, mime: f.mime }));
+  }
+  return [];
 }
 
 function normalize(text: string): string {
@@ -493,8 +515,10 @@ async function handleOwnerMessageInner(
     return true;
   }
 
-  // Passo 0: obter o texto do comando, venha de onde vier.
+  // Passo 0: texto, áudio (STT) ou imagem/vídeo (visão).
   let text: string | null = null;
+  let visionImages: ChatImage[] = [];
+
   if (inbound.type === 'text') {
     text = inbound.text;
   } else if (inbound.type === 'audio') {
@@ -510,15 +534,39 @@ async function handleOwnerMessageInner(
       return true;
     }
     logger.info(`Lembretes: áudio do dono transcrito (${text.length} chars): "${text.slice(0, 120)}"`);
+  } else if (inbound.type === 'image' || inbound.type === 'video') {
+    visionImages = await buildOwnerVisionImages(inbound);
+    const caption = (inbound.caption || inbound.text || '').trim();
+    text =
+      caption ||
+      (inbound.type === 'video'
+        ? 'O que você vê neste vídeo?'
+        : 'O que você vê nesta imagem?');
+    if (!visionImages.length) {
+      await reply(
+        tenantId,
+        phone,
+        'Recebi a mídia, mas não consegui abrir pra ver. Manda de novo ou descreve por texto?',
+      );
+      return true;
+    }
+    logger.info(
+      `Secretária: ${inbound.type} do dono (${visionImages.length} quadro(s)) caption="${caption.slice(0, 80)}"`,
+    );
   }
 
   if (!text || !text.trim()) return true;
+
+  const persistText =
+    visionImages.length > 0
+      ? `[${inbound.type === 'video' ? 'vídeo' : 'imagem'}] ${text}`
+      : text;
 
   // Histórico em tempo real: grava a fala do dono antes de qualquer ramo.
   await persistOwnerUserMessage({
     tenantId,
     phone,
-    content: text,
+    content: persistText,
     connectionId,
     providerMessageId: inbound.providerMessageId,
   });
@@ -526,6 +574,26 @@ async function handleOwnerMessageInner(
   const normalized = normalize(text);
   const owner = getState(tenantId, phone);
   const flags = await getOwnerModeFlags(tenantId, connectionId);
+
+  // Foto/vídeo: a secretária/agente ENXERGA via visão (não cai no fluxo só-texto).
+  if (visionImages.length > 0) {
+    if (!flags.secretary && !flags.agent) {
+      await reply(tenantId, phone, HELP_BOTH_OFF);
+      return true;
+    }
+    const result = await freeChatOwner(tenantId, phone, text, {
+      connectionId,
+      webSearchEnabled: flags.webSearch,
+      images: visionImages,
+    });
+    if (result.status === 'merged') return true;
+    await reply(
+      tenantId,
+      phone,
+      result.text ?? 'Recebi a foto, mas não consegui analisar agora. Manda de novo?',
+    );
+    return true;
+  }
 
   // 0.5. Escolha de contato pendente ("1", "2"…) depois de vários matches.
   if (owner.pendingRelay) {

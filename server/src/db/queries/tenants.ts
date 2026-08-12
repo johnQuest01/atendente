@@ -1,4 +1,4 @@
-import { query, queryOne } from '../index';
+import { query, queryOne, withTransaction } from '../index';
 
 /**
  * Gestao de EMPRESAS (tenants). Usado apenas pelo super-admin (dono da
@@ -117,6 +117,26 @@ export async function listExpiredTrialTenants(): Promise<TenantRow[]> {
         AND trial_ends_at <= NOW()`,
   );
   return rows;
+}
+
+/**
+ * Remove a empresa e tudo ligado a ela (CASCADE).
+ * Antes: devolve instâncias do pool Z-API para livre.
+ */
+export async function deleteTenant(id: string): Promise<boolean> {
+  return withTransaction(async (client) => {
+    await client.query(
+      `UPDATE instance_pool
+          SET state = 'free',
+              assigned_tenant_id = NULL,
+              assigned_connection_id = NULL,
+              updated_at = NOW()
+        WHERE assigned_tenant_id = $1`,
+      [id],
+    );
+    const result = await client.query(`DELETE FROM tenants WHERE id = $1`, [id]);
+    return (result.rowCount ?? 0) > 0;
+  });
 }
 
 export async function updateTenant(
