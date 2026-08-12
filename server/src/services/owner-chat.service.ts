@@ -96,7 +96,8 @@ function buildFastSystem(
     webSearchOn && toolSearchAvailable
       ? [
           'Você TEM a ferramenta web_search (function calling).',
-          'Use web_search quando precisar de fato atual (cotação, notícia, horário, algo após seu conhecimento).',
+          'Use SOMENTE se o dono pedir fato atual (cotação, notícia, horário, algo após seu conhecimento).',
+          'NÃO pesquise em conversa rotineira, lembrete, contato ou raciocínio próprio — responda direto.',
           'Cite a fonte em 1 linha. NUNCA peça chave de API / Tavily / configuração de servidor.',
           'Se a tool não trouxer resultado, diga que não achou fonte atual — sem inventar.',
         ].join(' ')
