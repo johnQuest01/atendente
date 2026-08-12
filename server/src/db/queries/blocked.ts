@@ -28,17 +28,23 @@ function invalidateCache(tenantId: string): void {
 export async function isPhoneBlocked(tenantId: string, phone: string): Promise<boolean> {
   const normalized = normalizePhone(phone);
   if (!normalized) return false;
+  const set = await getActiveBlockedPhones(tenantId);
+  return set.has(normalized);
+}
+
+/** Conjunto de telefones (só dígitos) com bloqueio ativo neste tenant. */
+export async function getActiveBlockedPhones(tenantId: string): Promise<Set<string>> {
   const cached = blockedCache.get(tenantId);
-  if (!cached || Date.now() - cached.at >= CACHE_TTL_MS) {
-    const { rows } = await query<{ phone: string }>(
-      `SELECT phone FROM blocked_numbers WHERE tenant_id = $1 AND is_active = true`,
-      [tenantId],
-    );
-    const fresh = { set: new Set(rows.map((r) => r.phone)), at: Date.now() };
-    blockedCache.set(tenantId, fresh);
-    return fresh.set.has(normalized);
+  if (cached && Date.now() - cached.at < CACHE_TTL_MS) {
+    return cached.set;
   }
-  return cached.set.has(normalized);
+  const { rows } = await query<{ phone: string }>(
+    `SELECT phone FROM blocked_numbers WHERE tenant_id = $1 AND is_active = true`,
+    [tenantId],
+  );
+  const fresh = { set: new Set(rows.map((r) => r.phone)), at: Date.now() };
+  blockedCache.set(tenantId, fresh);
+  return fresh.set;
 }
 
 export async function listBlockedNumbers(tenantId: string): Promise<BlockedNumber[]> {

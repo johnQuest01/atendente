@@ -1,4 +1,5 @@
 import { query, queryOne } from '../index';
+import { getActiveBlockedPhones, normalizePhone } from './blocked';
 import type { AiHistoryMessage, Conversation, ConversationStatus, MessageLog } from '../../types';
 
 export interface ConversationListItem extends Conversation {
@@ -122,17 +123,21 @@ export async function listConversations(
       LIMIT 200`,
     params,
   );
-  // Lista: não vaza preview de conversa trancada.
-  return rows.map((r) =>
-    r.is_locked
-      ? {
-          ...r,
-          last_message: null,
-          last_message_type: null,
-          unread_count: 0,
-        }
-      : r,
-  );
+  // Lista: não vaza preview de conversa trancada nem de número bloqueado (cadeado).
+  const blockedPhones = await getActiveBlockedPhones(tenantId);
+  return rows.map((r) => {
+    const phoneBlocked = blockedPhones.has(normalizePhone(r.client_phone));
+    if (r.is_locked || phoneBlocked) {
+      return {
+        ...r,
+        is_locked: true,
+        last_message: null,
+        last_message_type: null,
+        unread_count: 0,
+      };
+    }
+    return r;
+  });
 }
 
 /**

@@ -13,6 +13,8 @@ export interface ConversationDetail {
   client: Client | null;
   messages: MessageLog[];
   locked?: boolean;
+  /** Número está na lista do cadeado flutuante (bloqueados). */
+  locked_by_blocklist?: boolean;
   lock_configured?: boolean;
 }
 

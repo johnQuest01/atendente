@@ -300,9 +300,15 @@ export default function ConversationDetail() {
             <LockIcon width={28} height={28} />
           </div>
           <p className="text-center text-sm text-text-secondary">
-            Esta conversa está com cadeado. Digite a senha para ver as mensagens.
+            {data.locked_by_blocklist
+              ? 'Este número está no cadeado. Digite a senha para ver o histórico.'
+              : 'Esta conversa está com cadeado. Digite a senha para ver as mensagens.'}
             <br />
-            <span className="text-xs">(A IA continua atendendo normalmente.)</span>
+            <span className="text-xs">
+              {data.locked_by_blocklist
+                ? 'Com o bloqueio ligado, novas mensagens são ignoradas e a IA não responde.'
+                : 'A IA continua atendendo normalmente.'}
+            </span>
           </p>
           <div className="w-full max-w-sm">
             <Input
@@ -646,17 +652,24 @@ export default function ConversationDetail() {
             Escolha o que fazer. A IA não é afetada pelo cadeado do painel.
           </p>
           {data.conversation.is_locked ? (
-            <Button
-              variant="secondary"
-              fullWidth
-              onClick={() => {
-                setProtectOpen(false);
-                setChatPassword('');
-                setUnlockRemoveOpen(true);
-              }}
-            >
-              Remover cadeado desta conversa
-            </Button>
+            data.locked_by_blocklist ? (
+              <p className="rounded-xl border border-border bg-bg px-3 py-2 text-sm text-text-secondary">
+                Número bloqueado pelo cadeado flutuante. Para liberar de vez, desative lá. Senha libera
+                só a visualização agora.
+              </p>
+            ) : (
+              <Button
+                variant="secondary"
+                fullWidth
+                onClick={() => {
+                  setProtectOpen(false);
+                  setChatPassword('');
+                  setUnlockRemoveOpen(true);
+                }}
+              >
+                Remover cadeado desta conversa
+              </Button>
+            )
           ) : (
             <Button fullWidth loading={patchLock.isPending} onClick={() => void handleLockChat()}>
               Trancar conversa no painel

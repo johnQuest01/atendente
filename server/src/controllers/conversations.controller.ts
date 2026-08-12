@@ -16,6 +16,7 @@ import {
   getMessagesByIds,
   updateMessageContent,
 } from '../db/queries/messages';
+import { isPhoneBlocked } from '../db/queries/blocked';
 import { updateClient } from '../db/queries/clients';
 import { queryOne } from '../db/index';
 import { dispatchAudio, dispatchProduct, dispatchText } from '../services/dispatch.service';
@@ -99,18 +100,19 @@ export async function getConversationDetail(req: Request, res: Response): Promis
   if (!conversation) throw new NotFoundError('Conversa');
 
   const client = await findTenantClient(tenantId, conversation.client_id);
+  const phoneBlocked = client ? await isPhoneBlocked(tenantId, client.phone) : false;
+  const needsLock = Boolean(conversation.is_locked || phoneBlocked);
   const lockConfigured = await isChatLockConfigured(tenantId);
   const unlockHeader = req.header('x-chat-unlock') ?? undefined;
-  const unlocked =
-    !conversation.is_locked ||
-    verifyChatUnlockToken(unlockHeader, tenantId, id);
+  const unlocked = !needsLock || verifyChatUnlockToken(unlockHeader, tenantId, id);
 
-  if (conversation.is_locked && !unlocked) {
+  if (needsLock && !unlocked) {
     res.json({
-      conversation,
+      conversation: { ...conversation, is_locked: true },
       client,
       messages: [],
       locked: true,
+      locked_by_blocklist: phoneBlocked,
       lock_configured: lockConfigured,
     });
     return;
@@ -120,10 +122,11 @@ export async function getConversationDetail(req: Request, res: Response): Promis
   await markInboundAsRead(tenantId, id);
 
   res.json({
-    conversation,
+    conversation: needsLock ? { ...conversation, is_locked: true } : conversation,
     client,
     messages,
     locked: false,
+    locked_by_blocklist: phoneBlocked,
     lock_configured: lockConfigured,
   });
 }
@@ -152,7 +155,7 @@ export async function getChatLockStatus(req: Request, res: Response): Promise<vo
   res.json({ configured });
 }
 
-/** Valida senha e devolve token temporário para ver a conversa trancada. */
+/** Valida senha e devolve token temporário para ver a conversa trancada/bloqueada. */
 export async function unlockConversation(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenant_id;
   const { id } = req.params as z.infer<typeof idParamSchema>;
@@ -160,7 +163,12 @@ export async function unlockConversation(req: Request, res: Response): Promise<v
 
   const conversation = await getConversationById(tenantId, id);
   if (!conversation) throw new NotFoundError('Conversa');
-  if (!conversation.is_locked) {
+
+  const client = await findTenantClient(tenantId, conversation.client_id);
+  const phoneBlocked = client ? await isPhoneBlocked(tenantId, client.phone) : false;
+  const needsLock = Boolean(conversation.is_locked || phoneBlocked);
+
+  if (!needsLock) {
     res.json({ ok: true, token: null, unlocked: true });
     return;
   }
