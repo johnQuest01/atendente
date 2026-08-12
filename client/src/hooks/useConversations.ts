@@ -12,6 +12,8 @@ export interface ConversationDetail {
   conversation: Conversation;
   client: Client | null;
   messages: MessageLog[];
+  locked?: boolean;
+  lock_configured?: boolean;
 }
 
 /** `connectionId` definido = só aquele número; null/omitido = todos. */
@@ -36,6 +38,10 @@ export function useConversations(
   });
 }
 
+export function chatUnlockStorageKey(conversationId: string): string {
+  return `mayra.chatUnlock.${conversationId}`;
+}
+
 export function useConversationDetail(id: string | undefined) {
   return useQuery({
     queryKey: ['conversation', id],
@@ -45,8 +51,51 @@ export function useConversationDetail(id: string | undefined) {
       return data;
     },
     // Rede de segurança: se o socket falhar, o chat ainda atualiza sozinho.
-    refetchInterval: id ? 4_000 : false,
+    // Conversa trancada: polling mais raro até desbloquear.
+    refetchInterval: (q) => {
+      if (!id) return false;
+      if (q.state.data?.locked) return 15_000;
+      return 4_000;
+    },
     refetchIntervalInBackground: false,
+  });
+}
+
+export function useUnlockConversation(conversationId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (password: string) => {
+      const { data } = await api.post<{ ok: boolean; token: string | null; unlocked: boolean }>(
+        `/conversations/${conversationId}/unlock`,
+        { password },
+      );
+      if (data.token) {
+        sessionStorage.setItem(chatUnlockStorageKey(conversationId), data.token);
+      }
+      return data;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['conversation', conversationId] });
+    },
+  });
+}
+
+export function usePatchConversationLock(conversationId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: { locked: boolean; password?: string; newPassword?: string }) => {
+      const { data } = await api.patch<{
+        conversation: Conversation;
+        lock_configured: boolean;
+      }>(`/conversations/${conversationId}/lock`, body);
+      // Trancar: limpa token antigo pra exigir senha de novo. Destrancar: não precisa mais.
+      sessionStorage.removeItem(chatUnlockStorageKey(conversationId));
+      return data;
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['conversation', conversationId] });
+      void qc.invalidateQueries({ queryKey: ['conversations'] });
+    },
   });
 }
 

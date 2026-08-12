@@ -17,6 +17,7 @@ import {
   TrashIcon,
   BlockIcon,
   EditIcon,
+  LockIcon,
 } from '@/components/ui/Icons';
 import {
   useClearConversation,
@@ -27,6 +28,8 @@ import {
   useSendAudioToConversation,
   useSendMessage,
   useSendProductToConversation,
+  useUnlockConversation,
+  usePatchConversationLock,
   type ConversationDetail,
 } from '@/hooks/useConversations';
 import { useAudios } from '@/hooks/useAudios';
@@ -40,6 +43,7 @@ import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
 import { formatPhone, initials } from '@/utils/formatters';
 import type { MessageLog } from '@/types';
+import { Input } from '@/components/ui/Input';
 
 export default function ConversationDetail() {
   const { id } = useParams<{ id: string }>();
@@ -56,6 +60,8 @@ export default function ConversationDetail() {
   const clearConversation = useClearConversation(id ?? '');
   const addBlocked = useAddBlocked();
   const blockToken = useBlockAccess((s) => s.token);
+  const unlockChat = useUnlockConversation(id ?? '');
+  const patchLock = usePatchConversationLock(id ?? '');
 
   const setClientAi = useSetClientAi(id ?? '');
 
@@ -69,6 +75,10 @@ export default function ConversationDetail() {
   const [blockUnlockOpen, setBlockUnlockOpen] = useState(false);
   const [editDraft, setEditDraft] = useState('');
   const [editTarget, setEditTarget] = useState<MessageLog | null>(null);
+  const [chatPassword, setChatPassword] = useState('');
+  const [newLockPassword, setNewLockPassword] = useState('');
+  const [lockSetupOpen, setLockSetupOpen] = useState(false);
+  const [unlockRemoveOpen, setUnlockRemoveOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const selectedEditableMessage = useMemo(() => {
@@ -235,6 +245,114 @@ export default function ConversationDetail() {
 
   const clientName = data.client?.name ?? data.client?.company_name ?? data.client?.phone ?? 'Cliente';
 
+  async function handleUnlockChat() {
+    if (!chatPassword.trim()) return;
+    try {
+      await unlockChat.mutateAsync(chatPassword.trim());
+      setChatPassword('');
+      toast('Conversa desbloqueada.', 'success');
+    } catch (err) {
+      toast(getErrorMessage(err, 'Senha incorreta.'), 'error');
+    }
+  }
+
+  async function handleLockChat() {
+    if (!data?.lock_configured) {
+      setLockSetupOpen(true);
+      return;
+    }
+    try {
+      await patchLock.mutateAsync({ locked: true });
+      toast('Conversa trancada no painel.', 'success');
+    } catch (err) {
+      const msg = getErrorMessage(err, 'Falha ao trancar.');
+      if (msg.toLowerCase().includes('senha')) setLockSetupOpen(true);
+      else toast(msg, 'error');
+    }
+  }
+
+  async function handleLockSetup() {
+    if (newLockPassword.trim().length < 4) {
+      toast('Senha com pelo menos 4 caracteres.', 'error');
+      return;
+    }
+    try {
+      await patchLock.mutateAsync({ locked: true, newPassword: newLockPassword.trim() });
+      setNewLockPassword('');
+      setLockSetupOpen(false);
+      toast('Cadeado criado e conversa trancada.', 'success');
+    } catch (err) {
+      toast(getErrorMessage(err, 'Falha ao criar cadeado.'), 'error');
+    }
+  }
+
+  async function handleRemoveLock() {
+    if (!chatPassword.trim()) return;
+    try {
+      await patchLock.mutateAsync({ locked: false, password: chatPassword.trim() });
+      setChatPassword('');
+      setUnlockRemoveOpen(false);
+      toast('Cadeado removido desta conversa.', 'success');
+    } catch (err) {
+      toast(getErrorMessage(err, 'Senha incorreta.'), 'error');
+    }
+  }
+
+  // Gate: conversa trancada sem token — só o popup de senha.
+  if (data.locked) {
+    return (
+      <ChatViewport>
+        <div className="z-30 shrink-0 bg-surface">
+          <PageHeader
+            sticky={false}
+            title={clientName}
+            subtitle="Conversa protegida"
+            leading={
+              <button onClick={() => navigate('/conversas')} className="tap-scale -ml-1 rounded-full p-1 text-primary">
+                <BackIcon width={24} height={24} />
+              </button>
+            }
+          />
+        </div>
+        <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary-light text-primary">
+            <LockIcon width={28} height={28} />
+          </div>
+          <p className="text-center text-sm text-text-secondary">
+            Esta conversa está com cadeado. Digite a senha para ver as mensagens.
+            <br />
+            <span className="text-xs">(A IA continua atendendo normalmente.)</span>
+          </p>
+          <div className="w-full max-w-sm">
+            <Input
+              label="Senha"
+              type="password"
+              autoComplete="off"
+              autoFocus
+              value={chatPassword}
+              onChange={(e) => setChatPassword(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  void handleUnlockChat();
+                }
+              }}
+            />
+            <Button
+              className="mt-3"
+              fullWidth
+              loading={unlockChat.isPending}
+              disabled={!chatPassword.trim()}
+              onClick={() => void handleUnlockChat()}
+            >
+              Desbloquear
+            </Button>
+          </div>
+        </div>
+      </ChatViewport>
+    );
+  }
+
   return (
     <ChatViewport>
       {/* Topo FIXO: nome + IA/instruções — fora de qualquer scroll. */}
@@ -285,6 +403,21 @@ export default function ConversationDetail() {
             }
             action={
               <div className="flex items-center gap-1">
+                <button
+                  onClick={() => {
+                    if (data.conversation.is_locked) setUnlockRemoveOpen(true);
+                    else void handleLockChat();
+                  }}
+                  className="tap-scale rounded-full p-2 text-text-secondary"
+                  aria-label={data.conversation.is_locked ? 'Remover cadeado' : 'Trancar conversa'}
+                  title={
+                    data.conversation.is_locked
+                      ? 'Remover cadeado desta conversa'
+                      : 'Trancar conversa com senha (só no painel)'
+                  }
+                >
+                  <LockIcon width={20} height={20} />
+                </button>
                 <button
                   onClick={() => setConfirm('block')}
                   className="tap-scale rounded-full p-2 text-text-secondary"
@@ -583,6 +716,57 @@ export default function ConversationDetail() {
             className="no-scrollbar w-full resize-none rounded-xl border border-border bg-bg px-3 py-2 text-sm outline-none focus:border-primary"
           />
         </div>
+      </Modal>
+
+      <Modal
+        open={lockSetupOpen}
+        onClose={() => setLockSetupOpen(false)}
+        title="Criar senha do cadeado"
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setLockSetupOpen(false)}>
+              Cancelar
+            </Button>
+            <Button loading={patchLock.isPending} onClick={() => void handleLockSetup()}>
+              Trancar
+            </Button>
+          </div>
+        }
+      >
+        <p className="mb-3 text-sm text-text-secondary">
+          Essa senha vale para todas as conversas trancadas neste painel. A IA não é afetada.
+        </p>
+        <Input
+          label="Nova senha (mín. 4)"
+          type="password"
+          autoComplete="new-password"
+          value={newLockPassword}
+          onChange={(e) => setNewLockPassword(e.target.value)}
+        />
+      </Modal>
+
+      <Modal
+        open={unlockRemoveOpen}
+        onClose={() => setUnlockRemoveOpen(false)}
+        title="Remover cadeado"
+        footer={
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setUnlockRemoveOpen(false)}>
+              Cancelar
+            </Button>
+            <Button loading={patchLock.isPending} onClick={() => void handleRemoveLock()}>
+              Remover
+            </Button>
+          </div>
+        }
+      >
+        <Input
+          label="Senha do cadeado"
+          type="password"
+          autoComplete="off"
+          value={chatPassword}
+          onChange={(e) => setChatPassword(e.target.value)}
+        />
       </Modal>
 
       <BlockUnlockModal

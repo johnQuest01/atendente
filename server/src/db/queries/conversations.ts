@@ -122,7 +122,17 @@ export async function listConversations(
       LIMIT 200`,
     params,
   );
-  return rows;
+  // Lista: não vaza preview de conversa trancada.
+  return rows.map((r) =>
+    r.is_locked
+      ? {
+          ...r,
+          last_message: null,
+          last_message_type: null,
+          unread_count: 0,
+        }
+      : r,
+  );
 }
 
 /**
@@ -263,6 +273,22 @@ export async function clearHumanPause(
       WHERE id = $1 AND tenant_id = $2
       RETURNING *`,
     [id, tenantId],
+  );
+  return rows[0] ?? null;
+}
+
+/** Liga/desliga o cadeado do painel (não afeta IA). */
+export async function setConversationLocked(
+  tenantId: string,
+  id: string,
+  locked: boolean,
+): Promise<Conversation | null> {
+  const { rows } = await query<Conversation>(
+    `UPDATE conversations
+        SET is_locked = $3
+      WHERE id = $1 AND tenant_id = $2
+      RETURNING *`,
+    [id, tenantId, locked],
   );
   return rows[0] ?? null;
 }

@@ -6,6 +6,7 @@ import {
   getConversationMessages,
   listConversations,
   markInboundAsRead,
+  setConversationLocked,
   updateConversationStatus,
 } from '../db/queries/conversations';
 import {
@@ -22,6 +23,13 @@ import {
   getTenantWhatsapp,
   getWhatsappByConnection,
 } from '../services/whatsapp.service';
+import {
+  isChatLockConfigured,
+  setChatLockPassword,
+  signChatUnlockToken,
+  verifyChatLockPassword,
+  verifyChatUnlockToken,
+} from '../services/chat-lock.service';
 import { emitConversationUpdated, emitNewMessage } from '../socket';
 import { AppError, NotFoundError } from '../utils/errors';
 import type { Client } from '../types';
@@ -91,14 +99,131 @@ export async function getConversationDetail(req: Request, res: Response): Promis
   const conversation = await getConversationById(tenantId, id);
   if (!conversation) throw new NotFoundError('Conversa');
 
-  const [messages, client] = await Promise.all([
-    getConversationMessages(tenantId, id),
-    findTenantClient(tenantId, conversation.client_id),
-  ]);
+  const client = await findTenantClient(tenantId, conversation.client_id);
+  const lockConfigured = await isChatLockConfigured(tenantId);
+  const unlockHeader = req.header('x-chat-unlock') ?? undefined;
+  const unlocked =
+    !conversation.is_locked ||
+    verifyChatUnlockToken(unlockHeader, tenantId, id);
 
+  if (conversation.is_locked && !unlocked) {
+    res.json({
+      conversation,
+      client,
+      messages: [],
+      locked: true,
+      lock_configured: lockConfigured,
+    });
+    return;
+  }
+
+  const messages = await getConversationMessages(tenantId, id);
   await markInboundAsRead(tenantId, id);
 
-  res.json({ conversation, client, messages });
+  res.json({
+    conversation,
+    client,
+    messages,
+    locked: false,
+    lock_configured: lockConfigured,
+  });
+}
+
+export const chatLockPasswordSchema = z.object({
+  password: z.string().min(4).max(72),
+  currentPassword: z.string().min(1).max(72).optional().nullable(),
+});
+
+export const unlockChatSchema = z.object({
+  password: z.string().min(1).max(72),
+});
+
+export const lockChatSchema = z.object({
+  locked: z.boolean(),
+  /** Obrigatória para destrancar o cadeado (locked=false). */
+  password: z.string().min(1).max(72).optional(),
+  /** Ao trancar pela 1ª vez, define a senha do tenant se ainda não houver. */
+  newPassword: z.string().min(4).max(72).optional(),
+});
+
+/** Define/troca a senha do cadeado de conversas (tenant). */
+export async function putChatLockPassword(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const body = req.body as z.infer<typeof chatLockPasswordSchema>;
+  await setChatLockPassword(tenantId, body.password, body.currentPassword);
+  res.json({ ok: true, configured: true });
+}
+
+export async function getChatLockStatus(req: Request, res: Response): Promise<void> {
+  const configured = await isChatLockConfigured(req.user!.tenant_id);
+  res.json({ configured });
+}
+
+/** Valida senha e devolve token temporário para ver a conversa trancada. */
+export async function unlockConversation(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const { id } = req.params as z.infer<typeof idParamSchema>;
+  const { password } = req.body as z.infer<typeof unlockChatSchema>;
+
+  const conversation = await getConversationById(tenantId, id);
+  if (!conversation) throw new NotFoundError('Conversa');
+  if (!conversation.is_locked) {
+    res.json({ ok: true, token: null, unlocked: true });
+    return;
+  }
+  if (!(await isChatLockConfigured(tenantId))) {
+    throw new AppError('Defina uma senha do cadeado antes.', 400, 'CHAT_LOCK_NOT_CONFIGURED');
+  }
+  const ok = await verifyChatLockPassword(tenantId, password);
+  if (!ok) throw new AppError('Senha incorreta.', 403, 'CHAT_LOCK_BAD_PASSWORD');
+
+  const token = signChatUnlockToken(tenantId, id);
+  res.json({ ok: true, token, unlocked: true });
+}
+
+/** Tranca/destranca a conversa no painel. */
+export async function patchConversationLock(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const { id } = req.params as z.infer<typeof idParamSchema>;
+  const body = req.body as z.infer<typeof lockChatSchema>;
+
+  const conversation = await getConversationById(tenantId, id);
+  if (!conversation) throw new NotFoundError('Conversa');
+
+  if (body.locked) {
+    const configured = await isChatLockConfigured(tenantId);
+    if (!configured) {
+      if (!body.newPassword?.trim()) {
+        throw new AppError(
+          'Crie uma senha do cadeado (mín. 4 caracteres) para trancar conversas.',
+          400,
+          'CHAT_LOCK_NEED_PASSWORD',
+        );
+      }
+      await setChatLockPassword(tenantId, body.newPassword);
+    }
+    const updated = await setConversationLocked(tenantId, id, true);
+    if (updated) emitConversationUpdated(tenantId, updated);
+    res.json({ conversation: updated, lock_configured: true });
+    return;
+  }
+
+  // Remover cadeado exige senha.
+  if (!(await isChatLockConfigured(tenantId))) {
+    const updated = await setConversationLocked(tenantId, id, false);
+    if (updated) emitConversationUpdated(tenantId, updated);
+    res.json({ conversation: updated, lock_configured: false });
+    return;
+  }
+  if (!body.password?.trim()) {
+    throw new AppError('Informe a senha para remover o cadeado.', 400, 'CHAT_LOCK_PASSWORD_REQUIRED');
+  }
+  const ok = await verifyChatLockPassword(tenantId, body.password);
+  if (!ok) throw new AppError('Senha incorreta.', 403, 'CHAT_LOCK_BAD_PASSWORD');
+
+  const updated = await setConversationLocked(tenantId, id, false);
+  if (updated) emitConversationUpdated(tenantId, updated);
+  res.json({ conversation: updated, lock_configured: true });
 }
 
 export const clientAiSchema = z

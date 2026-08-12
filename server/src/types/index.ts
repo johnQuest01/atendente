@@ -51,6 +51,8 @@ export interface Conversation {
   metadata: Record<string, unknown>;
   /** Até quando a IA fica pausada após intervenção humana (null = sem pausa). */
   human_paused_until: string | null;
+  /** Cadeado no painel (exige senha pra ver msgs). IA ignora. */
+  is_locked?: boolean;
 }
 
 export type MessageDirection = 'inbound' | 'outbound';

@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import { Link } from 'react-router-dom';
+import { LockIcon } from '@/components/ui/Icons';
 import type { ConversationListItem } from '@/types';
 import { formatRelative, initials } from '@/utils/formatters';
 import { cn } from '@/utils/cn';
@@ -12,6 +13,7 @@ const previewByType: Record<string, string> = {
 };
 
 function messagePreview(conversation: ConversationListItem): string {
+  if (conversation.is_locked) return 'Conversa protegida';
   const last = conversation.last_message ?? '';
   if (/figurinha/i.test(last) || /sticker\.webp/i.test(last)) return '🎭 Figurinha';
   if (conversation.last_message_type && conversation.last_message_type !== 'text') {
@@ -101,7 +103,12 @@ export function ConversationCard({ conversation, onLongPress }: ConversationCard
 
       <div className="min-w-0 flex-1">
         <div className="flex items-center justify-between gap-2">
-          <p className="truncate font-semibold text-text-primary">{name}</p>
+          <p className="flex min-w-0 items-center gap-1 truncate font-semibold text-text-primary">
+            {conversation.is_locked && (
+              <LockIcon width={14} height={14} className="shrink-0 text-text-secondary" />
+            )}
+            <span className="truncate">{name}</span>
+          </p>
           <span className="shrink-0 text-xs text-text-secondary">
             {formatRelative(conversation.last_message_at)}
           </span>

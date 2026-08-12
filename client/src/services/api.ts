@@ -31,6 +31,12 @@ api.interceptors.request.use((config) => {
     const blockToken = localStorage.getItem(BLOCK_TOKEN_KEY);
     if (blockToken) config.headers['x-block-token'] = blockToken;
   }
+  // Cadeado de conversa: token de unlock por conversa (sessionStorage).
+  const chatMatch = /\/conversations\/([0-9a-f-]{36})/i.exec(url);
+  if (chatMatch?.[1] && !url.includes('/unlock') && !url.includes('/lock')) {
+    const unlock = sessionStorage.getItem(`mayra.chatUnlock.${chatMatch[1]}`);
+    if (unlock) config.headers['x-chat-unlock'] = unlock;
+  }
   return config;
 });
 
@@ -43,7 +49,11 @@ const ACCESS_BLOCK_CODES = ['TRIAL_EXPIRED', 'TENANT_INACTIVE'];
 api.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
-    if (error.response?.status === 401 && getToken()) {
+    const body = error.response?.data as ApiErrorBody | undefined;
+    const code = body?.error?.code;
+    // 401 de senha do cadeado (legado) não deve derrubar o login do painel.
+    const skipLogout = code === 'CHAT_LOCK_BAD_PASSWORD';
+    if (error.response?.status === 401 && getToken() && !skipLogout) {
       setToken(null);
       if (!window.location.pathname.startsWith('/login')) {
         window.location.href = '/login';
@@ -51,8 +61,6 @@ api.interceptors.response.use(
     }
     // Teste vencido / conta desativada: o painel troca a tela por um aviso, em
     // vez de deixar cada requisição falhando isoladamente.
-    const body = error.response?.data as ApiErrorBody | undefined;
-    const code = body?.error?.code;
     if (code && ACCESS_BLOCK_CODES.includes(code)) {
       // Import tardio: o store importa daqui, então evitamos ciclo no módulo.
       void import('@/store/appStore').then((m) =>

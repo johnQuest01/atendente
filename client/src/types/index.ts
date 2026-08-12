@@ -42,6 +42,8 @@ export interface Conversation {
   metadata: Record<string, unknown>;
   /** Até quando a IA fica pausada após o operador responder no celular. */
   human_paused_until?: string | null;
+  /** Cadeado no painel (exige senha). Não afeta a IA. */
+  is_locked?: boolean;
 }
 
 export interface ConversationListItem extends Conversation {

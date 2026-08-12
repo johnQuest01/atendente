@@ -10,12 +10,17 @@ import {
   deleteMessagesSchema,
   editMessage,
   editMessageSchema,
+  getChatLockStatus,
   getConversations,
   getConversationDetail,
   idParamSchema,
   listQuerySchema,
+  lockChatSchema,
   messageIdParamSchema,
+  patchConversationLock,
   patchConversationStatus,
+  putChatLockPassword,
+  chatLockPasswordSchema,
   removeConversation,
   removeMessages,
   sendAudioSchema,
@@ -25,6 +30,8 @@ import {
   sendMessageSchema,
   sendProductSchema,
   statusBodySchema,
+  unlockChatSchema,
+  unlockConversation,
 } from '../controllers/conversations.controller';
 import {
   conversationIdParamSchema,
@@ -37,8 +44,24 @@ const router = Router();
 
 router.use(authenticate, requireActiveTenant);
 
+router.get('/chat-lock', asyncHandler(getChatLockStatus));
+router.put(
+  '/chat-lock',
+  validate({ body: chatLockPasswordSchema }),
+  asyncHandler(putChatLockPassword),
+);
 router.get('/', validate({ query: listQuerySchema }), asyncHandler(getConversations));
 router.get('/:id', validate({ params: idParamSchema }), asyncHandler(getConversationDetail));
+router.post(
+  '/:id/unlock',
+  validate({ params: idParamSchema, body: unlockChatSchema }),
+  asyncHandler(unlockConversation),
+);
+router.patch(
+  '/:id/lock',
+  validate({ params: idParamSchema, body: lockChatSchema }),
+  asyncHandler(patchConversationLock),
+);
 router.get(
   '/:id/memories',
   validate({ params: conversationIdParamSchema }),
