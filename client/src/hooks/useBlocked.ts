@@ -12,6 +12,12 @@ export interface BlockedNumber {
 
 const KEY = ['blocked'] as const;
 
+function invalidateConversationViews(qc: ReturnType<typeof useQueryClient>): void {
+  void qc.invalidateQueries({ queryKey: KEY });
+  void qc.invalidateQueries({ queryKey: ['conversations'] });
+  void qc.invalidateQueries({ queryKey: ['conversation'] });
+}
+
 /** Login do cadeado: troca senha por um token de acesso à área restrita. */
 export function useUnlockBlocked() {
   const setToken = useBlockAccess((s) => s.setToken);
@@ -42,7 +48,7 @@ export function useAddBlocked() {
       const { data } = await api.post<{ blocked: BlockedNumber }>('/blocked', input);
       return data.blocked;
     },
-    onSuccess: () => void qc.invalidateQueries({ queryKey: KEY }),
+    onSuccess: () => invalidateConversationViews(qc),
   });
 }
 
@@ -53,7 +59,7 @@ export function useSetBlockedActive() {
       const { data } = await api.patch<{ blocked: BlockedNumber }>(`/blocked/${id}`, { is_active });
       return data.blocked;
     },
-    onSuccess: () => void qc.invalidateQueries({ queryKey: KEY }),
+    onSuccess: () => invalidateConversationViews(qc),
   });
 }
 
@@ -63,6 +69,6 @@ export function useDeleteBlocked() {
     mutationFn: async (id: string) => {
       await api.delete(`/blocked/${id}`);
     },
-    onSuccess: () => void qc.invalidateQueries({ queryKey: KEY }),
+    onSuccess: () => invalidateConversationViews(qc),
   });
 }

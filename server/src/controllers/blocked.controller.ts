@@ -10,6 +10,7 @@ import {
   setBlockedActive,
 } from '../db/queries/blocked';
 import { verifyPanelLockPassword } from '../config/panel-lock';
+import { emitBlocklistUpdated } from '../socket';
 import { AppError, NotFoundError } from '../utils/errors';
 
 export const idParamSchema = z.object({ id: z.string().uuid() });
@@ -53,21 +54,28 @@ export async function postBlocked(req: Request, res: Response): Promise<void> {
   if (normalized.length < 8) {
     throw new AppError('Número inválido. Informe ao menos 8 dígitos (com DDD).', 400, 'INVALID_PHONE');
   }
-  const blocked = await addBlockedNumber(req.user!.tenant_id, normalized, body.label ?? null);
+  const tenantId = req.user!.tenant_id;
+  const blocked = await addBlockedNumber(tenantId, normalized, body.label ?? null);
+  emitBlocklistUpdated(tenantId, { phone: blocked.phone, active: true });
   res.status(201).json({ blocked });
 }
 
 export async function patchBlocked(req: Request, res: Response): Promise<void> {
   const { id } = req.params as z.infer<typeof idParamSchema>;
   const { is_active } = req.body as z.infer<typeof updateBlockedSchema>;
-  const blocked = await setBlockedActive(req.user!.tenant_id, id, is_active);
+  const tenantId = req.user!.tenant_id;
+  const blocked = await setBlockedActive(tenantId, id, is_active);
   if (!blocked) throw new NotFoundError('Número bloqueado');
+  emitBlocklistUpdated(tenantId, { phone: blocked.phone, active: blocked.is_active });
   res.json({ blocked });
 }
 
 export async function removeBlocked(req: Request, res: Response): Promise<void> {
   const { id } = req.params as z.infer<typeof idParamSchema>;
-  const ok = await deleteBlockedNumber(req.user!.tenant_id, id);
+  const tenantId = req.user!.tenant_id;
+  const existing = (await listBlockedNumbers(tenantId)).find((b) => b.id === id);
+  const ok = await deleteBlockedNumber(tenantId, id);
   if (!ok) throw new NotFoundError('Número bloqueado');
+  emitBlocklistUpdated(tenantId, { phone: existing?.phone ?? null, active: false });
   res.status(204).send();
 }

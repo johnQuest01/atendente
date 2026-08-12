@@ -213,6 +213,15 @@ export default function ConversationDetail() {
           void qc.invalidateQueries({ queryKey: ['conversation', id] });
           void qc.invalidateQueries({ queryKey: ['conversations'] });
         },
+        'conversation:updated': () => {
+          void qc.invalidateQueries({ queryKey: ['conversation', id] });
+          void qc.invalidateQueries({ queryKey: ['conversations'] });
+        },
+        'blocklist:updated': () => {
+          // Cadeado flutuante ligou/desligou — senha/preview sem F5.
+          void qc.invalidateQueries({ queryKey: ['conversation', id] });
+          void qc.invalidateQueries({ queryKey: ['conversations'] });
+        },
       }),
       [id, qc],
     ),

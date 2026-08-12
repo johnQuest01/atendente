@@ -116,6 +116,7 @@ export default function Conversations() {
         'conversation:updated': () => void qc.invalidateQueries({ queryKey: ['conversations'] }),
         'conversation:new': () => void qc.invalidateQueries({ queryKey: ['conversations'] }),
         'message:new': () => void qc.invalidateQueries({ queryKey: ['conversations'] }),
+        'blocklist:updated': () => void qc.invalidateQueries({ queryKey: ['conversations'] }),
       }),
       [qc],
     ),

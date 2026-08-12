@@ -20,6 +20,8 @@ export const SOCKET_EVENTS = {
   CONVERSATION_NEW: 'conversation:new',
   MESSAGE_NEW: 'message:new',
   AGENT_STATUS: 'agent:status',
+  /** Lista de números bloqueados mudou — painel deve refrescar cadeado nas conversas. */
+  BLOCKLIST_UPDATED: 'blocklist:updated',
   /**
    * Onboarding WhatsApp (sala tenant:*).
    * Payload: { connectionId, status, detail?, phone?, qrBase64?, phoneCode? }
@@ -122,4 +124,15 @@ export interface WhatsappStatusPayload {
 export function emitWhatsappStatus(tenantId: string, payload: WhatsappStatusPayload): void {
   if (!io) return;
   io.to(tenantRoom(tenantId)).emit(SOCKET_EVENTS.WHATSAPP_STATUS, payload);
+}
+
+export interface BlocklistUpdatedPayload {
+  phone?: string | null;
+  active?: boolean;
+}
+
+/** Avisa o painel que a lista do cadeado mudou (preview/senha ao vivo). */
+export function emitBlocklistUpdated(tenantId: string, payload: BlocklistUpdatedPayload = {}): void {
+  if (!io) return;
+  io.to(tenantRoom(tenantId)).emit(SOCKET_EVENTS.BLOCKLIST_UPDATED, payload);
 }
