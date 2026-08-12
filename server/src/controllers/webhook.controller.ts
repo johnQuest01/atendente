@@ -5,6 +5,7 @@ import { DEFAULT_TENANT_ID } from '../config/tenant';
 import { runWithTenant } from '../db';
 import { findOrCreateClient, updateClient } from '../db/queries/clients';
 import {
+  clearHumanPause,
   findOpenConversationByClient,
   findOrCreateOpenConversation,
   getRecentMessagesForAI,
@@ -15,6 +16,9 @@ import {
 import { listProducts } from '../db/queries/products';
 import { listScripts } from '../db/queries/messages_scripts';
 import {
+  attachProviderMessageId,
+  findRecentAiOutboundByContent,
+  getLastOutboundMessage,
   insertMessage,
   markDelivered,
   markRead,
@@ -285,6 +289,39 @@ async function processFromMe(
       : inbound.text ||
         (isSticker ? '[figurinha enviada pelo operador]' : `[${inbound.type} enviado pelo operador]`);
 
+  // Eco do secretário/IA: Z-API às vezes manda fromMe com outro id → não pausar.
+  if (content && inbound.type === 'text') {
+    const aiEcho = await findRecentAiOutboundByContent(
+      tenantId,
+      conversation.id,
+      content,
+      180_000,
+    );
+    if (aiEcho) {
+      if (inbound.providerMessageId) {
+        await attachProviderMessageId(tenantId, aiEcho.id, inbound.providerMessageId);
+      }
+      logger.info(
+        `fromMe ignorado (eco da IA/secretário na conversa ${conversation.id}): ${inbound.providerMessageId ?? 'sem-id'}`,
+      );
+      return;
+    }
+  }
+  const lastOut = await getLastOutboundMessage(tenantId, conversation.id);
+  if (
+    lastOut &&
+    (lastOut.origin === 'ai' || lastOut.origin === 'system') &&
+    Date.now() - Date.parse(lastOut.sent_at) < 90_000
+  ) {
+    if (inbound.providerMessageId) {
+      await attachProviderMessageId(tenantId, lastOut.id, inbound.providerMessageId);
+    }
+    logger.info(
+      `fromMe ignorado (outbound IA recente na conversa ${conversation.id}): ${inbound.providerMessageId ?? 'sem-id'}`,
+    );
+    return;
+  }
+
   const outboundMsg = await insertMessage(tenantId, {
     conversationId: conversation.id,
     direction: 'outbound',
@@ -378,7 +415,34 @@ async function processInbound(
   if (!existing) emitNewConversation(tenantId, conversation);
 
   // Travas: agente da conexão (ou tenant), pausa humana, empresa e contato.
-  const humanTakeover = isHumanPaused(conversation);
+  // Se a "pausa humana" veio de eco do secretário/IA, libera para continuar.
+  let humanTakeover = isHumanPaused(conversation);
+  if (humanTakeover) {
+    const lastOut = await getLastOutboundMessage(tenantId, conversation.id);
+    const echoPause =
+      lastOut &&
+      (lastOut.origin === 'ai' ||
+        lastOut.origin === 'system' ||
+        (lastOut.origin === 'human' &&
+          lastOut.content &&
+          (await findRecentAiOutboundByContent(
+            tenantId,
+            conversation.id,
+            lastOut.content,
+            600_000,
+          ))));
+    if (echoPause || client.ai_prompt?.trim()) {
+      const cleared = await clearHumanPause(tenantId, conversation.id);
+      if (cleared) {
+        emitConversationUpdated(tenantId, cleared);
+        Object.assign(conversation, cleared);
+      }
+      humanTakeover = false;
+      logger.info(
+        `Pausa humana liberada na conversa ${conversation.id} (eco IA / orientação do dono) — IA volta a responder.`,
+      );
+    }
+  }
   const tenantBlocked = await isTenantBlocked(tenantId);
   const clientAiOff = client.ai_enabled === false;
   const autoReply = aiCfg.agentEnabled && !humanTakeover && !tenantBlocked && !clientAiOff;

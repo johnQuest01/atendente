@@ -89,6 +89,61 @@ export async function providerMessageExists(tenantId: string, zapiMessageId: str
   return rows[0]?.exists ?? false;
 }
 
+/** Última mensagem enviada pela loja nesta conversa. */
+export async function getLastOutboundMessage(
+  tenantId: string,
+  conversationId: string,
+): Promise<MessageLog | null> {
+  const { rows } = await query<MessageLog>(
+    `SELECT * FROM messages_log
+      WHERE tenant_id = $1 AND conversation_id = $2 AND direction = 'outbound'
+      ORDER BY sent_at DESC
+      LIMIT 1`,
+    [tenantId, conversationId],
+  );
+  return rows[0] ?? null;
+}
+
+/**
+ * Outbound recente da IA/secretário com o mesmo texto — eco fromMe sem id casado.
+ */
+export async function findRecentAiOutboundByContent(
+  tenantId: string,
+  conversationId: string,
+  content: string,
+  withinMs = 180_000,
+): Promise<MessageLog | null> {
+  const text = content.trim();
+  if (!text) return null;
+  const { rows } = await query<MessageLog>(
+    `SELECT * FROM messages_log
+      WHERE tenant_id = $1
+        AND conversation_id = $2
+        AND direction = 'outbound'
+        AND origin IN ('ai', 'system')
+        AND content = $3
+        AND sent_at >= NOW() - ($4::text || ' milliseconds')::interval
+      ORDER BY sent_at DESC
+      LIMIT 1`,
+    [tenantId, conversationId, text, String(withinMs)],
+  );
+  return rows[0] ?? null;
+}
+
+/** Grava o id do provedor num outbound da IA (eco chegou depois). */
+export async function attachProviderMessageId(
+  tenantId: string,
+  messageId: string,
+  providerMessageId: string,
+): Promise<void> {
+  await query(
+    `UPDATE messages_log
+        SET zapi_message_id = COALESCE(zapi_message_id, $3)
+      WHERE tenant_id = $1 AND id = $2`,
+    [tenantId, messageId, providerMessageId],
+  );
+}
+
 export async function markDelivered(tenantId: string, zapiMessageId: string): Promise<void> {
   await query(
     `UPDATE messages_log SET delivered_at = NOW()
