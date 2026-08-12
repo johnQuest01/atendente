@@ -9,6 +9,7 @@ import {
   isContactsBackupFile,
   pasteImportConversation,
 } from '../services/contacts-export.service';
+import { syncWhatsappContactsToCrm } from '../services/contacts-sync.service';
 import { AppError } from '../utils/errors';
 
 const connectionQuerySchema = z.object({
@@ -112,6 +113,32 @@ export async function importContactsJson(req: Request, res: Response): Promise<v
     const msg = err instanceof Error ? err.message : String(err);
     throw new AppError(msg, 400, 'IMPORT_FAILED');
   }
+}
+
+/**
+ * Puxa a agenda do WhatsApp (Z-API) para o CRM — nomes ficam buscáveis pela IA.
+ */
+export async function syncWhatsappContacts(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const parsed = connectionQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    throw new AppError(
+      'Escolha de qual número WhatsApp sincronizar a agenda.',
+      400,
+      'CONNECTION_REQUIRED',
+    );
+  }
+  const { connectionId } = parsed.data;
+  await assertTenantConnection(tenantId, connectionId);
+  const result = await syncWhatsappContactsToCrm(tenantId, connectionId);
+  res.json({
+    ok: true,
+    ...result,
+    detail:
+      result.fetched === 0
+        ? 'Nenhum contato retornado pela Z-API. Confira se o WhatsApp está conectado e tem agenda.'
+        : `Agenda sincronizada: ${result.created} novo(s), ${result.updated} nome(s) atualizado(s), ${result.skipped} ignorado(s) (${result.fetched} lidos).`,
+  });
 }
 
 export const pasteImportSchema = z.object({

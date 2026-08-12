@@ -340,9 +340,9 @@ export async function complete(
     }
   }
 
-  // Tools: orchestrator injeta as disponíveis; o loop mora no adapter.
-  const effectiveReq =
-    opts.tools || req.tools?.length ? withInjectedTools(req) : req;
+  // Tools: opts.tools=true mescla registry da plataforma (ex.: web_search).
+  // Tools já no request (ex.: ações do dono) passam direto se opts.tools for false.
+  const effectiveReq = opts.tools ? withInjectedTools(req) : req;
 
   // Turno com imagem: só provedores com visão (evita resposta "cega" inventando produto).
   const hasImages = requestHasImages(effectiveReq);

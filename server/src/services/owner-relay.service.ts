@@ -20,10 +20,35 @@ export interface RelayCandidate {
   phone: string;
 }
 
+/** Corpo genérico demais ("mensagem") — não envia lixo. */
+function isGenericBody(body: string): boolean {
+  return /^(mensagem|msg|texto|uma mensagem|a mensagem)$/i.test(body.trim());
+}
+
 /** Detecta pedido de envio a contato. Retorna null se não for o caso. */
 export function parseRelayIntent(text: string): ParsedRelay | null {
   const raw = text.trim().replace(/\s+/g, ' ');
   if (!raw) return null;
+
+  // "manda mensagem pro wender: boa noite" / "manda uma msg pra maria - oi"
+  const d = raw.match(
+    /^(?:me\s+)?(?:manda|mande|envia|envie)\s+(?:uma?\s+)?(?:mensagem|msg|texto)\s+(?:pro|pra|para\s+o|para\s+a|para)\s+(.+?)\s*[:\-–]\s*(.+)$/i,
+  );
+  if (d) {
+    const contactQuery = cleanName(d[1]);
+    const body = cleanBody(d[2]);
+    if (body && contactQuery && !isGenericBody(body)) return { body, contactQuery };
+  }
+
+  // "manda pro wender dizendo boa noite" / "envia pra maria falando que chego"
+  const e = raw.match(
+    /^(?:me\s+)?(?:manda|mande|envia|envie)\s+(?:pro|pra|para\s+o|para\s+a|para)\s+(.+?)\s+(?:dizendo|falando)\s+(?:que\s+)?(.+)$/i,
+  );
+  if (e) {
+    const contactQuery = cleanName(e[1]);
+    const body = cleanBody(e[2]);
+    if (body && contactQuery && !isGenericBody(body)) return { body, contactQuery };
+  }
 
   // "mande um boa noite para o wender agora"
   // "manda oi pro joão"
@@ -34,7 +59,13 @@ export function parseRelayIntent(text: string): ParsedRelay | null {
   if (a) {
     const body = cleanBody(a[1]);
     const contactQuery = cleanName(a[2]);
-    if (body && contactQuery && !looksLikeReminderOnly(body)) {
+    if (
+      body &&
+      contactQuery &&
+      !looksLikeReminderOnly(body) &&
+      !isGenericBody(body) &&
+      !/^(mensagem|msg|texto)$/i.test(body)
+    ) {
       return { body, contactQuery };
     }
   }
@@ -46,7 +77,7 @@ export function parseRelayIntent(text: string): ParsedRelay | null {
   if (b) {
     const contactQuery = cleanName(b[1]);
     const body = cleanBody(b[2]);
-    if (body && contactQuery) return { body, contactQuery };
+    if (body && contactQuery && !isGenericBody(body)) return { body, contactQuery };
   }
 
   // "diz pro wender que vou atrasar" / "fala pra maria que chego já"
@@ -56,7 +87,7 @@ export function parseRelayIntent(text: string): ParsedRelay | null {
   if (c) {
     const contactQuery = cleanName(c[1]);
     const body = cleanBody(c[2]);
-    if (body && contactQuery) return { body, contactQuery };
+    if (body && contactQuery && !isGenericBody(body)) return { body, contactQuery };
   }
 
   return null;

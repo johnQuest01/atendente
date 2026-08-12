@@ -9,6 +9,7 @@ import {
   importContactsJson,
   pasteImport,
   pasteImportSchema,
+  syncWhatsappContacts,
 } from '../controllers/contacts.controller';
 
 const router = Router();
@@ -18,6 +19,7 @@ router.use(authenticate, requireActiveTenant);
 router.get('/export.vcf', asyncHandler(exportContactsVcf));
 router.get('/export.json', asyncHandler(exportContactsJson));
 router.post('/import', asyncHandler(importContactsJson));
+router.post('/sync-whatsapp', asyncHandler(syncWhatsappContacts));
 router.post('/paste-import', validate({ body: pasteImportSchema }), asyncHandler(pasteImport));
 
 export default router;

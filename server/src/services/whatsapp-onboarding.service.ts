@@ -27,6 +27,7 @@ import {
   type WhatsappConnection,
 } from '../db/queries/whatsapp_connections';
 import { fetchDevicePhone } from './zapi.service';
+import { scheduleContactsSync } from './contacts-sync.service';
 import {
   listExpiredTrialTenants,
   setTenantAccountStatus,
@@ -580,6 +581,13 @@ export async function finalizeConnected(
     }
   } catch (err) {
     logger.warn('Não foi possível autorizar o telefone do admin na secretária', err);
+  }
+
+  // Agenda do aparelho → CRM (nomes para a IA achar com liberdade).
+  try {
+    scheduleContactsSync(tenantId, conn.id);
+  } catch (err) {
+    logger.warn('Agendamento de sync de contatos falhou', err);
   }
 }
 

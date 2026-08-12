@@ -1,6 +1,10 @@
 import { logger } from '../config/logger';
 import { complete, hasVisionProvider } from './ai/orchestrator';
-import { isWebSearchToolAvailable } from './ai/tools';
+import {
+  buildOwnerToolRegistry,
+  isWebSearchToolAvailable,
+  registryAsRequestFields,
+} from './ai/tools';
 import type { ChatImage, ChatMessage } from './ai/types';
 import { getReminderPersona } from '../db/queries/settings';
 import { getConnectionById } from '../db/queries/whatsapp_connections';
@@ -22,6 +26,7 @@ import {
 
 /** Modo rápido: poucas tokens, resposta curta no WhatsApp. */
 const FAST_MAX_TOKENS = 280;
+const TOOLS_MAX_TOKENS = 600;
 const VISION_MAX_TOKENS = 500;
 const FAST_TEMPERATURE = 0.2;
 /** Espera msgs extras do dono antes de chamar a IA (anti-perda). */
@@ -64,6 +69,7 @@ function buildFastSystem(
   memoryBlock: string,
   webSearchOn: boolean,
   toolSearchAvailable: boolean,
+  contactToolsOn: boolean,
 ): string {
   const parts = [
     'Você fala com o DONO no WhatsApp — como um assistente humano rápido (estilo Claude), não como robô.',
@@ -72,7 +78,19 @@ function buildFastSystem(
     'Leitura completa: use o histórico + a memória interpretada (eventos, histórias, acontecimentos, problemas).',
     'Interprete o sentido do que o dono diz — não dependa de palavras-chave; entenda contexto e continuidade.',
     'Se o dono mandou várias mensagens seguidas sem sua resposta, trate como UM pedido contínuo — leia todas, interprete o conjunto e responda uma vez sem se perder.',
-    'Se pedirem para anotar/lembrar algo com data, diga pra mandar tipo "me lembra amanhã às 9h de…".',
+    'Se pedirem para anotar/lembrar algo com data (só pra ele), diga pra mandar tipo "me lembra amanhã às 9h de…".',
+    contactToolsOn
+      ? [
+          'Você TEM tools de ação com CONTATOS do CRM/painel (não é a agenda do celular):',
+          'buscar_contato, listar_produtos, enviar_mensagem_contato, agendar_mensagem_contato.',
+          'Quando o dono pedir vender serviços, cobrar, mandar boa noite, follow-up ou rotina para um contato: USE as tools — não diga que não consegue enviar.',
+          'Fluxo venda: listar_produtos → monte um texto curto e humano → enviar_mensagem_contato (1 contato claro).',
+          'Fluxo rotina: agendar_mensagem_contato com quando=YYYY-MM-DDTHH:mm (America/Sao_Paulo) e recorrencia se pedir (daily, weekly:MON…).',
+          'Envio imediato: se a tool achar 1 contato, envie; se vários, mostre a lista e peça o número ou o client_id.',
+          'Depois de enviar/agendar, confirme ao dono em 1–2 linhas o que foi feito (quem recebeu / quando).',
+          'Nunca invente que enviou sem a tool ter retornado OK.',
+        ].join(' ')
+      : '',
     webSearchOn && toolSearchAvailable
       ? [
           'Você TEM a ferramenta web_search (function calling).',
@@ -163,9 +181,20 @@ async function runFreeChatOnce(
     attachImagesToLastUser(messages, opts.images);
   }
 
-  // Busca via function calling (fase 3): o modelo decide quando chamar web_search.
+  // Tools do dono (contatos/venda/agenda) + web_search opcional.
+  // Com imagem: só visão (sem tools) — adapters focam na mídia.
   const webSearchOn = Boolean(opts.webSearchEnabled);
   const toolSearchAvailable = webSearchOn && isWebSearchToolAvailable() && !hasImages;
+  const contactToolsOn = !hasImages;
+  const ownerTools = contactToolsOn
+    ? registryAsRequestFields(
+        buildOwnerToolRegistry({
+          tenantId,
+          ownerPhone: phone,
+          connectionId: opts.connectionId,
+        }),
+      )
+    : { tools: [], toolExecutors: {} };
 
   const system =
     buildFastSystem(
@@ -174,19 +203,29 @@ async function runFreeChatOnce(
       memoryBlock,
       webSearchOn,
       toolSearchAvailable,
+      contactToolsOn,
     ) + (hasImages ? OWNER_VISION_HINT : '');
+
+  const maxTokens = hasImages
+    ? VISION_MAX_TOKENS
+    : contactToolsOn
+      ? TOOLS_MAX_TOKENS
+      : FAST_MAX_TOKENS;
 
   const result = await complete(
     {
       system,
       messages,
-      maxTokens: hasImages ? VISION_MAX_TOKENS : FAST_MAX_TOKENS,
+      maxTokens,
       temperature: FAST_TEMPERATURE,
+      tools: ownerTools.tools.length ? ownerTools.tools : undefined,
+      toolExecutors: ownerTools.tools.length ? ownerTools.toolExecutors : undefined,
     },
     tenantId,
     {
       meter: true,
       connectionId: opts.connectionId,
+      // true → mescla web_search; owner tools já vão no request.
       tools: toolSearchAvailable,
     },
   );

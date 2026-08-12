@@ -115,7 +115,12 @@ export async function findOrCreateClient(
        VALUES ($1, $2, $3, $4)
        ON CONFLICT (tenant_id, phone) DO UPDATE
          SET last_contact_at = NOW(),
-             name = COALESCE(clients.name, EXCLUDED.name),
+             name = CASE
+               WHEN EXCLUDED.name IS NULL OR btrim(EXCLUDED.name) = '' THEN clients.name
+               WHEN clients.name IS NULL OR btrim(clients.name) = '' THEN EXCLUDED.name
+               WHEN clients.name ~ '^[0-9+\\s.-]+$' THEN EXCLUDED.name
+               ELSE clients.name
+             END,
              whatsapp_lid = COALESCE(EXCLUDED.whatsapp_lid, clients.whatsapp_lid)
        RETURNING *`,
       [tenantId, phone, name ?? null, lid],
@@ -141,12 +146,59 @@ export async function findOrCreateClient(
      VALUES ($1, $2, $3, $4)
      ON CONFLICT (tenant_id, phone) DO UPDATE
        SET last_contact_at = NOW(),
-           name = COALESCE(clients.name, EXCLUDED.name),
+           name = CASE
+             WHEN EXCLUDED.name IS NULL OR btrim(EXCLUDED.name) = '' THEN clients.name
+             WHEN clients.name IS NULL OR btrim(clients.name) = '' THEN EXCLUDED.name
+             WHEN clients.name ~ '^[0-9+\\s.-]+$' THEN EXCLUDED.name
+             ELSE clients.name
+           END,
            whatsapp_lid = COALESCE(EXCLUDED.whatsapp_lid, clients.whatsapp_lid)
      RETURNING *`,
     [tenantId, key, name ?? null, lid || key],
   );
   return rows[0];
+}
+
+/**
+ * Upsert de contato da agenda WhatsApp → CRM.
+ * `forceName`: sync da agenda sobrescreve o nome com o salvo no aparelho.
+ */
+export async function upsertClientContact(
+  tenantId: string,
+  phone: string,
+  name: string | null,
+  opts?: { forceName?: boolean },
+): Promise<'created' | 'updated' | 'skipped'> {
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length < 10) return 'skipped';
+  const cleanName = name?.trim() ? name.trim().slice(0, 120) : null;
+  const existing = await findClientByPhone(tenantId, digits);
+
+  if (!existing) {
+    await query(
+      `INSERT INTO clients (tenant_id, phone, name)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (tenant_id, phone) DO NOTHING`,
+      [tenantId, digits, cleanName],
+    );
+    return 'created';
+  }
+
+  if (!cleanName) return 'skipped';
+  const cur = (existing.name ?? '').trim();
+  if (cur.toLowerCase() === cleanName.toLowerCase()) return 'skipped';
+
+  const force = Boolean(opts?.forceName);
+  const should =
+    force || !cur || /^[0-9+\s.-]+$/.test(cur);
+  if (!should) return 'skipped';
+
+  await query(`UPDATE clients SET name = $3 WHERE id = $1 AND tenant_id = $2`, [
+    existing.id,
+    tenantId,
+    cleanName,
+  ]);
+  return 'updated';
 }
 
 export async function listClients(tenantId: string): Promise<Client[]> {
@@ -194,57 +246,98 @@ export async function listClientsForExport(
  * Busca contatos pelo nome (lista da secretária). Preferência a quem já
  * conversou na conexão; match parcial case-insensitive.
  */
+/**
+ * Busca livre por nome/empresa/telefone (IA / secretária).
+ * Aceita trechos curtos, várias palavras e dígitos do telefone.
+ */
 export async function findClientsByName(
   tenantId: string,
   nameQuery: string,
   opts?: { connectionId?: string | null; limit?: number },
 ): Promise<Client[]> {
   const q = nameQuery.trim();
-  if (!q || q.length < 2) return [];
-  const limit = Math.min(Math.max(opts?.limit ?? 8, 1), 20);
-  const like = `%${q}%`;
+  if (!q) return [];
+  const limit = Math.min(Math.max(opts?.limit ?? 12, 1), 30);
   const connectionId = opts?.connectionId ?? null;
+  const digits = q.replace(/\D/g, '');
+  const tokens = q
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 1)
+    .slice(0, 6);
+  if (!tokens.length && digits.length < 4) return [];
+
+  const params: unknown[] = [tenantId];
+  const parts: string[] = [];
+
+  for (const t of tokens) {
+    params.push(`%${t}%`);
+    const i = params.length;
+    parts.push(`(cl.name ILIKE $${i} OR cl.company_name ILIKE $${i})`);
+  }
+
+  let phoneIdx: number | null = null;
+  if (digits.length >= 4) {
+    params.push(`%${digits}%`);
+    phoneIdx = params.length;
+  }
+
+  const nameMatch = parts.length ? `(${parts.join(' AND ')})` : '';
+  const phoneMatch = phoneIdx != null ? `cl.phone LIKE $${phoneIdx}` : '';
+  const whereMatch =
+    nameMatch && phoneMatch
+      ? `(${nameMatch} OR ${phoneMatch})`
+      : nameMatch || phoneMatch;
+
+  params.push(q);
+  const qIdx = params.length;
+  params.push(limit);
+  const limIdx = params.length;
 
   if (connectionId) {
+    params.push(connectionId);
+    const connIdx = params.length;
     const { rows } = await query<Client>(
       `SELECT cl.*
          FROM clients cl
          LEFT JOIN conversations c
            ON c.client_id = cl.id
           AND c.tenant_id = cl.tenant_id
-          AND c.connection_id = $4
+          AND c.connection_id = $${connIdx}
         WHERE cl.tenant_id = $1
           AND cl.is_active = true
-          AND (cl.name ILIKE $2 OR cl.company_name ILIKE $2)
+          AND (${whereMatch})
         GROUP BY cl.id
         ORDER BY
           MAX(CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END) DESC,
           CASE
-            WHEN lower(COALESCE(cl.name, '')) = lower($3) THEN 0
-            WHEN cl.name ILIKE $3 || '%' THEN 1
+            WHEN lower(COALESCE(cl.name, '')) = lower($${qIdx}) THEN 0
+            WHEN cl.name ILIKE $${qIdx} || '%' THEN 1
             ELSE 2
           END,
           cl.last_contact_at DESC NULLS LAST
-        LIMIT $5`,
-      [tenantId, like, q, connectionId, limit],
+        LIMIT $${limIdx}`,
+      params,
     );
     if (rows.length > 0) return rows;
   }
 
+  const baseParams = params.slice(0, limIdx);
   const { rows } = await query<Client>(
-    `SELECT * FROM clients
-      WHERE tenant_id = $1
-        AND is_active = true
-        AND (name ILIKE $2 OR company_name ILIKE $2)
+    `SELECT cl.*
+       FROM clients cl
+      WHERE cl.tenant_id = $1
+        AND cl.is_active = true
+        AND (${whereMatch})
       ORDER BY
         CASE
-          WHEN lower(COALESCE(name, '')) = lower($3) THEN 0
-          WHEN name ILIKE $3 || '%' THEN 1
+          WHEN lower(COALESCE(cl.name, '')) = lower($${qIdx}) THEN 0
+          WHEN cl.name ILIKE $${qIdx} || '%' THEN 1
           ELSE 2
         END,
-        last_contact_at DESC NULLS LAST
-      LIMIT $4`,
-    [tenantId, like, q, limit],
+        cl.last_contact_at DESC NULLS LAST
+      LIMIT $${limIdx}`,
+    baseParams,
   );
   return rows;
 }

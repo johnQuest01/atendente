@@ -158,6 +158,10 @@ export interface Reminder {
   lead_fired_at: string | null;
   /** WhatsApp/instância que deve disparar o alarme. */
   connection_id?: string | null;
+  /** Se preenchido com relay_body: no horário envia ao contato (não só ao dono). */
+  target_client_id?: string | null;
+  /** Texto enviado ao contato quando target_client_id está setado. */
+  relay_body?: string | null;
   created_at: string;
 }
 

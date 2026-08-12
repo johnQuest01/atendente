@@ -15,6 +15,7 @@ import { formatForOwner, nextOccurrence } from './time';
 import { tickBroadcasts } from '../broadcast.service';
 import { purgeExpiredMemories } from '../../db/queries/client_memories';
 import { tickWhatsappOnboarding } from '../whatsapp-onboarding.service';
+import { sendOwnerRelay } from '../owner-relay.service';
 
 /**
  * Agendador dos lembretes: a cada minuto varre os vencidos e dispara no
@@ -54,11 +55,35 @@ async function fire(reminder: Reminder): Promise<void> {
 
   try {
     const wa = await whatsappForReminder(reminder);
-    await wa.sendText(reminder.owner_phone, reminderText(reminder));
-    logger.info(
-      `Lembrete enviado (${reminder.id}) para ${reminder.owner_phone}` +
-        (reminder.connection_id ? ` via ${reminder.connection_id}` : ' (1ª conexão).'),
-    );
+    const targetId = reminder.target_client_id;
+    const relayBody = reminder.relay_body?.trim();
+
+    // Relay: envia ao CONTATO e avisa o dono.
+    if (targetId && relayBody) {
+      const sent = await sendOwnerRelay({
+        tenantId: reminder.tenant_id,
+        connectionId: reminder.connection_id,
+        clientId: targetId,
+        body: relayBody,
+      });
+      if (!sent.ok) {
+        throw new Error(sent.error);
+      }
+      const preview = relayBody.length > 120 ? `${relayBody.slice(0, 117)}…` : relayBody;
+      await wa.sendText(
+        reminder.owner_phone,
+        `Enviei pra *${sent.name}*: "${preview}"`,
+      );
+      logger.info(
+        `Lembrete relay (${reminder.id}) → contato ${sent.phone}; dono ${reminder.owner_phone} avisado.`,
+      );
+    } else {
+      await wa.sendText(reminder.owner_phone, reminderText(reminder));
+      logger.info(
+        `Lembrete enviado (${reminder.id}) para ${reminder.owner_phone}` +
+          (reminder.connection_id ? ` via ${reminder.connection_id}` : ' (1ª conexão).'),
+      );
+    }
   } catch (err) {
     logger.warn(`Falha ao enviar lembrete ${reminder.id} — será tentado de novo em 10min`, err);
     await rescheduleReminder(reminder.id, new Date(Date.now() + 10 * 60_000));

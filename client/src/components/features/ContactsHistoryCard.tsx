@@ -7,6 +7,7 @@ import {
   useExportContactsJson,
   useExportContactsVcf,
   useImportContactsJson,
+  useSyncWhatsappContacts,
 } from '@/hooks/useContactsExport';
 import { useWhatsappConnections } from '@/hooks/useWhatsappConnection';
 import { toast } from '@/store/appStore';
@@ -34,6 +35,7 @@ export function ContactsHistoryCard({
   const exportVcf = useExportContactsVcf();
   const exportJson = useExportContactsJson();
   const importJson = useImportContactsJson();
+  const syncWa = useSyncWhatsappContacts();
   const fileRef = useRef<HTMLInputElement>(null);
 
   function requireConnection(): string | null {
@@ -87,13 +89,24 @@ export function ContactsHistoryCard({
     }
   }
 
+  async function handleSyncWhatsapp() {
+    const id = requireConnection();
+    if (!id) return;
+    try {
+      const result = await syncWa.mutateAsync(id);
+      toast(result.detail, result.fetched === 0 ? 'error' : 'success');
+    } catch (err) {
+      toast(getErrorMessage(err, 'Falha ao sincronizar agenda do WhatsApp.'), 'error');
+    }
+  }
+
   return (
     <Card className="flex flex-col gap-3">
       <div>
         <h2 className="text-base font-bold text-text-primary">Contatos e histórico</h2>
         <p className="mt-1 text-sm text-text-secondary">
-          Tudo é por número WhatsApp: agenda, backup e importação não misturam instâncias nem
-          contas.
+          Sincronize a agenda do celular para a IA achar nomes (ex.: Wender). Backup e importação
+          também são por número WhatsApp.
         </p>
       </div>
 
@@ -107,6 +120,15 @@ export function ContactsHistoryCard({
       )}
 
       <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+        <Button
+          type="button"
+          variant="primary"
+          loading={syncWa.isPending}
+          disabled={!connectionId}
+          onClick={() => void handleSyncWhatsapp()}
+        >
+          Sincronizar agenda do WhatsApp
+        </Button>
         <Button
           type="button"
           variant="secondary"
@@ -151,8 +173,8 @@ export function ContactsHistoryCard({
       />
 
       <p className="text-xs text-text-secondary">
-        VCF: telefone <span className="font-mono">5511915287476</span>. JSON e colar gravam só na
-        conversa deste número no banco.
+        Sync: nomes salvos no celular entram no CRM para o secretário enviar mensagens por nome.
+        VCF/JSON e colar gravam só neste número.
       </p>
     </Card>
   );

@@ -312,3 +312,54 @@ export async function sendImages(
   }
   return ids;
 }
+
+/** Contato da agenda do aparelho (Z-API GET /contacts). */
+export interface ZapiAddressBookContact {
+  phone?: string;
+  name?: string;
+  short?: string;
+  notify?: string;
+  vname?: string;
+}
+
+/**
+ * Lista a agenda do WhatsApp pareado (paginado).
+ * Doc: GET /contacts?page=&pageSize=
+ */
+export async function fetchAllContacts(conn: ZapiConnection): Promise<ZapiAddressBookContact[]> {
+  if (!isConfigured(conn)) {
+    throw new AppError('Z-API não configurada para esta conexão.', 400, 'ZAPI_NOT_CONFIGURED');
+  }
+
+  const out: ZapiAddressBookContact[] = [];
+  const pageSize = 200;
+  const maxPages = 50;
+
+  for (let page = 1; page <= maxPages; page += 1) {
+    const url = `${baseUrl(conn)}/contacts?page=${page}&pageSize=${pageSize}`;
+    const res = await fetch(url, {
+      headers: headers(conn),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      logger.error(`Z-API contacts retornou ${res.status}: ${text.slice(0, 200)}`);
+      throw new AppError(
+        `Falha ao ler agenda do WhatsApp (HTTP ${res.status}).`,
+        502,
+        'ZAPI_CONTACTS_ERROR',
+      );
+    }
+    const data = (await res.json().catch(() => null)) as unknown;
+    const batch = Array.isArray(data)
+      ? (data as ZapiAddressBookContact[])
+      : Array.isArray((data as { contacts?: unknown })?.contacts)
+        ? ((data as { contacts: ZapiAddressBookContact[] }).contacts)
+        : [];
+    if (!batch.length) break;
+    out.push(...batch);
+    if (batch.length < pageSize) break;
+  }
+
+  return out;
+}

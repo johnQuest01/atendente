@@ -103,3 +103,20 @@ export function usePasteImport() {
     },
   });
 }
+
+/** Puxa a agenda do WhatsApp (Z-API) para o CRM — nomes para a IA. */
+export function useSyncWhatsappContacts() {
+  return useMutation({
+    mutationFn: async (connectionId: string) => {
+      const { data } = await api.post<{
+        ok: boolean;
+        fetched: number;
+        created: number;
+        updated: number;
+        skipped: number;
+        detail: string;
+      }>(`/contacts/sync-whatsapp?connectionId=${encodeURIComponent(connectionId)}`);
+      return data;
+    },
+  });
+}

@@ -109,6 +109,10 @@ export interface CreateReminderInput {
   leadMinutes?: number | null;
   /** Instância WhatsApp que enviará o alarme. */
   connectionId?: string | null;
+  /** Contato que receberá relay_body no horário (opcional). */
+  targetClientId?: string | null;
+  /** Texto enviado ao contato (opcional; exige targetClientId). */
+  relayBody?: string | null;
 }
 
 export async function createReminder(
@@ -118,8 +122,8 @@ export async function createReminder(
   assertTenantMatchesScope(tenantId);
   const { rows } = await query<Reminder>(
     `INSERT INTO reminders
-       (tenant_id, owner_phone, task, category, recurrence, next_fire_at, timezone, notes, lead_minutes, connection_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       (tenant_id, owner_phone, task, category, recurrence, next_fire_at, timezone, notes, lead_minutes, connection_id, target_client_id, relay_body)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      RETURNING *`,
     [
       tenantId,
@@ -132,6 +136,8 @@ export async function createReminder(
       input.notes ?? null,
       input.leadMinutes ?? null,
       input.connectionId ?? null,
+      input.targetClientId ?? null,
+      input.relayBody ?? null,
     ],
   );
   return rows[0];
@@ -153,8 +159,8 @@ export async function createRemindersBulk(
     for (const input of inputs) {
       const { rows } = await client.query<Reminder>(
         `INSERT INTO reminders
-           (tenant_id, owner_phone, task, category, recurrence, next_fire_at, timezone, notes, lead_minutes, connection_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           (tenant_id, owner_phone, task, category, recurrence, next_fire_at, timezone, notes, lead_minutes, connection_id, target_client_id, relay_body)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          RETURNING *`,
         [
           tenantId,
@@ -167,6 +173,8 @@ export async function createRemindersBulk(
           input.notes ?? null,
           input.leadMinutes ?? null,
           input.connectionId ?? null,
+          input.targetClientId ?? null,
+          input.relayBody ?? null,
         ],
       );
       created.push(rows[0]);
