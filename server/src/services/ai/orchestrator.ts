@@ -6,6 +6,7 @@ import { currentYm, getAiUsage, incrementAiUsage } from '../../db/queries/ai_usa
 import { anthropicAdapter } from './providers/anthropic';
 import { openaiAdapter } from './providers/openai';
 import { geminiAdapter } from './providers/gemini';
+import { buildDefaultToolRegistry, registryAsRequestFields } from './tools';
 import { modelSupportsVision } from './vision';
 import {
   AiProviderError,
@@ -268,6 +269,30 @@ export interface CompleteOptions {
   meter?: boolean;
   /** Instância WhatsApp que está atendendo — escolhe IAs ligadas a ela. */
   connectionId?: string | null;
+  /**
+   * Oferece tools (ex.: web_search) ao modelo via function calling.
+   * Só injeta as que tiverem config/chave; sem chave, segue sem tools.
+   * O loop de tool-use fica DENTRO de cada adapter — failover/cooldown intactos.
+   */
+  tools?: boolean;
+}
+
+/** Mescla tools do registry padrão no request (sem duplicar por nome). */
+function withInjectedTools(req: AiCompletionRequest): AiCompletionRequest {
+  const registry = buildDefaultToolRegistry();
+  const { tools, toolExecutors } = registryAsRequestFields(registry);
+  if (!tools.length) return req;
+
+  const existingNames = new Set((req.tools ?? []).map((t) => t.name));
+  const mergedTools = [...(req.tools ?? [])];
+  for (const t of tools) {
+    if (!existingNames.has(t.name)) mergedTools.push(t);
+  }
+  return {
+    ...req,
+    tools: mergedTools,
+    toolExecutors: { ...toolExecutors, ...(req.toolExecutors ?? {}) },
+  };
 }
 
 /**
@@ -297,6 +322,10 @@ export async function complete(
     }
   }
 
+  // Tools: orchestrator injeta as disponíveis; o loop mora no adapter.
+  const effectiveReq =
+    opts.tools || req.tools?.length ? withInjectedTools(req) : req;
+
   const now = Date.now();
   const skipped: ResolvedProvider[] = [];
   const triedLabels: string[] = [];
@@ -309,7 +338,7 @@ export async function complete(
       continue;
     }
     attempted = true;
-    const r = await completeAvoidingTruncation(provider, req);
+    const r = await completeAvoidingTruncation(provider, effectiveReq);
     if (r.ok && r.text) {
       clearCooldown(provider);
       if (triedLabels.length > 0) {
@@ -328,7 +357,7 @@ export async function complete(
   // Todos em cooldown: tenta o de maior prioridade mesmo assim.
   if (!result && !attempted && skipped.length > 0) {
     const provider = skipped[0];
-    const r = await completeAvoidingTruncation(provider, req);
+    const r = await completeAvoidingTruncation(provider, effectiveReq);
     if (r.ok && r.text) {
       clearCooldown(provider);
       result = { text: r.text, providerId: provider.id, providerLabel: provider.label, model: provider.creds.model };

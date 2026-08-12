@@ -3,6 +3,7 @@ import { logger } from '../../config/logger';
 import { complete } from '../ai/orchestrator';
 import { listReminders } from '../../db/queries/reminders';
 import { getReminderPersona } from '../../db/queries/settings';
+import { buildOwnerMemoryPromptBlock } from '../owner-memory.service';
 import type { Reminder, ReminderCategory } from '../../types';
 import { DEFAULT_TZ, formatForOwner, fromWallClock, isValidRecurrence, parseLocalIso, toWallClock, weekdayNamePt } from './time';
 
@@ -114,6 +115,7 @@ function buildSystemPrompt(
   persona?: string | null,
   bulk = false,
   agenda: Reminder[] = [],
+  memoryBlock = '',
 ): string {
   const wc = toWallClock(now, tz);
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -178,6 +180,7 @@ function buildSystemPrompt(
     'Categorias: "importante" para pagamentos/prazos críticos; "rotina" para hábitos repetidos;',
     '"data_especifica" para compromissos pontuais.',
     formatAgendaBlock(agenda, tz),
+    memoryBlock ? `\n${memoryBlock}` : '',
     personaBlock,
   ].join('\n');
 }
@@ -315,9 +318,12 @@ export async function parseReminder(
   const persona =
     opts.personaOverride !== undefined ? opts.personaOverride : await getReminderPersona(tenantId);
   const agenda = opts.ownerPhone ? await loadOwnerAgenda(tenantId, opts.ownerPhone, tz) : [];
+  const memoryBlock = opts.ownerPhone
+    ? await buildOwnerMemoryPromptBlock(tenantId, opts.ownerPhone)
+    : '';
   const result = await complete(
     {
-      system: buildSystemPrompt(now, tz, persona, false, agenda),
+      system: buildSystemPrompt(now, tz, persona, false, agenda, memoryBlock),
       messages: [{ role: 'user', content: message.slice(0, 1000) }],
       maxTokens: 400,
       temperature: 0,
@@ -360,13 +366,16 @@ export async function parseReminders(
   const persona =
     opts.personaOverride !== undefined ? opts.personaOverride : await getReminderPersona(tenantId);
   const agenda = opts.ownerPhone ? await loadOwnerAgenda(tenantId, opts.ownerPhone, tz) : [];
+  const memoryBlock = opts.ownerPhone
+    ? await buildOwnerMemoryPromptBlock(tenantId, opts.ownerPhone)
+    : '';
   if (agenda.length > 0) {
     logger.info(`Lembretes: parse com ${agenda.length} item(ns) do caderno no contexto.`);
   }
   const result = await complete(
     {
-      system: buildSystemPrompt(now, tz, persona, true, agenda),
-      messages: [{ role: 'user', content: message.slice(0, 2000) }],
+      system: buildSystemPrompt(now, tz, persona, true, agenda, memoryBlock),
+      messages: [{ role: 'user', content: message.slice(0, 4000) }],
       // Mais itens = mais tokens; ainda modesto. O orquestrador dobra se truncar.
       maxTokens: 900,
       temperature: 0,

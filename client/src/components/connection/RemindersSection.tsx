@@ -112,10 +112,16 @@ function OwnerModesCard({
             <Badge tone={agent && webSearch ? 'success' : 'neutral'}>
               {agent && webSearch ? 'Ligada' : 'Desligada'}
             </Badge>
+            {webSearch && (
+              <Badge tone={searchReady ? 'success' : 'warning'}>
+                {searchReady ? 'Tool OK' : 'Sem chave'}
+              </Badge>
+            )}
           </div>
           <p className="mt-1 text-xs text-text-secondary">
-            No Agente, pesquisa e traz resultados (“cotação do dólar”, “horário dos Correios”…).
-            Funciona sem chave (DuckDuckGo); com Tavily no servidor fica ainda melhor.
+            No Agente, a IA usa a ferramenta <strong>web_search</strong> (function calling) para
+            cotações, notícias e fatos atuais. Precisa de chave Tavily/Brave no servidor
+            {searchReady ? ' (configurada).' : ' — ainda sem chave neste ambiente.'}
           </p>
         </div>
         <Toggle

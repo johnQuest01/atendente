@@ -87,9 +87,15 @@ const envSchema = z.object({
   STT_MODEL: z.string().default('whisper-1'),
   STT_LANGUAGE: z.string().default('pt'),
 
-  // Busca na web (modo Agente do dono). Tavily é rápido; "none" / duckduckgo
-  // usam DuckDuckGo sem chave (fallback). Com chave Tavily, prefira:
-  //   WEB_SEARCH_PROVIDER=tavily  WEB_SEARCH_API_KEY=tvly-...
+  // Busca na web via function calling (fase 3 multi-provedor).
+  // SEARCH_PROVIDER=tavily|brave|none — tool só é oferecida com chave.
+  SEARCH_PROVIDER: z.enum(['none', 'tavily', 'brave', 'auto']).default('auto'),
+  TAVILY_API_KEY: z.string().optional(),
+  BRAVE_API_KEY: z.string().optional(),
+  /** Teto de iterações do loop tool-use por chamada complete(). */
+  MAX_TOOL_ITERATIONS: z.coerce.number().int().positive().default(5),
+
+  // Compat legado (modo Agente pré-tool): ainda lido como fallback de chave/provider.
   WEB_SEARCH_PROVIDER: z.enum(['none', 'tavily', 'duckduckgo']).default('duckduckgo'),
   WEB_SEARCH_API_KEY: z.string().optional(),
 

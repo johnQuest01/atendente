@@ -69,8 +69,12 @@ export function AiBehaviorSection({
         <div className="min-w-0">
           <h2 className="text-base font-bold text-text-primary">Como a IA atende</h2>
           <p className="text-sm text-text-secondary">
-            Escreva o contexto, o jeito de falar e as regras que a IA deve seguir. É como escrever
-            as instruções direto pra IA — ela lê e responde os clientes seguindo isto.
+            Personalidade do atendente (system prompt estável). Preencha os placeholders{' '}
+            <code className="text-xs">{'{NOME_DO_ATENDENTE}'}</code>,{' '}
+            <code className="text-xs">{'{NOME_DO_NEGOCIO}'}</code> e{' '}
+            <code className="text-xs">{'{O_QUE_O_NEGOCIO_FAZ_OU_VENDE}'}</code> — ou use os campos
+            em Comportamento. Secretário + vendedor consultivo (dor → solução), sem mentir nem
+            pressionar.
           </p>
         </div>
         <Badge tone={isDefault ? 'primary' : 'success'}>{isDefault ? 'Padrão' : 'Personalizado'}</Badge>
@@ -83,9 +87,9 @@ export function AiBehaviorSection({
           setTouched(true);
         }}
         disabled={isLoading || !canEdit}
-        rows={16}
+        rows={18}
         spellCheck
-        placeholder="Ex.: Você é a Ana, atendente da Loja X. Fale de forma simpática e curta..."
+        placeholder="Você é {NOME_DO_ATENDENTE}, do {NOME_DO_NEGOCIO} — {O_QUE_O_NEGOCIO_FAZ_OU_VENDE}..."
         className={PROMPT_TEXTAREA_CLASS}
       />
 

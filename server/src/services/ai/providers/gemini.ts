@@ -1,29 +1,41 @@
+import { env } from '../../../config/env';
+import { logger } from '../../../config/logger';
 import { validateKeyAndModel } from '../model-catalog';
+import { runTool } from '../tools';
 import { fetchImageBase64, modelSupportsVision } from '../vision';
 import {
   classifyHttpError,
   classifyNetworkError,
   isTruncatedFinishReason,
   type AiAdapter,
+  type AiCompletionRequest,
   type ChatMessage,
 } from '../types';
 
 /**
- * Adaptador do Google Gemini (Generative Language API). Tem cota gratuita
- * generosa, o que o torna um otimo fallback. A chave vai como `?key=` na URL.
- * Modelos multimodais (Gemini 1.5+/2/3) recebem imagens via `inline_data` (base64).
+ * Adaptador do Google Gemini (Generative Language API).
+ * Loop de tool-use via functionDeclarations / functionCall / functionResponse.
  */
 
 const DEFAULT_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
+interface GeminiFunctionCall {
+  name?: string;
+  args?: Record<string, unknown>;
+}
+
+type GeminiPart =
+  | { text: string }
+  | { inline_data: { mime_type: string; data: string } }
+  | { functionCall: GeminiFunctionCall }
+  | { functionResponse: { name: string; response: { content: string } } };
+
 interface GeminiResponse {
   candidates?: Array<{
-    content?: { parts?: Array<{ text?: string }> };
+    content?: { parts?: GeminiPart[]; role?: string };
     finishReason?: string;
   }>;
 }
-
-type GeminiPart = { text: string } | { inline_data: { mime_type: string; data: string } };
 
 async function toGeminiContents(messages: ChatMessage[], vision: boolean) {
   const out: Array<{ role: string; parts: GeminiPart[] }> = [];
@@ -42,6 +54,21 @@ async function toGeminiContents(messages: ChatMessage[], vision: boolean) {
   return out;
 }
 
+function toGeminiTools(req: AiCompletionRequest):
+  | Array<{ functionDeclarations: Array<{ name: string; description: string; parameters: unknown }> }>
+  | undefined {
+  if (!req.tools?.length) return undefined;
+  return [
+    {
+      functionDeclarations: req.tools.map((t) => ({
+        name: t.name,
+        description: t.description,
+        parameters: t.inputSchema,
+      })),
+    },
+  ];
+}
+
 export const geminiAdapter: AiAdapter = {
   kind: 'gemini',
 
@@ -49,41 +76,82 @@ export const geminiAdapter: AiAdapter = {
     const base = (creds.baseUrl || DEFAULT_BASE).replace(/\/+$/, '');
     const url = `${base}/models/${encodeURIComponent(creds.model)}:generateContent?key=${encodeURIComponent(creds.apiKey)}`;
     const vision = modelSupportsVision('gemini', creds.model);
-    const contents = await toGeminiContents(req.messages, vision);
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: req.system }] },
-          contents,
-          generationConfig: { maxOutputTokens: req.maxTokens, temperature: req.temperature },
-        }),
-        signal: AbortSignal.timeout(45_000),
-      });
-    } catch (err) {
-      throw classifyNetworkError(err);
+    const tools = toGeminiTools(req);
+    const maxIters = env.MAX_TOOL_ITERATIONS;
+    let contents = await toGeminiContents(req.messages, vision);
+    let lastText = '';
+    let finishReason: string | null = null;
+
+    for (let iter = 0; iter < maxIters; iter++) {
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            system_instruction: { parts: [{ text: req.system }] },
+            contents,
+            generationConfig: { maxOutputTokens: req.maxTokens, temperature: req.temperature },
+            ...(tools?.length ? { tools } : {}),
+          }),
+          signal: AbortSignal.timeout(45_000),
+        });
+      } catch (err) {
+        throw classifyNetworkError(err);
+      }
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw classifyHttpError(res.status, body);
+      }
+
+      const data = (await res.json()) as GeminiResponse;
+      const candidate = data.candidates?.[0];
+      const parts = candidate?.content?.parts ?? [];
+      finishReason = candidate?.finishReason ?? null;
+      lastText = parts
+        .map((p) => ('text' in p && p.text ? p.text : ''))
+        .join('')
+        .trim();
+
+      const functionCalls = parts.filter(
+        (p): p is { functionCall: GeminiFunctionCall } =>
+          'functionCall' in p && Boolean(p.functionCall?.name),
+      );
+
+      if (!functionCalls.length) {
+        return {
+          text: lastText,
+          finishReason,
+          truncated: isTruncatedFinishReason(finishReason),
+        };
+      }
+
+      // Turno do modelo com functionCall(s)
+      contents = [
+        ...contents,
+        { role: 'model', parts: functionCalls.map((p) => ({ functionCall: p.functionCall })) },
+      ];
+
+      const responseParts: GeminiPart[] = [];
+      for (const fc of functionCalls) {
+        const name = fc.functionCall.name ?? '';
+        logger.info(`Gemini functionCall: ${name}`);
+        const content = await runTool(req.toolExecutors, name, fc.functionCall.args ?? {});
+        responseParts.push({
+          functionResponse: { name, response: { content } },
+        });
+      }
+      contents = [...contents, { role: 'user', parts: responseParts }];
     }
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      throw classifyHttpError(res.status, body);
-    }
-    const data = (await res.json()) as GeminiResponse;
-    const candidate = data.candidates?.[0];
-    const text = (candidate?.content?.parts ?? [])
-      .map((p) => p.text ?? '')
-      .join('')
-      .trim();
-    const finishReason = candidate?.finishReason ?? null;
+
+    logger.warn(`Gemini: teto de tool iterations (${maxIters}) — devolvendo texto parcial.`);
     return {
-      text,
-      finishReason,
+      text: lastText,
+      finishReason: finishReason ?? 'max_tool_iterations',
       truncated: isTruncatedFinishReason(finishReason),
     };
   },
 
-  // Valida a chave E confere se o modelo existe (via catalogo /models).
   validateKey(creds) {
     return validateKeyAndModel('gemini', creds);
   },

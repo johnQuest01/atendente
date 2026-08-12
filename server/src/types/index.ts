@@ -7,6 +7,8 @@ export interface User {
   password_hash: string;
   role: UserRole;
   tenant_id: string;
+  /** WhatsApp do dono (dígitos), preenchido no cadastro por convite. */
+  phone: string | null;
   created_at: string;
 }
 

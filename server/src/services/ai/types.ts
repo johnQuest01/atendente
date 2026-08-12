@@ -4,6 +4,10 @@
  * TROCAR de IA e fazer FAILOVER automatico sem mexer no resto do sistema.
  */
 
+import type { Tool, ToolExecutor } from './tools/types';
+
+export type { Tool, ToolExecutor } from './tools/types';
+
 export type AiKind = 'anthropic' | 'openai' | 'gemini';
 
 /**
@@ -51,12 +55,29 @@ export interface AiCredentials {
 }
 
 export interface AiCompletionRequest {
-  /** Instrucoes/persona (system prompt) — ja montadas, agnosticas de provedor. */
+  /**
+   * System prompt completo (persona + contexto dinâmico).
+   * Sempre preenchido — adapters sem cache usam só isto.
+   */
   system: string;
+  /**
+   * Bloco estável (persona) para prompt caching (Anthropic cache_control).
+   * A mensagem do cliente fica em `messages`, fora do cache.
+   */
+  systemCached?: string;
+  /** Contexto que muda (catálogo, cliente, memórias) — fora do cache. */
+  systemDynamic?: string;
   /** Historico normalizado (alterna user/assistant, comeca em user). */
   messages: ChatMessage[];
   maxTokens: number;
   temperature: number;
+  /**
+   * Ferramentas neutras (function calling). O orchestrator pode injetá-las.
+   * Cada adapter converte para o protocolo do provedor e roda o loop de tool-use.
+   */
+  tools?: Tool[];
+  /** Executores por nome da tool — mesma execução em todos os adapters. */
+  toolExecutors?: Record<string, ToolExecutor>;
 }
 
 /** Resultado de uma completion, com motivo de parada (truncamento). */

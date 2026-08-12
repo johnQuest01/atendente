@@ -26,6 +26,7 @@ import { getHealthReport } from '../services/health.service';
 import { previewReply } from '../services/ai.service';
 import { parseReminder } from '../services/reminders/parse.service';
 import { getOwnerModeFlags } from '../services/owner-chat.service';
+import { isWebSearchToolAvailable } from '../services/ai/tools';
 import { listProducts } from '../db/queries/products';
 import { listScripts } from '../db/queries/messages_scripts';
 import { getWhatsappByConnection, invalidateTenantWhatsapp } from '../services/whatsapp.service';
@@ -89,7 +90,8 @@ export async function putAgentStatus(req: Request, res: Response): Promise<void>
 
 export const updatePersonaSchema = z.object({
   // Vazio é permitido: limpa a personalização e volta ao padrão.
-  prompt: z.string().max(12000, 'O texto está muito longo (máx. 12000 caracteres).'),
+  // persona.MD é longo — teto folgado para o template + diferenciais do cliente.
+  prompt: z.string().max(20000, 'O texto está muito longo (máx. 20000 caracteres).'),
   temperature: z.coerce.number().min(0).max(1.5).optional(),
   maxTokens: z.coerce.number().int().min(50).max(1200).optional(),
 });
@@ -431,7 +433,8 @@ export async function getOwnerModes(req: Request, res: Response): Promise<void> 
     secretary: flags.secretary,
     agent: flags.agent,
     webSearch: flags.webSearch,
-    webSearchConfigured: env.hasWebSearch,
+    // Tool web_search só com chave Tavily/Brave (fase 3) — não DuckDuckGo “sempre true”.
+    webSearchConfigured: isWebSearchToolAvailable(),
   });
 }
 
@@ -466,7 +469,7 @@ export async function putOwnerModes(req: Request, res: Response): Promise<void> 
     secretary: flags.secretary,
     agent: flags.agent,
     webSearch: flags.webSearch,
-    webSearchConfigured: env.hasWebSearch,
+    webSearchConfigured: isWebSearchToolAvailable(),
   });
 }
 

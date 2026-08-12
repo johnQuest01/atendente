@@ -113,10 +113,21 @@ export async function getInvitePreview(req: Request, res: Response): Promise<voi
   });
 }
 
+function onlyDigits(value: string): string {
+  return value.replace(/\D/g, '');
+}
+
 export const acceptInviteSchema = z.object({
-  companyName: z.string().trim().min(2, 'Nome muito curto.').max(120),
-  adminName: z.string().trim().min(2).max(100),
-  adminEmail: z.string().email(),
+  /** Nome do negócio; se vazio, usa o nome completo do admin. */
+  companyName: z.string().trim().max(120).optional(),
+  adminName: z.string().trim().min(2, 'Informe o nome completo.').max(100),
+  adminEmail: z.string().email('Informe um e-mail válido (ex.: Gmail).'),
+  adminPhone: z
+    .string()
+    .trim()
+    .min(10, 'Informe o telefone com DDD.')
+    .max(20)
+    .refine((v) => onlyDigits(v).length >= 10 && onlyDigits(v).length <= 15, 'Telefone inválido.'),
   adminPassword: z
     .string()
     .min(8, 'A senha deve ter ao menos 8 caracteres.')
@@ -151,7 +162,11 @@ export async function acceptInvite(req: Request, res: Response): Promise<void> {
   const existing = await findUserByEmail(input.adminEmail);
   if (existing) throw new ConflictError('Já existe um usuário com este e-mail.');
 
-  const tenant = await createTenant(input.companyName, {
+  const phone = onlyDigits(input.adminPhone);
+  const companyName =
+    (input.companyName?.trim() || invite.company_name?.trim() || input.adminName).slice(0, 120);
+
+  const tenant = await createTenant(companyName, {
     trialDays: invite.trial_days,
     aiMessageLimit: invite.ai_message_limit,
   });
@@ -170,6 +185,7 @@ export async function acceptInvite(req: Request, res: Response): Promise<void> {
     passwordHash,
     role: 'admin',
     tenantId: tenant.id,
+    phone,
   });
 
   const payload: JwtPayload = {
@@ -180,11 +196,19 @@ export async function acceptInvite(req: Request, res: Response): Promise<void> {
   };
   const jwtToken = jwt.sign(payload, env.JWT_SECRET, { expiresIn: env.JWT_EXPIRES_IN } as SignOptions);
 
-  logger.info(`Convite aceito: empresa "${tenant.name}" criada com ${invite.trial_days} dias de teste.`);
+  logger.info(
+    `Convite aceito: empresa "${tenant.name}" criada com ${invite.trial_days} dias de teste (fone ${phone}).`,
+  );
 
   res.status(201).json({
     token: jwtToken,
-    user: { id: admin.id, name: admin.name, email: admin.email, role: admin.role },
+    user: {
+      id: admin.id,
+      name: admin.name,
+      email: admin.email,
+      role: admin.role,
+      phone: admin.phone,
+    },
     tenant: { id: tenant.id, name: tenant.name, trialEndsAt: tenant.trial_ends_at },
   });
 }

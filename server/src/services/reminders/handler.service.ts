@@ -20,7 +20,13 @@ import type { NormalizedInbound } from '../whatsapp/types';
 import type { Reminder } from '../../types';
 import { describeLead, describeRecurrence, parseReminders, type ParsedReminder } from './parse.service';
 import { DEFAULT_TZ, formatForOwner, fromWallClock, toWallClock } from './time';
-import { freeChatOwner, getOwnerModeFlags } from '../owner-chat.service';
+import {
+  freeChatOwner,
+  getOwnerModeFlags,
+  persistOwnerAssistantReply,
+  persistOwnerUserMessage,
+} from '../owner-chat.service';
+import { recordOwnerEvent } from '../owner-memory.service';
 import {
   displayName,
   parseRelayIntent,
@@ -122,6 +128,7 @@ async function reply(tenantId: string, phone: string, text: string): Promise<voi
   const wa = connectionId
     ? await getWhatsappByConnection(tenantId, connectionId)
     : await getTenantWhatsapp(tenantId);
+  await persistOwnerAssistantReply(tenantId, phone, text, connectionId);
   await wa.sendText(phone, text).catch((err) => logger.warn('Lembretes: falha ao responder o dono', err));
 }
 
@@ -506,6 +513,16 @@ async function handleOwnerMessageInner(
   }
 
   if (!text || !text.trim()) return true;
+
+  // Histórico em tempo real: grava a fala do dono antes de qualquer ramo.
+  await persistOwnerUserMessage({
+    tenantId,
+    phone,
+    content: text,
+    connectionId,
+    providerMessageId: inbound.providerMessageId,
+  });
+
   const normalized = normalize(text);
   const owner = getState(tenantId, phone);
   const flags = await getOwnerModeFlags(tenantId, connectionId);
@@ -529,6 +546,16 @@ async function handleOwnerMessageInner(
           clientId: cand.id,
           body,
         });
+        if (sent.ok) {
+          void recordOwnerEvent({
+            tenantId,
+            ownerPhone: phone,
+            kind: 'acao',
+            summary: `Enviei mensagem para ${sent.name}: "${body.slice(0, 160)}"`,
+            connectionId,
+            source: 'relay',
+          });
+        }
         await reply(
           tenantId,
           phone,
@@ -568,6 +595,17 @@ async function handleOwnerMessageInner(
       // Tudo-ou-nada: ou grava todos, ou nenhum (transação).
       await createRemindersBulk(tenantId, inputs);
       setState(tenantId, phone, { pending: undefined });
+      for (const item of items) {
+        void recordOwnerEvent({
+          tenantId,
+          ownerPhone: phone,
+          kind: 'evento',
+          summary: `Compromisso anotado: ${item.task} (${formatForOwner(item.nextFireAt, tz)})`,
+          connectionId: replyConnectionId,
+          occurredAt: item.nextFireAt,
+          source: 'reminder',
+        });
+      }
       await reply(
         tenantId,
         phone,
@@ -749,6 +787,16 @@ async function handleOwnerMessageInner(
           clientId: candidates[0].id,
           body: relay.body,
         });
+        if (sent.ok) {
+          void recordOwnerEvent({
+            tenantId,
+            ownerPhone: phone,
+            kind: 'acao',
+            summary: `Enviei mensagem para ${sent.name}: "${relay.body.slice(0, 160)}"`,
+            connectionId,
+            source: 'relay',
+          });
+        }
         await reply(
           tenantId,
           phone,
@@ -780,15 +828,17 @@ async function handleOwnerMessageInner(
   }
 
   // 5. Agente: chat livre + busca (rápido), quando não for agenda.
+  // Debounce: várias msgs rápidas viram um único reply; extras = merged.
   if (flags.agent) {
-    const answer = await freeChatOwner(tenantId, phone, text, {
+    const result = await freeChatOwner(tenantId, phone, text, {
       connectionId,
       webSearchEnabled: flags.webSearch,
     });
+    if (result.status === 'merged') return true;
     await reply(
       tenantId,
       phone,
-      answer ?? 'Não rolou agora. Manda de novo em uma frase?',
+      result.text ?? 'Não rolou agora. Manda de novo em uma frase?',
     );
     return true;
   }

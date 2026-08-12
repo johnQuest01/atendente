@@ -29,6 +29,24 @@ export interface BehaviorSetting {
 
 export const BEHAVIOR_SETTINGS: BehaviorSetting[] = [
   {
+    key: 'ai_attendant_name',
+    label: 'Nome do atendente',
+    description:
+      'Preenche {NOME_DO_ATENDENTE} na personalidade (ex.: Ana, Mayra). Deixe vazio para "Mayra".',
+    type: 'text',
+    default: 'Mayra',
+    scope: 'sales',
+  },
+  {
+    key: 'ai_business_blurb',
+    label: 'O que o negócio faz ou vende',
+    description:
+      'Preenche {O_QUE_O_NEGOCIO_FAZ_OU_VENDE} (ex.: "atacado de cosméticos para lojistas").',
+    type: 'longtext',
+    default: '',
+    scope: 'sales',
+  },
+  {
     key: 'ai_temperature',
     label: 'Criatividade da IA (vendas)',
     description: '0 = objetivo e previsível; 1.5 = mais criativo e solto.',

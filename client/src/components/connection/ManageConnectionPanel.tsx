@@ -216,7 +216,7 @@ export function WhatsappConnectionForm({
             rows={4}
             value={aiPersona}
             onChange={(e) => setAiPersona(e.target.value)}
-            placeholder="Instruções só para este WhatsApp. Vazio = persona geral da empresa."
+            placeholder="Opcional: sobrescreve a persona deste WhatsApp. Use {NOME_DO_ATENDENTE}, {NOME_DO_NEGOCIO}… Vazio = herda o padrão da empresa."
           />
         </label>
         <div className="mt-2 grid grid-cols-2 gap-2">

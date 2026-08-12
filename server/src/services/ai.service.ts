@@ -1,7 +1,7 @@
-import { DEFAULT_AI_PERSONA } from '../config/persona';
+import { applyPersonaPlaceholders, DEFAULT_AI_PERSONA } from '../config/persona';
 import { logger } from '../config/logger';
 import { formatBRL } from '../utils/text';
-import { getAiMaxTokens, getAiTemperature } from '../db/queries/settings';
+import { getAiMaxTokens, getAiTemperature, readSetting } from '../db/queries/settings';
 import type { AiHistoryMessage, Client, Product, TextScript } from '../types';
 import { complete, hasVisionProvider, isAiConfigured } from './ai/orchestrator';
 import type { ChatImage, ChatMessage } from './ai/types';
@@ -111,26 +111,53 @@ interface SystemPromptInput {
   systemPrompt?: string;
   /** Bloco opcional de memórias (já formatado). */
   memoryBlock?: string;
+  /** {NOME_DO_ATENDENTE} — se omitido, lê settings/ai_attendant_name. */
+  attendantName?: string | null;
+  /** {O_QUE_O_NEGOCIO_FAZ_OU_VENDE} — se omitido, lê settings/ai_business_blurb. */
+  businessBlurb?: string | null;
+  /** Tenant para resolver placeholders a partir do painel. */
+  tenantId?: string;
+}
+
+interface SystemPromptParts {
+  /** Persona estável (cacheável). */
+  cached: string;
+  /** Catálogo, cliente, memórias (fora do cache). */
+  dynamic: string;
+  /** cached + dynamic (provedores sem prompt cache). */
+  full: string;
 }
 
 /**
- * Monta o system prompt completo: persona (com [NOME DA LOJA] substituído) +
- * contexto do cliente + catálogo + scripts. Reaproveitado pelo atendimento
- * real (generateReply) e pelo preview/playground do app (previewReply).
+ * Monta o system prompt em duas partes (persona.MD):
+ * - cached: persona estável com placeholders preenchidos
+ * - dynamic: contexto da conversa (cliente, catálogo, scripts)
+ * A mensagem do cliente fica em `messages`, nunca no system cacheado.
  */
-function buildSystemPrompt(input: SystemPromptInput): string {
-  const basePrompt = (input.systemPrompt?.trim() || DEFAULT_AI_PERSONA).replace(
-    /\[NOME DA LOJA\]/g,
-    input.storeName ?? 'nossa loja',
-  );
-  return (
-    basePrompt +
+async function buildSystemPromptParts(input: SystemPromptInput): Promise<SystemPromptParts> {
+  let attendantName = input.attendantName ?? null;
+  let businessBlurb = input.businessBlurb ?? null;
+  if (input.tenantId) {
+    if (!attendantName?.trim()) {
+      attendantName = (await readSetting(input.tenantId, 'ai_attendant_name')) ?? null;
+    }
+    if (!businessBlurb?.trim()) {
+      businessBlurb = (await readSetting(input.tenantId, 'ai_business_blurb')) ?? null;
+    }
+  }
+
+  const cached = applyPersonaPlaceholders(input.systemPrompt?.trim() || DEFAULT_AI_PERSONA, {
+    attendantName,
+    businessName: input.storeName,
+    businessBlurb,
+  });
+  const dynamic =
     buildClientContext(input.client) +
     (input.memoryBlock ?? '') +
     buildClientInstruction(input.client) +
     buildCatalog(input.products) +
-    buildScriptsReference(input.scripts)
-  );
+    buildScriptsReference(input.scripts);
+  return { cached, dynamic, full: cached + dynamic };
 }
 
 /**
@@ -222,10 +249,12 @@ export async function generateReply(
   const memoryBlock = input.client
     ? await buildMemoryPromptBlock(tenantId, input.client.id).catch(() => '')
     : '';
-  const system =
-    buildSystemPrompt({ ...input, memoryBlock }) +
-    (hasImages ? VISION_INSTRUCTION : '') +
-    (hasHumanTurns ? HUMAN_TURN_INSTRUCTION : '');
+  const parts = await buildSystemPromptParts({ ...input, memoryBlock, tenantId });
+  const dynamicExtra =
+    (hasImages ? VISION_INSTRUCTION : '') + (hasHumanTurns ? HUMAN_TURN_INSTRUCTION : '');
+  const systemCached = parts.cached;
+  const systemDynamic = parts.dynamic + dynamicExtra;
+  const system = systemCached + systemDynamic;
   const [tenantTemp, tenantMax] = await Promise.all([
     input.temperature !== undefined ? Promise.resolve(input.temperature) : getAiTemperature(tenantId),
     input.maxTokens !== undefined ? Promise.resolve(input.maxTokens) : getAiMaxTokens(tenantId),
@@ -234,10 +263,21 @@ export async function generateReply(
   // Visão: um pouco mais de espaço, sem passar do teto absoluto (1200).
   const maxTokens = hasImages ? Math.min(1200, Math.max(tenantMax, 700)) : tenantMax;
 
-  const result = await complete({ system, messages, maxTokens, temperature }, tenantId, {
-    meter: true,
-    connectionId: input.connectionId,
-  });
+  const result = await complete(
+    {
+      system,
+      systemCached,
+      systemDynamic,
+      messages,
+      maxTokens,
+      temperature,
+    },
+    tenantId,
+    {
+      meter: true,
+      connectionId: input.connectionId,
+    },
+  );
   if (!result) {
     logger.warn('Sem resposta da IA (nenhum provedor disponível, teto atingido ou todos em falha).');
     return null;
@@ -284,13 +324,22 @@ export async function previewReply(
     else messages.push({ role: m.role, content: m.content });
   }
 
-  const system = buildSystemPrompt(input);
+  const parts = await buildSystemPromptParts({ ...input, tenantId });
   const temperature = clampNumber(input.temperature ?? 0.7, 0, 1.5);
   const maxTokens = clampNumber(Math.round(input.maxTokens ?? 500), 50, 1200);
 
-  const result = await complete({ system, messages, maxTokens, temperature }, tenantId, {
-    meter: false,
-  });
+  const result = await complete(
+    {
+      system: parts.full,
+      systemCached: parts.cached,
+      systemDynamic: parts.dynamic,
+      messages,
+      maxTokens,
+      temperature,
+    },
+    tenantId,
+    { meter: false },
+  );
   return {
     reply: result?.text || null,
     providerLabel: result?.providerLabel ?? null,

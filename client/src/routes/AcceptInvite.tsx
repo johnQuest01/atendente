@@ -10,8 +10,8 @@ import { toast } from '@/store/appStore';
 import type { User } from '@/types';
 
 /**
- * Página pública do convite. Quem chega aqui ainda não tem conta: valida o
- * link, cria a empresa com o período de teste e já entra no painel.
+ * Página pública do convite (link direto). Mesmos dados do cadastro no login:
+ * nome completo, telefone, e-mail e senha.
  */
 
 interface InvitePreview {
@@ -37,8 +37,8 @@ export default function AcceptInvite() {
   const [preview, setPreview] = useState<InvitePreview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const [companyName, setCompanyName] = useState('');
   const [adminName, setAdminName] = useState('');
+  const [adminPhone, setAdminPhone] = useState('');
   const [adminEmail, setAdminEmail] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
@@ -50,7 +50,6 @@ export default function AcceptInvite() {
       .then(({ data }) => {
         if (!alive) return;
         setPreview(data);
-        if (data.companyName) setCompanyName(data.companyName);
         if (data.email) setAdminEmail(data.email);
       })
       .catch((err) => {
@@ -66,14 +65,15 @@ export default function AcceptInvite() {
     setSubmitting(true);
     try {
       const { data } = await api.post<AcceptResponse>(`/invites/${inviteToken}/accept`, {
-        companyName: companyName.trim(),
         adminName: adminName.trim(),
         adminEmail: adminEmail.trim(),
+        adminPhone: adminPhone.trim(),
         adminPassword,
+        companyName: preview?.companyName ?? undefined,
       });
       setAuth(data.user, data.token);
       reauthSocket();
-      toast(`Bem-vindo! Seu teste começou agora.`, 'success');
+      toast('Bem-vindo! Seu teste começou — conecte seu WhatsApp.', 'success');
       navigate('/', { replace: true });
     } catch (err) {
       toast(getErrorMessage(err), 'error');
@@ -127,28 +127,30 @@ export default function AcceptInvite() {
             className="glass flex flex-col gap-4 rounded-3xl p-6 shadow-card-hover"
           >
             <Input
-              label="Nome da empresa"
-              placeholder="Ex.: Distribuidora Alfa"
-              value={companyName}
-              onChange={(e) => setCompanyName(e.target.value)}
-              required
-            />
-            <Input
-              label="Seu nome"
+              label="Nome completo"
               autoComplete="name"
-              placeholder="Como devemos te chamar"
+              placeholder="Seu nome completo"
               value={adminName}
               onChange={(e) => setAdminName(e.target.value)}
               required
             />
             <Input
-              label="E-mail"
+              label="Telefone (WhatsApp)"
+              type="tel"
+              autoComplete="tel"
+              inputMode="tel"
+              placeholder="11 99999-9999"
+              value={adminPhone}
+              onChange={(e) => setAdminPhone(e.target.value)}
+              required
+            />
+            <Input
+              label="E-mail (Gmail)"
               type="email"
               autoComplete="email"
-              placeholder="seu@email.com"
+              placeholder="seu@gmail.com"
               value={adminEmail}
               onChange={(e) => setAdminEmail(e.target.value)}
-              // Convite endereçado: o e-mail é parte do convite, não é escolha.
               disabled={Boolean(preview?.email)}
               required
             />
@@ -168,8 +170,7 @@ export default function AcceptInvite() {
         )}
 
         <p className="mt-6 text-center text-xs text-text-secondary">
-          Ao criar a conta você poderá conectar seu próprio número de WhatsApp e testar o atendente
-          com seus clientes.
+          Depois de criar a conta, conecte seu WhatsApp para usar o atendente e a secretária.
         </p>
       </div>
     </div>

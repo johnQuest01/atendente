@@ -32,6 +32,8 @@ import {
   setTenantAccountStatus,
   updateTenant,
 } from '../db/queries/tenants';
+import { findTenantAdminWithPhone } from '../db/queries/users';
+import { addReminderOwner } from '../db/queries/reminders';
 import { emitWhatsappStatus } from '../socket';
 import { invalidateTenantWhatsapp } from './whatsapp.service';
 
@@ -568,6 +570,17 @@ export async function finalizeConnected(
     phone,
   });
   invalidateTenantWhatsapp(tenantId);
+
+  // Libera a secretária no número informado no cadastro (best-effort).
+  try {
+    const admin = await findTenantAdminWithPhone(tenantId);
+    if (admin?.phone) {
+      await addReminderOwner(tenantId, admin.phone.replace(/\D/g, ''), admin.name, conn.id);
+      logger.info(`Secretária: ${admin.phone} autorizado na conexão ${conn.id}`);
+    }
+  } catch (err) {
+    logger.warn('Não foi possível autorizar o telefone do admin na secretária', err);
+  }
 }
 
 export async function handleConnectionWebhookEvent(

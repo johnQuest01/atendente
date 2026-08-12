@@ -1,5 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { env } from '../../../config/env';
+import { logger } from '../../../config/logger';
 import { validateKeyAndModel } from '../model-catalog';
+import { runTool } from '../tools';
 import { anthropicMediaType, fetchImageBase64, modelSupportsVision } from '../vision';
 import {
   AiProviderError,
@@ -8,6 +11,7 @@ import {
   isTruncatedFinishReason,
   isUnsupportedTemperature,
   type AiAdapter,
+  type AiCompletionRequest,
   type ChatMessage,
 } from '../types';
 
@@ -65,6 +69,15 @@ function temperatureRejected(err: unknown): boolean {
   return false;
 }
 
+function toAnthropicTools(req: AiCompletionRequest): Anthropic.Messages.Tool[] | undefined {
+  if (!req.tools?.length) return undefined;
+  return req.tools.map((t) => ({
+    name: t.name,
+    description: t.description,
+    input_schema: t.inputSchema as Anthropic.Messages.Tool['input_schema'],
+  }));
+}
+
 export const anthropicAdapter: AiAdapter = {
   kind: 'anthropic',
 
@@ -75,34 +88,100 @@ export const anthropicAdapter: AiAdapter = {
       timeout: 45_000,
     });
     const vision = modelSupportsVision('anthropic', creds.model);
-    const params = {
-      model: creds.model,
-      max_tokens: req.maxTokens,
-      system: req.system,
-      messages: await toAnthropicMessages(req.messages, vision),
-    };
+    const tools = toAnthropicTools(req);
+    const maxIters = env.MAX_TOOL_ITERATIONS;
+    let messages = await toAnthropicMessages(req.messages, vision);
+    let lastText = '';
+    let finishReason: string | null = null;
+
     try {
-      let response;
-      try {
-        response = await client.messages.create({ ...params, temperature: req.temperature });
-      } catch (err) {
-        // Modelos novos (opus-5, sonnet-5, fable-5) depreciaram `temperature`:
-        // a API responde 400. Refaz a chamada SEM o parâmetro em vez de falhar.
-        if (temperatureRejected(err)) {
-          response = await client.messages.create(params);
-        } else {
-          throw err;
+      for (let iter = 0; iter < maxIters; iter++) {
+        // Persona estável com cache_control; contexto dinâmico e a msg do cliente ficam fora.
+        // cast: SDKs antigos tipam TextBlockParam sem cache_control; a API Anthropic aceita.
+        const system = (
+          req.systemCached?.trim()
+            ? [
+                {
+                  type: 'text' as const,
+                  text: req.systemCached,
+                  cache_control: { type: 'ephemeral' as const },
+                },
+                ...(req.systemDynamic?.trim()
+                  ? [{ type: 'text' as const, text: req.systemDynamic }]
+                  : []),
+              ]
+            : req.system
+        ) as Anthropic.MessageCreateParamsNonStreaming['system'];
+
+        const params: Anthropic.MessageCreateParamsNonStreaming = {
+          model: creds.model,
+          max_tokens: req.maxTokens,
+          system,
+          messages,
+          ...(tools?.length ? { tools } : {}),
+        };
+
+        let response: Anthropic.Message;
+        try {
+          response = await client.messages.create({ ...params, temperature: req.temperature });
+        } catch (err) {
+          if (temperatureRejected(err)) {
+            response = await client.messages.create(params);
+          } else {
+            throw err;
+          }
         }
+
+        finishReason = response.stop_reason ?? null;
+        lastText = response.content
+          .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+          .map((b) => b.text)
+          .join('\n')
+          .trim();
+
+        if (response.stop_reason !== 'tool_use') {
+          return {
+            text: lastText,
+            finishReason,
+            truncated: isTruncatedFinishReason(finishReason),
+          };
+        }
+
+        const toolUseBlocks = response.content.filter(
+          (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
+        );
+        if (!toolUseBlocks.length) {
+          return {
+            text: lastText,
+            finishReason,
+            truncated: isTruncatedFinishReason(finishReason),
+          };
+        }
+
+        messages = [
+          ...messages,
+          { role: 'assistant', content: response.content },
+          {
+            role: 'user',
+            content: await Promise.all(
+              toolUseBlocks.map(async (block) => {
+                logger.info(`Anthropic tool_use: ${block.name}`);
+                const content = await runTool(req.toolExecutors, block.name, block.input);
+                return {
+                  type: 'tool_result' as const,
+                  tool_use_id: block.id,
+                  content,
+                };
+              }),
+            ),
+          },
+        ];
       }
-      const text = response.content
-        .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-        .map((b) => b.text)
-        .join('\n')
-        .trim();
-      const finishReason = response.stop_reason ?? null;
+
+      logger.warn(`Anthropic: teto de tool iterations (${maxIters}) — devolvendo texto parcial.`);
       return {
-        text,
-        finishReason,
+        text: lastText,
+        finishReason: finishReason ?? 'max_tool_iterations',
         truncated: isTruncatedFinishReason(finishReason),
       };
     } catch (err) {

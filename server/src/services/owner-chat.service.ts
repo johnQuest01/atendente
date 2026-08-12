@@ -1,87 +1,30 @@
 import { logger } from '../config/logger';
 import { complete } from './ai/orchestrator';
+import { isWebSearchToolAvailable } from './ai/tools';
 import { getReminderPersona } from '../db/queries/settings';
 import { getConnectionById } from '../db/queries/whatsapp_connections';
+import {
+  appendOwnerChatMessage,
+  listOwnerChatHistory,
+} from '../db/queries/owner_chat_messages';
 import { loadOwnerAgenda } from './reminders/parse.service';
 import { formatForOwner, DEFAULT_TZ } from './reminders/time';
 import {
-  formatSearchContext,
-  messageLikelyNeedsSearch,
-  webSearch,
-} from './web-search.service';
+  buildOwnerMemoryPromptBlock,
+  scheduleOwnerMemoryExtract,
+} from './owner-memory.service';
 
 /**
- * Modo Agente do dono: chat livre no WhatsApp (estilo Claude), rápido.
- * Isolado da whitelist — o handler já checou isReminderOwner.
+ * Modo Agente do dono: chat livre no WhatsApp.
+ * Histórico no Postgres (tempo real) + caderno de eventos + debounce.
  */
 
-interface ChatTurn {
-  role: 'user' | 'assistant';
-  content: string;
-}
-
-interface ChatState {
-  at: number;
-  turns: ChatTurn[];
-}
-
-const HISTORY_TTL_MS = 30 * 60_000;
-const MAX_TURNS = 8;
 /** Modo rápido: poucas tokens, resposta curta no WhatsApp. */
-const FAST_MAX_TOKENS = 220;
+const FAST_MAX_TOKENS = 280;
 const FAST_TEMPERATURE = 0.2;
-
-const history = new Map<string, ChatState>();
-
-function key(tenantId: string, phone: string): string {
-  return `${tenantId}:${phone}`;
-}
-
-function getHistory(tenantId: string, phone: string): ChatTurn[] {
-  const k = key(tenantId, phone);
-  const cur = history.get(k);
-  if (!cur || Date.now() - cur.at > HISTORY_TTL_MS) {
-    history.set(k, { at: Date.now(), turns: [] });
-    return [];
-  }
-  return cur.turns;
-}
-
-function pushHistory(tenantId: string, phone: string, turn: ChatTurn): void {
-  const k = key(tenantId, phone);
-  const turns = getHistory(tenantId, phone);
-  turns.push(turn);
-  while (turns.length > MAX_TURNS) turns.shift();
-  history.set(k, { at: Date.now(), turns });
-}
-
-function buildFastSystem(
-  persona: string | null | undefined,
-  agendaLines: string[],
-  searchBlock: string | null,
-  webSearchOn: boolean,
-): string {
-  const parts = [
-    'Você fala com o DONO no WhatsApp — como um assistente humano rápido (estilo Claude), não como robô.',
-    'Respostas CURTAS (WhatsApp): no máximo ~6 linhas; bullets quando ajudar.',
-    'Nunca diga que é IA/bot. Não invente compromissos: agenda real está abaixo.',
-    'Se pedirem para anotar/lembrar algo com data, diga pra mandar tipo "me lembra amanhã às 9h de…".',
-    webSearchOn
-      ? [
-          'Busca na web está LIGADA neste WhatsApp.',
-          'Se houver "Resultados da busca" abaixo, USE-OS na resposta (cite a fonte em 1 linha).',
-          'NUNCA peça WEB_SEARCH_API_KEY, chave de API, Tavily, nem diga que falta configurar no servidor.',
-          'Se a busca não trouxe resultado, diga só que não achou fonte atual — sem falar de configuração.',
-        ].join(' ')
-      : 'Busca na web está desligada. Se pedirem pesquisa, diga pra ligar a alavanca "Busca na web" em Lembretes.',
-    persona?.trim() ? `Tom:\n${persona.trim()}` : '',
-    agendaLines.length
-      ? `Caderno (próximos dias):\n${agendaLines.join('\n')}`
-      : 'Caderno: (vazio por enquanto).',
-    searchBlock ?? '',
-  ];
-  return parts.filter(Boolean).join('\n\n');
-}
+/** Espera msgs extras do dono antes de chamar a IA (anti-perda). */
+const BATCH_DEBOUNCE_MS = 1600;
+const HISTORY_LIMIT = 80;
 
 export interface FreeChatOptions {
   connectionId?: string | null;
@@ -89,15 +32,82 @@ export interface FreeChatOptions {
   webSearchEnabled?: boolean;
 }
 
-/**
- * Responde em modo Agente. Retorna o texto (caller envia no WhatsApp).
- * Otimizado para velocidade: 1 round de IA (+ no máx. 1 busca).
- */
-export async function freeChatOwner(
+/** `merged` = outra mensagem do lote já gerou a resposta; não envie de novo. */
+export type FreeChatResult =
+  | { status: 'reply'; text: string | null }
+  | { status: 'merged' };
+
+interface BatchState {
+  timer: NodeJS.Timeout;
+  opts: FreeChatOptions;
+  waiters: Array<(r: FreeChatResult) => void>;
+}
+
+const batches = new Map<string, BatchState>();
+const processing = new Set<string>();
+
+function batchKey(tenantId: string, phone: string, connectionId?: string | null): string {
+  return `${tenantId}:${phone}:${connectionId ?? ''}`;
+}
+
+function buildFastSystem(
+  persona: string | null | undefined,
+  agendaLines: string[],
+  memoryBlock: string,
+  webSearchOn: boolean,
+  toolSearchAvailable: boolean,
+): string {
+  const parts = [
+    'Você fala com o DONO no WhatsApp — como um assistente humano rápido (estilo Claude), não como robô.',
+    'Respostas CURTAS (WhatsApp): no máximo ~6 linhas; bullets quando ajudar.',
+    'Nunca diga que é IA/bot. Não invente compromissos: agenda real está abaixo.',
+    'Leitura completa: use o histórico + a memória interpretada (eventos, histórias, acontecimentos, problemas).',
+    'Interprete o sentido do que o dono diz — não dependa de palavras-chave; entenda contexto e continuidade.',
+    'Se o dono mandou várias mensagens seguidas sem sua resposta, trate como UM pedido contínuo — leia todas, interprete o conjunto e responda uma vez sem se perder.',
+    'Se pedirem para anotar/lembrar algo com data, diga pra mandar tipo "me lembra amanhã às 9h de…".',
+    webSearchOn && toolSearchAvailable
+      ? [
+          'Você TEM a ferramenta web_search (function calling).',
+          'Use web_search quando precisar de fato atual (cotação, notícia, horário, algo após seu conhecimento).',
+          'Cite a fonte em 1 linha. NUNCA peça chave de API / Tavily / configuração de servidor.',
+          'Se a tool não trouxer resultado, diga que não achou fonte atual — sem inventar.',
+        ].join(' ')
+      : webSearchOn
+        ? 'Busca na web está ligada na alavanca, mas a tool ainda não tem chave no servidor. Responda o que souber com cautela; NÃO peça API key.'
+        : 'Busca na web está desligada. Se pedirem pesquisa, diga pra ligar a alavanca "Busca na web" em Lembretes.',
+    persona?.trim() ? `Tom:\n${persona.trim()}` : '',
+    agendaLines.length
+      ? `Caderno de compromissos (próximos dias):\n${agendaLines.join('\n')}`
+      : 'Caderno de compromissos: (vazio por enquanto).',
+    memoryBlock,
+  ];
+  return parts.filter(Boolean).join('\n\n');
+}
+
+/** Junta user consecutivos no fim (várias msgs rápidas) num único turno. */
+function historyToModelMessages(
+  rows: Array<{ role: 'user' | 'assistant'; content: string }>,
+): Array<{ role: 'user' | 'assistant'; content: string }> {
+  const out: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  for (const row of rows) {
+    const content = row.content.trim().slice(0, 6000);
+    if (!content) continue;
+    const last = out[out.length - 1];
+    if (last && last.role === 'user' && row.role === 'user') {
+      last.content = `${last.content}\n${content}`.slice(0, 12000);
+      continue;
+    }
+    out.push({ role: row.role, content });
+  }
+  // Modelo precisa terminar com user
+  while (out.length && out[out.length - 1]!.role !== 'user') out.pop();
+  return out.slice(-48);
+}
+
+async function runFreeChatOnce(
   tenantId: string,
   phone: string,
-  message: string,
-  opts: FreeChatOptions = {},
+  opts: FreeChatOptions,
 ): Promise<string | null> {
   const tz = DEFAULT_TZ;
   const persona = await getReminderPersona(tenantId, opts.connectionId);
@@ -107,39 +117,45 @@ export async function freeChatOwner(
     return `${i + 1}. ${r.task} — ${when}`;
   });
 
-  let searchBlock: string | null = null;
-  const wantsSearch =
-    Boolean(opts.webSearchEnabled) &&
-    (messageLikelyNeedsSearch(message) ||
-      /\b(pesquisa|pesquis|busca|buscar|procure|procura|internet|web)\b/i.test(message));
+  const [dbRows, memoryBlock] = await Promise.all([
+    listOwnerChatHistory(tenantId, phone, {
+      connectionId: opts.connectionId,
+      limit: HISTORY_LIMIT,
+    }),
+    buildOwnerMemoryPromptBlock(tenantId, phone, opts.connectionId),
+  ]);
+  const messages = historyToModelMessages(
+    dbRows.map((r) => ({ role: r.role, content: r.content })),
+  );
 
-  if (wantsSearch) {
-    const hits = await webSearch(message, 3);
-    if (hits?.length) {
-      searchBlock = formatSearchContext(hits);
-      logger.info(`Agente: busca web com ${hits.length} resultado(s).`);
-    } else {
-      searchBlock =
-        'Resultados da busca: (vazio). Não peça chave de API. Diga que não achou fonte atual e responda o que souber com cautela.';
-      logger.warn('Agente: busca web sem resultados.');
-    }
+  if (!messages.length) {
+    logger.warn('Agente: histórico vazio — nada para responder.');
+    return null;
   }
 
-  const prior = getHistory(tenantId, phone);
-  const messages = [
-    ...prior.map((t) => ({ role: t.role, content: t.content })),
-    { role: 'user' as const, content: message.slice(0, 2000) },
-  ];
+  // Busca via function calling (fase 3): o modelo decide quando chamar web_search.
+  const webSearchOn = Boolean(opts.webSearchEnabled);
+  const toolSearchAvailable = webSearchOn && isWebSearchToolAvailable();
 
   const result = await complete(
     {
-      system: buildFastSystem(persona, agendaLines, searchBlock, Boolean(opts.webSearchEnabled)),
+      system: buildFastSystem(
+        persona,
+        agendaLines,
+        memoryBlock,
+        webSearchOn,
+        toolSearchAvailable,
+      ),
       messages,
       maxTokens: FAST_MAX_TOKENS,
       temperature: FAST_TEMPERATURE,
     },
     tenantId,
-    { meter: true, connectionId: opts.connectionId },
+    {
+      meter: true,
+      connectionId: opts.connectionId,
+      tools: toolSearchAvailable,
+    },
   );
 
   if (!result?.text?.trim()) {
@@ -147,10 +163,120 @@ export async function freeChatOwner(
     return null;
   }
 
-  const reply = result.text.trim().slice(0, 3500);
-  pushHistory(tenantId, phone, { role: 'user', content: message.slice(0, 2000) });
-  pushHistory(tenantId, phone, { role: 'assistant', content: reply });
-  return reply;
+  return result.text.trim().slice(0, 4000);
+}
+
+async function flushBatch(tenantId: string, phone: string, k: string): Promise<void> {
+  const batch = batches.get(k);
+  if (!batch) return;
+  batches.delete(k);
+
+  if (processing.has(k)) {
+    // Ainda gerando resposta anterior: reencaixa waiters e espera um pouco.
+    const again = batches.get(k) ?? {
+      timer: setTimeout(() => void flushBatch(tenantId, phone, k), 400),
+      opts: batch.opts,
+      waiters: [] as Array<(r: FreeChatResult) => void>,
+    };
+    clearTimeout(again.timer);
+    again.waiters.push(...batch.waiters);
+    again.opts = batch.opts;
+    again.timer = setTimeout(() => void flushBatch(tenantId, phone, k), 400);
+    batches.set(k, again);
+    return;
+  }
+
+  processing.add(k);
+  let text: string | null = null;
+  try {
+    text = await runFreeChatOnce(tenantId, phone, batch.opts);
+  } catch (err) {
+    logger.warn('Agente: falha ao gerar resposta', err);
+    text = null;
+  } finally {
+    processing.delete(k);
+  }
+
+  batch.waiters[0]?.({ status: 'reply', text });
+  for (let i = 1; i < batch.waiters.length; i++) {
+    batch.waiters[i]!({ status: 'merged' });
+  }
+
+  // Mensagens que chegaram durante o processamento
+  if (batches.has(k)) {
+    const pending = batches.get(k)!;
+    clearTimeout(pending.timer);
+    pending.timer = setTimeout(() => void flushBatch(tenantId, phone, k), 300);
+  }
+}
+
+/**
+ * Persiste a mensagem do dono (tempo real) e agenda resposta com debounce.
+ * Várias msgs rápidas → um único reply coerente; waiters extras recebem `merged`.
+ */
+export async function freeChatOwner(
+  tenantId: string,
+  phone: string,
+  message: string,
+  opts: FreeChatOptions = {},
+): Promise<FreeChatResult> {
+  const trimmed = message.trim();
+  if (!trimmed) return { status: 'reply', text: null };
+
+  // Mensagem do dono já deve estar em owner_chat_messages (handler).
+  const k = batchKey(tenantId, phone, opts.connectionId);
+
+  return new Promise<FreeChatResult>((resolve) => {
+    const existing = batches.get(k);
+    if (existing) {
+      clearTimeout(existing.timer);
+      existing.waiters.push(resolve);
+      existing.opts = opts;
+      existing.timer = setTimeout(() => void flushBatch(tenantId, phone, k), BATCH_DEBOUNCE_MS);
+      return;
+    }
+    batches.set(k, {
+      opts,
+      waiters: [resolve],
+      timer: setTimeout(() => void flushBatch(tenantId, phone, k), BATCH_DEBOUNCE_MS),
+    });
+  });
+}
+
+/** Grava resposta da secretária/agente no histórico (tempo real). */
+export async function persistOwnerAssistantReply(
+  tenantId: string,
+  phone: string,
+  text: string,
+  connectionId?: string | null,
+): Promise<void> {
+  await appendOwnerChatMessage({
+    tenantId,
+    ownerPhone: phone,
+    role: 'assistant',
+    content: text,
+    connectionId,
+  }).catch((err) => logger.warn('Secretária: falha ao persistir resposta', err));
+  // Depois de cada resposta: a IA interpreta o fio (sem keyword) e atualiza a memória.
+  scheduleOwnerMemoryExtract(tenantId, phone, connectionId);
+}
+
+/** Grava mensagem inbound do dono (com id do provedor p/ idempotência). */
+export async function persistOwnerUserMessage(input: {
+  tenantId: string;
+  phone: string;
+  content: string;
+  connectionId?: string | null;
+  providerMessageId?: string | null;
+}): Promise<void> {
+  await appendOwnerChatMessage({
+    tenantId: input.tenantId,
+    ownerPhone: input.phone,
+    role: 'user',
+    content: input.content,
+    connectionId: input.connectionId,
+    providerMessageId: input.providerMessageId,
+  }).catch((err) => logger.warn('Secretária: falha ao persistir msg do dono', err));
 }
 
 /** Flags efetivos da conexão (defaults: secretária ON, agente OFF, busca OFF). */
