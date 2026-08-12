@@ -531,9 +531,14 @@ async function processInbound(
   // IMAGEM/VÍDEO: rota de VISÃO. A IA "enxerga" a mídia e responde com base no
   // catálogo (ex.: cliente manda foto de um produto perguntando se temos).
   // Pulamos o casamento por palavra-chave — aqui a mídia é o conteúdo principal.
+  const reactive = {
+    sendType: 'reactive' as const,
+    triggeringInboundId: inboundMsg.id,
+  };
+
   if (inbound.type === 'image' || inbound.type === 'video') {
-    await replyToVisualMedia(tenantId, ctx, inbound, mediaUrl, mediaMime, aiCfg).catch((err) =>
-      logger.warn('Falha ao responder mídia visual', err),
+    await replyToVisualMedia(tenantId, ctx, inbound, mediaUrl, mediaMime, aiCfg, inboundMsg.id).catch(
+      (err) => logger.warn('Falha ao responder mídia visual', err),
     );
     return;
   }
@@ -553,6 +558,7 @@ async function processInbound(
       await dispatchText(
         ctx,
         'Recebi seu áudio! 🎧 Pra eu te responder certinho, consegue me mandar por mensagem de texto também?',
+        reactive,
       ).catch((err) => logger.warn('Falha ao responder áudio sem transcrição', err));
     }
     return;
@@ -568,13 +574,13 @@ async function processInbound(
   );
 
   if (match.content_type === 'audio' && match.content_id) {
-    const sent = await dispatchAudio(ctx, match.content_id);
+    const sent = await dispatchAudio(ctx, match.content_id, reactive);
     if (sent) return;
   } else if (match.content_type === 'text' && match.content_id) {
-    const sent = await dispatchScript(ctx, match.content_id);
+    const sent = await dispatchScript(ctx, match.content_id, reactive);
     if (sent) return;
   } else if (match.content_type === 'product' && match.content_id) {
-    const sent = await dispatchProduct(ctx, match.content_id);
+    const sent = await dispatchProduct(ctx, match.content_id, reactive);
     if (sent) return;
   }
 
@@ -611,7 +617,7 @@ async function processInbound(
     tenantId,
   );
   if (reply) {
-    await dispatchText(ctx, reply);
+    await dispatchText(ctx, reply, reactive);
   } else {
     logger.warn('Sem resposta automática disponível (nenhuma IA disponível e nenhum match).');
   }
@@ -630,7 +636,9 @@ async function replyToVisualMedia(
   persistedUrl: string | null,
   persistedMime: string | null,
   aiCfg: { systemPrompt: string; temperature: number; maxTokens: number },
+  triggeringInboundId: string,
 ): Promise<void> {
+  const reactive = { sendType: 'reactive' as const, triggeringInboundId };
   const waConnectionId = ctx.conversation.connection_id ?? null;
 
   // Sem nenhum provedor com visão na cadeia: não adianta mandar a mídia.
@@ -639,7 +647,9 @@ async function replyToVisualMedia(
       inbound.type === 'video'
         ? 'Recebi seu vídeo! 🎬 Pra eu te ajudar com precisão, me conta por mensagem o que você procura (ou manda uma foto).'
         : 'Recebi sua imagem! 📷 Me conta em uma mensagem o que você precisa que já te ajudo.';
-    await dispatchText(ctx, msg).catch((err) => logger.warn('Falha ao responder mídia sem visão', err));
+    await dispatchText(ctx, msg, reactive).catch((err) =>
+      logger.warn('Falha ao responder mídia sem visão', err),
+    );
     return;
   }
 
@@ -659,6 +669,7 @@ async function replyToVisualMedia(
     await dispatchText(
       ctx,
       'Recebi sua mídia! 📎 Me conta em texto o que você precisa que eu te ajudo.',
+      reactive,
     ).catch((err) => logger.warn('Falha ao responder mídia sem conteúdo visual', err));
     return;
   }
@@ -683,7 +694,7 @@ async function replyToVisualMedia(
     },
     tenantId,
   );
-  if (reply) await dispatchText(ctx, reply);
+  if (reply) await dispatchText(ctx, reply, reactive);
   else logger.warn('Visão: nenhuma resposta disponível (provedores em falha/cooldown).');
 }
 

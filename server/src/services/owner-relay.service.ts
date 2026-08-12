@@ -156,7 +156,18 @@ export async function sendOwnerRelay(opts: {
   );
   // Libera pausa humana para o atendimento automático poder seguir depois.
   await clearHumanPause(opts.tenantId, conversation.id).catch(() => null);
-  await dispatchText({ conversation, client }, opts.body, { origin: 'ai' });
+  try {
+    // Pedido do dono sem inbound do contato = proativo (SAFE_MODE bloqueia).
+    await dispatchText(
+      { conversation, client },
+      opts.body,
+      { origin: 'ai', sendType: 'proactive' },
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Falha ao enviar.';
+    logger.warn(`Secretária: relay bloqueado/falhou para ${client.phone}: ${msg}`);
+    return { ok: false, error: msg };
+  }
   logger.info(
     `Secretária: relay para ${client.phone} (${displayName(client)}) via ${opts.connectionId ?? 'default'}.`,
   );

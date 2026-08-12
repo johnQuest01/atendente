@@ -53,6 +53,8 @@ export interface NormalizedStatus {
  * Derivado do que o sistema já usa hoje (TenantWhatsapp).
  */
 export interface WhatsAppProvider {
+  /** Capacidades do provedor (business-initiated = fase Cloud). */
+  capabilities: { businessInitiated: boolean };
   sendText(phone: string, message: string): Promise<string | null>;
   sendAudio(phone: string, audioUrl: string): Promise<string | null>;
   sendImage(phone: string, imageUrl: string, caption?: string): Promise<string | null>;

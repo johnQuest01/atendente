@@ -22,6 +22,10 @@ export const SOCKET_EVENTS = {
   AGENT_STATUS: 'agent:status',
   /** Lista de números bloqueados mudou — painel deve refrescar cadeado nas conversas. */
   BLOCKLIST_UPDATED: 'blocklist:updated',
+  /** Estado da alavanca SAFE_MODE (banner no app). */
+  SAFE_MODE_STATUS: 'safe_mode:status',
+  /** Envio proativo bloqueado — toast ao operador. */
+  SEND_BLOCKED: 'send:blocked',
   /**
    * Onboarding WhatsApp (sala tenant:*).
    * Payload: { connectionId, status, detail?, phone?, qrBase64?, phoneCode? }
@@ -135,4 +139,22 @@ export interface BlocklistUpdatedPayload {
 export function emitBlocklistUpdated(tenantId: string, payload: BlocklistUpdatedPayload = {}): void {
   if (!io) return;
   io.to(tenantRoom(tenantId)).emit(SOCKET_EVENTS.BLOCKLIST_UPDATED, payload);
+}
+
+export function emitSafeModeStatus(tenantId: string, enabled: boolean): void {
+  if (!io) return;
+  io.to(tenantRoom(tenantId)).emit(SOCKET_EVENTS.SAFE_MODE_STATUS, { enabled });
+}
+
+export interface SendBlockedPayload {
+  message: string;
+  sendType: string;
+  contactId?: string | null;
+  phone?: string | null;
+  at: string;
+}
+
+export function emitSendBlocked(tenantId: string, payload: SendBlockedPayload): void {
+  if (!io) return;
+  io.to(tenantRoom(tenantId)).emit(SOCKET_EVENTS.SEND_BLOCKED, payload);
 }

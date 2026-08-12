@@ -9,6 +9,7 @@ import { useSystemStatus, type ServiceCheck } from '@/hooks/useSystemStatus';
 import { ManageConnectionPanel } from '@/components/connection/ManageConnectionPanel';
 import { WhatsappReconnect } from '@/components/connection/WhatsappReconnect';
 import { ContactsHistoryCard } from '@/components/features/ContactsHistoryCard';
+import { SafeModeCard } from '@/components/features/SafeModeCard';
 import { useSocket } from '@/hooks/useSocket';
 import { useWhatsappConnections } from '@/hooks/useWhatsappConnection';
 import { getConnectionStatus } from '@/components/connection/connectionStatus';
@@ -77,6 +78,8 @@ export function OverviewSection({
 
   return (
     <div className="flex flex-col gap-4">
+      <SafeModeCard canEdit={canEdit} />
+
       <Card className={isOn ? 'border-2 border-success/30' : 'border-2 border-danger/40'}>
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0 flex-1">

@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom';
 import { Sidebar } from './Sidebar';
 import { BottomNav } from './BottomNav';
 import { BlockFab } from '@/components/features/BlockAccess';
+import { SafeModeBanner } from '@/components/features/SafeModeBanner';
 import { cn } from '@/utils/cn';
 
 interface AppShellProps {
@@ -28,6 +29,7 @@ export function AppShell({ children }: AppShellProps) {
     <div className={cn('flex', chatOpen ? 'h-dvh max-h-dvh overflow-hidden' : 'h-full min-h-screen')}>
       <Sidebar />
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <SafeModeBanner />
         <main
           className={cn(
             'min-h-0 flex-1',

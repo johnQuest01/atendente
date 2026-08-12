@@ -39,14 +39,16 @@ async function loadClient(tenantId: string, clientId: string): Promise<Client | 
 
 async function sendOne(broadcast: Broadcast, client: Client, conversation: Conversation): Promise<void> {
   const ctx = { conversation, client };
+  const proactive = { sendType: 'proactive' as const };
   if (broadcast.content_type === 'audio' && broadcast.content_ref) {
-    const msg = await dispatchAudio(ctx, broadcast.content_ref);
+    const msg = await dispatchAudio(ctx, broadcast.content_ref, proactive);
     if (!msg) throw new Error('Áudio indisponível');
     return;
   }
   if (broadcast.content_type === 'product' && broadcast.content_ref) {
     const msg = await dispatchProduct(ctx, broadcast.content_ref, {
       withPrice: broadcast.with_price,
+      ...proactive,
     });
     if (!msg) throw new Error('Produto indisponível');
     return;
@@ -57,7 +59,7 @@ async function sendOne(broadcast: Broadcast, client: Client, conversation: Conve
   const personalized = client.name
     ? text.replace(/\{\{client_name\}\}/gi, client.name)
     : text.replace(/\{\{client_name\}\}/gi, 'tudo bem');
-  await dispatchText(ctx, personalized, { origin: 'system' });
+  await dispatchText(ctx, personalized, { origin: 'system', ...proactive });
 }
 
 /**

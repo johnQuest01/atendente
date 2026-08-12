@@ -135,6 +135,8 @@ async function postMessage(
 
 export function createMetaCloudProvider(conn: MetaCloudConnection): WhatsAppProvider {
   return {
+    // businessInitiated só liga na fase Cloud com o módulo dedicado.
+    capabilities: { businessInitiated: false },
     sendText(phone, message) {
       return postMessage(conn, {
         to: phone,

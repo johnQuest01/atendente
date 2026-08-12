@@ -8,6 +8,9 @@ import {
   getAgentStatus,
   putAgentStatus,
   updateAgentSchema,
+  getSafeModeStatus,
+  putSafeModeStatus,
+  updateSafeModeSchema,
   getPersona,
   putPersona,
   updatePersonaSchema,
@@ -67,6 +70,14 @@ const adminOnly = authorize('admin', 'superadmin');
 
 router.get('/agent', asyncHandler(getAgentStatus));
 router.put('/agent', validate({ body: updateAgentSchema }), asyncHandler(putAgentStatus));
+
+router.get('/safe-mode', asyncHandler(getSafeModeStatus));
+router.put(
+  '/safe-mode',
+  adminOnly,
+  validate({ body: updateSafeModeSchema }),
+  asyncHandler(putSafeModeStatus),
+);
 
 router.get('/persona', asyncHandler(getPersona));
 router.put('/persona', validate({ body: updatePersonaSchema }), asyncHandler(putPersona));

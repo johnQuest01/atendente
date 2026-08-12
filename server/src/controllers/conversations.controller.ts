@@ -259,8 +259,12 @@ export async function sendManualMessage(req: Request, res: Response): Promise<vo
   const client = await findTenantClient(tenantId, conversation.client_id);
   if (!client) throw new NotFoundError('Cliente');
 
-  // Operador digitou no painel — origin 'human' para a IA não tratar como resposta dela.
-  const message = await dispatchText({ conversation, client }, text, { origin: 'human' });
+  // Operador digitou no painel — sem inbound fresco = proativo (SAFE_MODE bloqueia).
+  const message = await dispatchText(
+    { conversation, client },
+    text,
+    { origin: 'human', sendType: 'proactive' },
+  );
   res.status(201).json({ message });
 }
 
@@ -275,7 +279,11 @@ export async function sendManualAudio(req: Request, res: Response): Promise<void
   const client = await findTenantClient(tenantId, conversation.client_id);
   if (!client) throw new NotFoundError('Cliente');
 
-  const message = await dispatchAudio({ conversation, client }, audio_id);
+  const message = await dispatchAudio(
+    { conversation, client },
+    audio_id,
+    { sendType: 'proactive' },
+  );
   if (!message) throw new NotFoundError('Áudio');
   res.status(201).json({ message });
 }
@@ -423,6 +431,7 @@ export async function sendManualProduct(req: Request, res: Response): Promise<vo
 
   const message = await dispatchProduct({ conversation, client }, product_id, {
     withPrice: with_price,
+    sendType: 'proactive',
   });
   if (!message) throw new NotFoundError('Produto');
   res.status(201).json({ message });

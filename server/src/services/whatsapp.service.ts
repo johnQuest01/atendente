@@ -22,6 +22,7 @@ import {
   type WhatsappConnection,
   type WhatsappProviderName,
 } from '../db/queries/whatsapp_connections';
+import { ZAPI_CAPABILITIES } from './outbound/business-initiated';
 
 export type { NormalizedInbound, NormalizedStatus, ProviderStatus, WhatsAppProvider };
 
@@ -174,6 +175,7 @@ function build(resolved: ResolvedConnection | null, connectionId: string | null)
       provider: 'evolution',
       configured: Boolean(c.apiKey && c.instance),
       connectionId,
+      capabilities: ZAPI_CAPABILITIES,
       sendText: (phone, message) => evolution.sendText(c, phone, message),
       sendAudio: (phone, audioUrl) => evolution.sendAudio(c, phone, audioUrl),
       sendImage: (phone, imageUrl, caption) => evolution.sendImage(c, phone, imageUrl, caption),
@@ -193,6 +195,7 @@ function build(resolved: ResolvedConnection | null, connectionId: string | null)
     provider: 'zapi',
     configured: Boolean(c.instanceId && c.token),
     connectionId,
+    capabilities: ZAPI_CAPABILITIES,
     sendText: (phone, message) => zapi.sendText(c, phone, message),
     sendAudio: (phone, audioUrl) => zapi.sendAudio(c, phone, audioUrl),
     sendImage: (phone, imageUrl, caption) => zapi.sendImage(c, phone, imageUrl, caption),

@@ -8,12 +8,16 @@ import { emitNewMessage } from '../socket';
 import { renderTemplate, formatBRL } from '../utils/text';
 import { signMediaToken } from '../utils/media-token';
 import * as whatsapp from './whatsapp.service';
+import { assertCustomerOutboundAllowed } from './outbound/safe-mode.service';
+import type { OutboundMeta } from './outbound/types';
 import type { Audio, Client, Conversation, MessageLog, MessageOrigin } from '../types';
 
 interface DispatchContext {
   conversation: Conversation;
   client: Client;
 }
+
+export type DispatchOpts = OutboundMeta & { origin?: MessageOrigin };
 
 /** True se a URL aponta para um host EXTERNO (ex.: CDN do R2), não o backend. */
 function isExternalUrl(fileUrl: string): boolean {
@@ -44,24 +48,14 @@ function toCurrentPublicUrl(fileUrl: string): string {
 
 /** URL pública estável usada para enviar/tocar o áudio. */
 function audioPublicUrl(audio: Audio, tenantId: string): string {
-  // 1) Blob no banco (dev/legado): rota estável /media com token de tenant.
   if (audio.has_file_data) {
     const token = signMediaToken(tenantId, audio.id);
     return `${env.PUBLIC_BASE_URL}/media/audios/${audio.id}.ogg?t=${token}`;
   }
-  // 2) URL externa (R2/CDN): permanente, independe do backend — usa direto.
   if (isExternalUrl(audio.file_url)) return audio.file_url;
-  // 3) Legado servido pelo backend: corrige o host atual.
   return toCurrentPublicUrl(audio.file_url);
 }
 
-/**
- * Envia o áudio ao provedor de WhatsApp pela URL pública ESTÁVEL.
- *
- * Sem base64: payloads base64 estouram limite/timeout da Z-API e o prefixo
- * `data:` costuma ser rejeitado — era a causa de "só vai texto, sem áudio".
- * A URL do R2 é um CDN permanente que a Z-API sempre consegue baixar.
- */
 function sendAudioToProvider(
   wa: whatsapp.TenantWhatsapp,
   phone: string,
@@ -70,8 +64,21 @@ function sendAudioToProvider(
   return wa.sendAudio(phone, publicUrl);
 }
 
+async function guardOutbound(ctx: DispatchContext, meta: OutboundMeta): Promise<void> {
+  await assertCustomerOutboundAllowed(ctx.conversation.tenant_id, meta, {
+    id: ctx.client.id,
+    phone: ctx.client.phone,
+  });
+}
+
 /** Envia um áudio do banco para o cliente e registra no log. */
-export async function dispatchAudio(ctx: DispatchContext, audioId: string): Promise<MessageLog | null> {
+export async function dispatchAudio(
+  ctx: DispatchContext,
+  audioId: string,
+  meta: OutboundMeta,
+): Promise<MessageLog | null> {
+  await guardOutbound(ctx, meta);
+
   const tenantId = ctx.conversation.tenant_id;
   const audio = await getAudioById(tenantId, audioId);
   if (!audio) {
@@ -90,9 +97,6 @@ export async function dispatchAudio(ctx: DispatchContext, audioId: string): Prom
   try {
     zapiId = await sendAudioToProvider(wa, ctx.client.phone, publicUrl);
   } catch (err) {
-    // Não derruba o fluxo nem registra uma mensagem "enviada" que nunca chegou:
-    // retornando null, o webhook cai no fallback (Claude/texto) e o cliente não
-    // fica no vácuo.
     logger.error(`Falha ao enviar áudio "${audio.title}" (${audio.id}) pela Z-API`, err);
     return null;
   }
@@ -116,7 +120,13 @@ export async function dispatchAudio(ctx: DispatchContext, audioId: string): Prom
 }
 
 /** Renderiza um script de texto (com variáveis) e envia. */
-export async function dispatchScript(ctx: DispatchContext, scriptId: string): Promise<MessageLog | null> {
+export async function dispatchScript(
+  ctx: DispatchContext,
+  scriptId: string,
+  meta: OutboundMeta,
+): Promise<MessageLog | null> {
+  await guardOutbound(ctx, meta);
+
   const tenantId = ctx.conversation.tenant_id;
   const script = await getScriptById(tenantId, scriptId);
   if (!script || !script.is_active) return null;
@@ -145,8 +155,14 @@ export async function dispatchScript(ctx: DispatchContext, scriptId: string): Pr
 export async function dispatchProduct(
   ctx: DispatchContext,
   productId: string,
-  opts?: { withPrice?: boolean },
+  opts?: { withPrice?: boolean } & OutboundMeta,
 ): Promise<MessageLog | null> {
+  const meta: OutboundMeta = {
+    sendType: opts?.sendType ?? 'proactive',
+    triggeringInboundId: opts?.triggeringInboundId,
+  };
+  await guardOutbound(ctx, meta);
+
   const tenantId = ctx.conversation.tenant_id;
   const product = await getProductById(tenantId, productId);
   if (!product || !product.is_available) return null;
@@ -186,8 +202,13 @@ export async function dispatchProduct(
 export async function dispatchText(
   ctx: DispatchContext,
   text: string,
-  opts?: { origin?: MessageOrigin },
+  opts: DispatchOpts,
 ): Promise<MessageLog> {
+  await guardOutbound(ctx, {
+    sendType: opts.sendType,
+    triggeringInboundId: opts.triggeringInboundId,
+  });
+
   const wa = await whatsapp.getWhatsappForConversation(
     ctx.conversation.tenant_id,
     ctx.conversation.connection_id,
@@ -199,7 +220,7 @@ export async function dispatchText(
     type: 'text',
     content: text,
     zapiMessageId: zapiId,
-    origin: opts?.origin,
+    origin: opts.origin,
   });
   emitNewMessage(ctx.conversation.tenant_id, ctx.conversation.id, msg);
   return msg;

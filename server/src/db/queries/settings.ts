@@ -7,6 +7,7 @@ const PERSONA_KEY = 'ai_persona';
 const TEMPERATURE_KEY = 'ai_temperature';
 const MAX_TOKENS_KEY = 'ai_max_tokens';
 const REMINDER_PERSONA_KEY = 'reminder_assistant_persona';
+export const SAFE_MODE_SETTING_KEY = 'safe_mode';
 
 /**
  * Caches em memória, POR tenant, para evitar uma consulta ao banco a cada
@@ -18,6 +19,8 @@ const personaCache = new Map<string, { prompt: string; at: number }>();
 const temperatureCache = new Map<string, { value: number; at: number }>();
 const maxTokensCache = new Map<string, { value: number; at: number }>();
 const reminderPersonaCache = new Map<string, { prompt: string; at: number }>();
+/** Cache SAFE_MODE — invalidado aqui; leitura tipada fica no outbound service. */
+const safeModeCache = new Map<string, { enabled: boolean; at: number }>();
 const CACHE_TTL_MS = 5_000;
 
 const DEFAULT_AI_TEMPERATURE = 0.7;
@@ -54,6 +57,25 @@ export function bustSettingCache(tenantId: string, key: string): void {
   else if (key === TEMPERATURE_KEY) temperatureCache.delete(tenantId);
   else if (key === MAX_TOKENS_KEY) maxTokensCache.delete(tenantId);
   else if (key === REMINDER_PERSONA_KEY) reminderPersonaCache.delete(tenantId);
+  else if (key === SAFE_MODE_SETTING_KEY) safeModeCache.delete(tenantId);
+}
+
+export function getSafeModeCacheEntry(
+  tenantId: string,
+): { enabled: boolean; at: number } | undefined {
+  return safeModeCache.get(tenantId);
+}
+
+export function setSafeModeCacheEntry(tenantId: string, enabled: boolean): void {
+  safeModeCache.set(tenantId, { enabled, at: Date.now() });
+}
+
+export function clearSafeModeCacheEntry(tenantId: string): void {
+  safeModeCache.delete(tenantId);
+}
+
+export function safeModeCacheTtlMs(): number {
+  return CACHE_TTL_MS;
 }
 
 /** Indica se o atendente de IA deve responder automaticamente. Default: true. */

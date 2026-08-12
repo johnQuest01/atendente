@@ -51,13 +51,46 @@ import {
 import { hasEncryptionKey } from '../utils/crypto';
 import { env } from '../config/env';
 import { AppError, NotFoundError } from '../utils/errors';
-import { emitAgentStatus } from '../socket';
+import { emitAgentStatus, emitSafeModeStatus } from '../socket';
+import {
+  isSafeModeEnabled,
+  setSafeModeEnabled,
+} from '../services/outbound/safe-mode.service';
+import { BUSINESS_INITIATED_ENABLED } from '../services/outbound/business-initiated';
 import { zapiClient } from '../services/zapi/ZApiClient';
 import { parseConnectionIdQuery, requireConnection } from './connectionScope';
 
 export const updateAgentSchema = z.object({
   enabled: z.boolean(),
 });
+
+export const updateSafeModeSchema = z.object({
+  enabled: z.boolean(),
+});
+
+/** Estado da trava inbound-only (SAFE_MODE). Default true. */
+export async function getSafeModeStatus(req: Request, res: Response): Promise<void> {
+  const enabled = await isSafeModeEnabled(req.user!.tenant_id);
+  res.json({
+    enabled,
+    businessInitiatedEnabled: BUSINESS_INITIATED_ENABLED,
+  });
+}
+
+/**
+ * Liga/desliga SAFE_MODE.
+ * Desligar = risco assumido (bypass proativo). Confirmação fica no app.
+ */
+export async function putSafeModeStatus(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const { enabled } = req.body as z.infer<typeof updateSafeModeSchema>;
+  await setSafeModeEnabled(tenantId, enabled);
+  emitSafeModeStatus(tenantId, enabled);
+  res.json({
+    enabled,
+    businessInitiatedEnabled: BUSINESS_INITIATED_ENABLED,
+  });
+}
 
 export async function getAgentStatus(req: Request, res: Response): Promise<void> {
   const tenantId = req.user!.tenant_id;

@@ -158,6 +158,14 @@ const envSchema = z.object({
   // defina RLS_ENFORCE=false para voltar ao isolamento só na aplicação sem
   // redeploy/rollback de migration, caso algo inesperado ocorra em produção.
   RLS_ENFORCE: booleanish(true),
+
+  /**
+   * SAFE_MODE (inbound-only): default true.
+   * Ligada = só responde quem chama (envio reactive com triggeringInboundId).
+   * Desligada = bypass total de envios proativos (risco de ban).
+   * Por tenant a setting `safe_mode` sobrescreve este default.
+   */
+  SAFE_MODE: booleanish(true),
 }).superRefine((data, ctx) => {
   // Em produção, exigimos um segredo de JWT forte (>= 32 chars).
   if (data.NODE_ENV === 'production' && data.JWT_SECRET.length < 32) {
