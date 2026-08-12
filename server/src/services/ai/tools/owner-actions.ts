@@ -4,7 +4,12 @@
  * do atendimento ao cliente.
  */
 
-import { getClientById } from '../../../db/queries/clients';
+import { getClientById, updateClient } from '../../../db/queries/clients';
+import {
+  clearHumanPause,
+  findOrCreateOpenConversation,
+  getRecentMessagesForAI,
+} from '../../../db/queries/conversations';
 import { listProducts } from '../../../db/queries/products';
 import { createReminder } from '../../../db/queries/reminders';
 import { formatBRL } from '../../../utils/text';
@@ -101,6 +106,44 @@ const agendarMensagemTool: Tool = {
       },
     },
     required: ['mensagem', 'quando'],
+    additionalProperties: false,
+  },
+};
+
+const lerConversaTool: Tool = {
+  name: 'ler_conversa_contato',
+  description:
+    'Lê o histórico recente da conversa de um contato no WhatsApp business (o que ele e a loja falaram). USE sempre que o dono pedir para conversar, atender, responder ou ver o que o contato disse (ex.: Wender).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      nome: { type: 'string', description: 'Nome do contato.' },
+      client_id: { type: 'string', description: 'UUID do contato, se já conhecido.' },
+      limite: {
+        type: 'number',
+        description: 'Quantas mensagens recentes (padrão 25, máx. 40).',
+      },
+    },
+    additionalProperties: false,
+  },
+};
+
+const orientarAtendimentoTool: Tool = {
+  name: 'orientar_atendimento_contato',
+  description:
+    'Deixa a IA de atendimento do negócio CONTINUAR conversando com o contato nas próximas mensagens dele, seguindo sua orientação. Use junto com ler_conversa + enviar quando o dono pedir "converse com X", "atende o Wender", "fica falando com ele".',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      nome: { type: 'string', description: 'Nome do contato.' },
+      client_id: { type: 'string', description: 'UUID do contato, se já conhecido.' },
+      instrucao: {
+        type: 'string',
+        description:
+          'Orientação clara do dono para as próximas respostas (tom, oferta, o que evitar, objetivo).',
+      },
+    },
+    required: ['instrucao'],
     additionalProperties: false,
   },
 };
@@ -217,6 +260,87 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
     return `OK — enviado para ${sent.name} (${sent.phone}): "${mensagem.slice(0, 200)}"`;
   };
 
+  const lerConversa: ToolExecutor = async (input) => {
+    const o = asRecord(input);
+    const resolved = await resolveOneContact(ctx, str(o.nome), str(o.client_id));
+    if (!resolved.ok) return resolved.text;
+
+    const limRaw = o.limite;
+    const lim = Math.min(40, Math.max(5, typeof limRaw === 'number' ? limRaw : 25));
+    const conversation = await findOrCreateOpenConversation(
+      ctx.tenantId,
+      resolved.id,
+      ctx.connectionId ?? null,
+    );
+    await clearHumanPause(ctx.tenantId, conversation.id).catch(() => null);
+    const history = await getRecentMessagesForAI(ctx.tenantId, conversation.id, lim);
+    if (!history.length) {
+      return (
+        `Contato ${resolved.name} (${resolved.phone}) — conversa aberta, ainda sem mensagens no painel. ` +
+        `Pode enviar a primeira mensagem com enviar_mensagem_contato.`
+      );
+    }
+
+    const lines = history.map((m) => {
+      const who = m.direction === 'inbound' ? resolved.name : 'Loja';
+      let text = (m.content || m.transcription || '').trim();
+      if (!text) {
+        if (m.type === 'image') text = '[imagem]';
+        else if (m.type === 'audio') text = '[áudio]';
+        else if (m.type === 'video') text = '[vídeo]';
+        else text = `[${m.type}]`;
+      }
+      return `${who}: ${text.slice(0, 500)}`;
+    });
+
+    return (
+      `Conversa com ${resolved.name} (${resolved.phone}) · client_id=${resolved.id}\n` +
+      `Últimas ${lines.length} msgs:\n` +
+      lines.join('\n')
+    );
+  };
+
+  const orientar: ToolExecutor = async (input) => {
+    const o = asRecord(input);
+    const instrucao = str(o.instrucao);
+    if (!instrucao || instrucao.length < 3) {
+      return 'Informe a orientação (o que a IA deve fazer com esse contato).';
+    }
+    const resolved = await resolveOneContact(ctx, str(o.nome), str(o.client_id));
+    if (!resolved.ok) return resolved.text;
+
+    const prompt =
+      `ORIENTAÇÃO DO DONO (prioridade alta para este contato):\n${instrucao.slice(0, 1800)}\n\n` +
+      'Continue a conversa de forma natural no WhatsApp, alinhada a essa orientação e ao catálogo.';
+
+    const updated = await updateClient(ctx.tenantId, resolved.id, {
+      ai_enabled: true,
+      ai_prompt: prompt,
+    });
+    if (!updated) return 'Não consegui salvar a orientação no contato.';
+
+    const conversation = await findOrCreateOpenConversation(
+      ctx.tenantId,
+      resolved.id,
+      ctx.connectionId ?? null,
+    );
+    await clearHumanPause(ctx.tenantId, conversation.id).catch(() => null);
+
+    void recordOwnerEvent({
+      tenantId: ctx.tenantId,
+      ownerPhone: ctx.ownerPhone,
+      kind: 'acao',
+      summary: `Orientei atendimento de ${resolved.name}: ${instrucao.slice(0, 140)}`,
+      connectionId: ctx.connectionId,
+      source: 'relay',
+    });
+
+    return (
+      `OK — a IA do negócio vai continuar conversando com ${resolved.name} seguindo: "${instrucao.slice(0, 200)}". ` +
+      `Se ainda não mandou resposta agora, use ler_conversa_contato e enviar_mensagem_contato.`
+    );
+  };
+
   const agendar: ToolExecutor = async (input) => {
     const o = asRecord(input);
     const mensagem = str(o.mensagem);
@@ -274,6 +398,8 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
   return {
     buscar_contato: { tool: buscarContatoTool, execute: buscar },
     listar_produtos: { tool: listarProdutosTool, execute: listar },
+    ler_conversa_contato: { tool: lerConversaTool, execute: lerConversa },
+    orientar_atendimento_contato: { tool: orientarAtendimentoTool, execute: orientar },
     enviar_mensagem_contato: { tool: enviarMensagemTool, execute: enviar },
     agendar_mensagem_contato: { tool: agendarMensagemTool, execute: agendar },
   };

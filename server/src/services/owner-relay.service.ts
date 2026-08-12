@@ -1,6 +1,9 @@
 import { logger } from '../config/logger';
 import { findClientsByName, getClientById } from '../db/queries/clients';
-import { findOrCreateOpenConversation } from '../db/queries/conversations';
+import {
+  clearHumanPause,
+  findOrCreateOpenConversation,
+} from '../db/queries/conversations';
 import type { Client } from '../types';
 import { dispatchText } from './dispatch.service';
 
@@ -151,7 +154,9 @@ export async function sendOwnerRelay(opts: {
     client.id,
     opts.connectionId ?? null,
   );
-  await dispatchText({ conversation, client }, opts.body, { origin: 'human' });
+  // Libera pausa humana para o atendimento automático poder seguir depois.
+  await clearHumanPause(opts.tenantId, conversation.id).catch(() => null);
+  await dispatchText({ conversation, client }, opts.body, { origin: 'ai' });
   logger.info(
     `Secretária: relay para ${client.phone} (${displayName(client)}) via ${opts.connectionId ?? 'default'}.`,
   );

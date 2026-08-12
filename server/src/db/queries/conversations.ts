@@ -251,6 +251,22 @@ export async function setHumanPausedUntil(
   return rows[0] ?? null;
 }
 
+/** Libera a IA na conversa (secretário pediu para continuar atendendo o contato). */
+export async function clearHumanPause(
+  tenantId: string,
+  id: string,
+): Promise<Conversation | null> {
+  const { rows } = await query<Conversation>(
+    `UPDATE conversations
+        SET human_paused_until = NULL,
+            status = CASE WHEN status = 'waiting' THEN 'open' ELSE status END
+      WHERE id = $1 AND tenant_id = $2
+      RETURNING *`,
+    [id, tenantId],
+  );
+  return rows[0] ?? null;
+}
+
 /**
  * Cliente falou de novo: volta a conversa para "open" (aparece em Abertas).
  * Não mexe em human_paused_until — a pausa da IA continua valendo se ainda
