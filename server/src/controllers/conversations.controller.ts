@@ -25,7 +25,6 @@ import {
 } from '../services/whatsapp.service';
 import {
   isChatLockConfigured,
-  setChatLockPassword,
   signChatUnlockToken,
   verifyChatLockPassword,
   verifyChatUnlockToken,
@@ -130,8 +129,7 @@ export async function getConversationDetail(req: Request, res: Response): Promis
 }
 
 export const chatLockPasswordSchema = z.object({
-  password: z.string().min(4).max(72),
-  currentPassword: z.string().min(1).max(72).optional().nullable(),
+  password: z.string().min(1).max(72),
 });
 
 export const unlockChatSchema = z.object({
@@ -140,17 +138,12 @@ export const unlockChatSchema = z.object({
 
 export const lockChatSchema = z.object({
   locked: z.boolean(),
-  /** Obrigatória para destrancar o cadeado (locked=false). */
+  /** Obrigatória para remover o cadeado (locked=false). */
   password: z.string().min(1).max(72).optional(),
-  /** Ao trancar pela 1ª vez, define a senha do tenant se ainda não houver. */
-  newPassword: z.string().min(4).max(72).optional(),
 });
 
-/** Define/troca a senha do cadeado de conversas (tenant). */
-export async function putChatLockPassword(req: Request, res: Response): Promise<void> {
-  const tenantId = req.user!.tenant_id;
-  const body = req.body as z.infer<typeof chatLockPasswordSchema>;
-  await setChatLockPassword(tenantId, body.password, body.currentPassword);
+/** A senha do cadeado é fixa no painel — este endpoint só confirma que está ok. */
+export async function putChatLockPassword(_req: Request, res: Response): Promise<void> {
   res.json({ ok: true, configured: true });
 }
 
@@ -171,9 +164,6 @@ export async function unlockConversation(req: Request, res: Response): Promise<v
     res.json({ ok: true, token: null, unlocked: true });
     return;
   }
-  if (!(await isChatLockConfigured(tenantId))) {
-    throw new AppError('Defina uma senha do cadeado antes.', 400, 'CHAT_LOCK_NOT_CONFIGURED');
-  }
   const ok = await verifyChatLockPassword(tenantId, password);
   if (!ok) throw new AppError('Senha incorreta.', 403, 'CHAT_LOCK_BAD_PASSWORD');
 
@@ -191,30 +181,13 @@ export async function patchConversationLock(req: Request, res: Response): Promis
   if (!conversation) throw new NotFoundError('Conversa');
 
   if (body.locked) {
-    const configured = await isChatLockConfigured(tenantId);
-    if (!configured) {
-      if (!body.newPassword?.trim()) {
-        throw new AppError(
-          'Crie uma senha do cadeado (mín. 4 caracteres) para trancar conversas.',
-          400,
-          'CHAT_LOCK_NEED_PASSWORD',
-        );
-      }
-      await setChatLockPassword(tenantId, body.newPassword);
-    }
     const updated = await setConversationLocked(tenantId, id, true);
     if (updated) emitConversationUpdated(tenantId, updated);
     res.json({ conversation: updated, lock_configured: true });
     return;
   }
 
-  // Remover cadeado exige senha.
-  if (!(await isChatLockConfigured(tenantId))) {
-    const updated = await setConversationLocked(tenantId, id, false);
-    if (updated) emitConversationUpdated(tenantId, updated);
-    res.json({ conversation: updated, lock_configured: false });
-    return;
-  }
+  // Remover cadeado exige a mesma senha do cadeado flutuante.
   if (!body.password?.trim()) {
     throw new AppError('Informe a senha para remover o cadeado.', 400, 'CHAT_LOCK_PASSWORD_REQUIRED');
   }

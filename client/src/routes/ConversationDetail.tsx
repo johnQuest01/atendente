@@ -71,14 +71,14 @@ export default function ConversationDetail() {
   const [aiPromptDraft, setAiPromptDraft] = useState('');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectionMode, setSelectionMode] = useState(false);
-  const [confirm, setConfirm] = useState<'selected' | 'all' | 'block' | null>(null);
+  const [confirm, setConfirm] = useState<'selected' | 'all' | null>(null);
   const [blockUnlockOpen, setBlockUnlockOpen] = useState(false);
   const [editDraft, setEditDraft] = useState('');
   const [editTarget, setEditTarget] = useState<MessageLog | null>(null);
   const [chatPassword, setChatPassword] = useState('');
-  const [newLockPassword, setNewLockPassword] = useState('');
-  const [lockSetupOpen, setLockSetupOpen] = useState(false);
+  const [protectOpen, setProtectOpen] = useState(false);
   const [unlockRemoveOpen, setUnlockRemoveOpen] = useState(false);
+  const [pendingProtect, setPendingProtect] = useState<'block-number' | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const selectedEditableMessage = useMemo(() => {
@@ -170,14 +170,25 @@ export default function ConversationDetail() {
     }
   }
 
-  // Bloquear exige o login do cadeado (área restrita). Se ainda não estiver
-  // desbloqueado, pedimos o login antes de efetivar o bloqueio.
-  function handleBlock() {
+  /** Bloquear número: mesma lógica do cadeado flutuante (senha → token). */
+  function requestBlockNumber() {
+    setProtectOpen(false);
     setConfirm(null);
     if (blockToken) {
       void performBlock();
     } else {
+      setPendingProtect('block-number');
       setBlockUnlockOpen(true);
+    }
+  }
+
+  async function handleLockChat() {
+    setProtectOpen(false);
+    try {
+      await patchLock.mutateAsync({ locked: true });
+      toast('Conversa trancada no painel. A IA continua atendendo.', 'success');
+    } catch (err) {
+      toast(getErrorMessage(err, 'Falha ao trancar.'), 'error');
     }
   }
 
@@ -253,36 +264,6 @@ export default function ConversationDetail() {
       toast('Conversa desbloqueada.', 'success');
     } catch (err) {
       toast(getErrorMessage(err, 'Senha incorreta.'), 'error');
-    }
-  }
-
-  async function handleLockChat() {
-    if (!data?.lock_configured) {
-      setLockSetupOpen(true);
-      return;
-    }
-    try {
-      await patchLock.mutateAsync({ locked: true });
-      toast('Conversa trancada no painel.', 'success');
-    } catch (err) {
-      const msg = getErrorMessage(err, 'Falha ao trancar.');
-      if (msg.toLowerCase().includes('senha')) setLockSetupOpen(true);
-      else toast(msg, 'error');
-    }
-  }
-
-  async function handleLockSetup() {
-    if (newLockPassword.trim().length < 4) {
-      toast('Senha com pelo menos 4 caracteres.', 'error');
-      return;
-    }
-    try {
-      await patchLock.mutateAsync({ locked: true, newPassword: newLockPassword.trim() });
-      setNewLockPassword('');
-      setLockSetupOpen(false);
-      toast('Cadeado criado e conversa trancada.', 'success');
-    } catch (err) {
-      toast(getErrorMessage(err, 'Falha ao criar cadeado.'), 'error');
     }
   }
 
@@ -404,25 +385,10 @@ export default function ConversationDetail() {
             action={
               <div className="flex items-center gap-1">
                 <button
-                  onClick={() => {
-                    if (data.conversation.is_locked) setUnlockRemoveOpen(true);
-                    else void handleLockChat();
-                  }}
+                  onClick={() => setProtectOpen(true)}
                   className="tap-scale rounded-full p-2 text-text-secondary"
-                  aria-label={data.conversation.is_locked ? 'Remover cadeado' : 'Trancar conversa'}
-                  title={
-                    data.conversation.is_locked
-                      ? 'Remover cadeado desta conversa'
-                      : 'Trancar conversa com senha (só no painel)'
-                  }
-                >
-                  <LockIcon width={20} height={20} />
-                </button>
-                <button
-                  onClick={() => setConfirm('block')}
-                  className="tap-scale rounded-full p-2 text-text-secondary"
-                  aria-label="Bloquear este número"
-                  title="Bloquear este número"
+                  aria-label="Proteger ou bloquear"
+                  title="Trancar conversa ou bloquear número"
                 >
                   <BlockIcon width={20} height={20} />
                 </button>
@@ -650,21 +616,13 @@ export default function ConversationDetail() {
       <Modal
         open={confirm !== null}
         onClose={() => setConfirm(null)}
-        title={
-          confirm === 'all'
-            ? 'Limpar histórico do painel'
-            : confirm === 'block'
-              ? 'Bloquear número'
-              : 'Apagar no WhatsApp'
-        }
+        title={confirm === 'all' ? 'Limpar histórico do painel' : 'Apagar no WhatsApp'}
       >
         <div className="flex flex-col gap-4">
           <p className="text-sm text-text-secondary">
             {confirm === 'all'
               ? 'Apaga o histórico só neste painel. As mensagens continuam no WhatsApp do cliente.'
-              : confirm === 'block'
-                ? `Bloquear ${clientName}? As próximas mensagens dele serão ignoradas: não aparecem no painel e a IA não responde. Você pode desfazer em Configurações.`
-                : `Apagar ${selectedIds.size} mensagem(ns) para TODOS no WhatsApp e também neste painel? (mensagens antigas ou sem ID podem falhar no WhatsApp)`}
+              : `Apagar ${selectedIds.size} mensagem(ns) para TODOS no WhatsApp e também neste painel? (mensagens antigas ou sem ID podem falhar no WhatsApp)`}
           </p>
           <div className="flex gap-2">
             <Button variant="secondary" fullWidth onClick={() => setConfirm(null)}>
@@ -673,18 +631,43 @@ export default function ConversationDetail() {
             <Button
               variant="danger"
               fullWidth
-              loading={deleteMessages.isPending || clearConversation.isPending || addBlocked.isPending}
-              onClick={
-                confirm === 'all'
-                  ? handleClearAll
-                  : confirm === 'block'
-                    ? handleBlock
-                    : handleDeleteSelected
-              }
+              loading={deleteMessages.isPending || clearConversation.isPending}
+              onClick={confirm === 'all' ? handleClearAll : handleDeleteSelected}
             >
-              {confirm === 'block' ? 'Bloquear' : confirm === 'all' ? 'Limpar painel' : 'Apagar para todos'}
+              {confirm === 'all' ? 'Limpar painel' : 'Apagar para todos'}
             </Button>
           </div>
+        </div>
+      </Modal>
+
+      <Modal open={protectOpen} onClose={() => setProtectOpen(false)} title="Proteger conversa">
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-text-secondary">
+            Escolha o que fazer. A IA não é afetada pelo cadeado do painel.
+          </p>
+          {data.conversation.is_locked ? (
+            <Button
+              variant="secondary"
+              fullWidth
+              onClick={() => {
+                setProtectOpen(false);
+                setChatPassword('');
+                setUnlockRemoveOpen(true);
+              }}
+            >
+              Remover cadeado desta conversa
+            </Button>
+          ) : (
+            <Button fullWidth loading={patchLock.isPending} onClick={() => void handleLockChat()}>
+              Trancar conversa no painel
+            </Button>
+          )}
+          <Button variant="danger" fullWidth onClick={requestBlockNumber}>
+            Bloquear número (IA ignora)
+          </Button>
+          <Button variant="secondary" fullWidth onClick={() => setProtectOpen(false)}>
+            Cancelar
+          </Button>
         </div>
       </Modal>
 
@@ -719,33 +702,6 @@ export default function ConversationDetail() {
       </Modal>
 
       <Modal
-        open={lockSetupOpen}
-        onClose={() => setLockSetupOpen(false)}
-        title="Criar senha do cadeado"
-        footer={
-          <div className="flex justify-end gap-2">
-            <Button variant="secondary" onClick={() => setLockSetupOpen(false)}>
-              Cancelar
-            </Button>
-            <Button loading={patchLock.isPending} onClick={() => void handleLockSetup()}>
-              Trancar
-            </Button>
-          </div>
-        }
-      >
-        <p className="mb-3 text-sm text-text-secondary">
-          Essa senha vale para todas as conversas trancadas neste painel. A IA não é afetada.
-        </p>
-        <Input
-          label="Nova senha (mín. 4)"
-          type="password"
-          autoComplete="new-password"
-          value={newLockPassword}
-          onChange={(e) => setNewLockPassword(e.target.value)}
-        />
-      </Modal>
-
-      <Modal
         open={unlockRemoveOpen}
         onClose={() => setUnlockRemoveOpen(false)}
         title="Remover cadeado"
@@ -771,10 +727,16 @@ export default function ConversationDetail() {
 
       <BlockUnlockModal
         open={blockUnlockOpen}
-        onClose={() => setBlockUnlockOpen(false)}
+        onClose={() => {
+          setBlockUnlockOpen(false);
+          setPendingProtect(null);
+        }}
         onUnlocked={() => {
           setBlockUnlockOpen(false);
-          void performBlock();
+          if (pendingProtect === 'block-number') {
+            setPendingProtect(null);
+            void performBlock();
+          }
         }}
       />
     </ChatViewport>

@@ -12,11 +12,11 @@ export interface BlockedNumber {
 
 const KEY = ['blocked'] as const;
 
-/** Login do cadeado: troca email/senha por um token de acesso à área restrita. */
+/** Login do cadeado: troca senha por um token de acesso à área restrita. */
 export function useUnlockBlocked() {
   const setToken = useBlockAccess((s) => s.setToken);
   return useMutation({
-    mutationFn: async (input: { email: string; password: string }) => {
+    mutationFn: async (input: { password: string; email?: string }) => {
       const { data } = await api.post<{ token: string }>('/blocked/unlock', input);
       return data.token;
     },

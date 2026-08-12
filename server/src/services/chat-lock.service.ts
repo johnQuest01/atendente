@@ -1,49 +1,24 @@
 /**
- * Senha de cadeado de conversas no painel (só afasta olho curioso).
+ * Cadeado de conversas no painel — mesma senha do cadeado flutuante.
  * Não interfere na IA nem no WhatsApp.
  */
 
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env';
-import { readSetting, writeSetting } from '../db/queries/settings';
-import { hashPassword, verifyPassword } from '../utils/password';
-import { AppError } from '../utils/errors';
+import { verifyPanelLockPassword } from '../config/panel-lock';
 
-const SETTING_KEY = 'chat_lock_password_hash';
 const UNLOCK_TTL = '12h';
 
-export async function isChatLockConfigured(tenantId: string): Promise<boolean> {
-  const hash = await readSetting(tenantId, SETTING_KEY);
-  return Boolean(hash?.trim());
+/** Sempre configurado: a senha é a do cadeado do painel. */
+export async function isChatLockConfigured(_tenantId: string): Promise<boolean> {
+  return true;
 }
 
-export async function setChatLockPassword(
-  tenantId: string,
+export async function verifyChatLockPassword(
+  _tenantId: string,
   password: string,
-  currentPassword?: string | null,
-): Promise<void> {
-  const plain = password.trim();
-  if (plain.length < 4 || plain.length > 72) {
-    throw new AppError('A senha do cadeado deve ter entre 4 e 72 caracteres.', 400, 'CHAT_LOCK_PASSWORD');
-  }
-  const existing = await readSetting(tenantId, SETTING_KEY);
-  if (existing?.trim()) {
-    if (!currentPassword?.trim()) {
-      throw new AppError('Informe a senha atual do cadeado.', 400, 'CHAT_LOCK_CURRENT_REQUIRED');
-    }
-    const ok = await verifyPassword(currentPassword, existing);
-    if (!ok) {
-      throw new AppError('Senha atual incorreta.', 403, 'CHAT_LOCK_BAD_PASSWORD');
-    }
-  }
-  const hash = await hashPassword(plain);
-  await writeSetting(tenantId, SETTING_KEY, hash);
-}
-
-export async function verifyChatLockPassword(tenantId: string, password: string): Promise<boolean> {
-  const hash = await readSetting(tenantId, SETTING_KEY);
-  if (!hash?.trim()) return false;
-  return verifyPassword(password, hash);
+): Promise<boolean> {
+  return verifyPanelLockPassword(password);
 }
 
 export function signChatUnlockToken(tenantId: string, conversationId: string): string {

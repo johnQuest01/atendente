@@ -120,13 +120,6 @@ function warnInsecureProductionConfig(): void {
   if (env.SEED_ADMIN_PASSWORD === 'mudar123') {
     logger.warn('SEGURANÇA: SEED_ADMIN_PASSWORD está no padrão "mudar123". Defina uma senha forte no Render.');
   }
-  if (!env.BLOCK_ADMIN_EMAIL || !env.BLOCK_ADMIN_PASSWORD_HASH) {
-    logger.warn(
-      'SEGURANÇA: BLOCK_ADMIN_EMAIL / BLOCK_ADMIN_PASSWORD_HASH não configurados — o cadeado (área "Números bloqueados") retornará 503. ' +
-        'Defina os dois no Render: BLOCK_ADMIN_EMAIL=seu@email e BLOCK_ADMIN_PASSWORD_HASH=<hash> ' +
-        '(gere o hash com: echo SUA_SENHA | npm run hash-password --workspace server).',
-    );
-  }
   if (!env.WEBHOOK_VERIFY_TOKEN) {
     logger.warn(
       'SEGURANÇA: WEBHOOK_VERIFY_TOKEN ausente. Em produção a rota legada /webhook/whatsapp será recusada — use /webhook/whatsapp/:webhookToken.',

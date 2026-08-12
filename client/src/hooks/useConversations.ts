@@ -83,7 +83,7 @@ export function useUnlockConversation(conversationId: string) {
 export function usePatchConversationLock(conversationId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (body: { locked: boolean; password?: string; newPassword?: string }) => {
+    mutationFn: async (body: { locked: boolean; password?: string }) => {
       const { data } = await api.patch<{
         conversation: Conversation;
         lock_configured: boolean;

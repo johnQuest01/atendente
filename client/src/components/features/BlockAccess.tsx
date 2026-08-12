@@ -27,18 +27,16 @@ export function BlockUnlockModal({
   onUnlocked?: () => void;
 }) {
   const unlock = useUnlockBlocked();
-  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
   async function handleUnlock() {
     try {
-      await unlock.mutateAsync({ email: email.trim(), password });
-      setEmail('');
+      await unlock.mutateAsync({ password });
       setPassword('');
       toast('Acesso liberado.', 'success');
       onUnlocked?.();
     } catch (err) {
-      toast(getErrorMessage(err, 'Login ou senha incorretos.'), 'error');
+      toast(getErrorMessage(err, 'Senha incorreta.'), 'error');
     }
   }
 
@@ -47,20 +45,13 @@ export function BlockUnlockModal({
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-2 text-text-secondary">
           <LockIcon width={18} height={18} />
-          <p className="text-sm">Faça login para acessar os números bloqueados.</p>
+          <p className="text-sm">Digite a senha do cadeado para continuar.</p>
         </div>
-        <Input
-          label="Login"
-          type="email"
-          autoComplete="off"
-          placeholder="seu@email.com"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-        />
         <Input
           label="Senha"
           type="password"
           autoComplete="off"
+          autoFocus
           placeholder="••••••••"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
@@ -71,7 +62,7 @@ export function BlockUnlockModal({
             }
           }}
         />
-        <Button fullWidth loading={unlock.isPending} disabled={!email.trim() || !password} onClick={handleUnlock}>
+        <Button fullWidth loading={unlock.isPending} disabled={!password} onClick={handleUnlock}>
           Entrar
         </Button>
       </div>

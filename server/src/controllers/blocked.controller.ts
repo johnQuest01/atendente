@@ -9,33 +9,25 @@ import {
   normalizePhone,
   setBlockedActive,
 } from '../db/queries/blocked';
-import { verifyPassword } from '../utils/password';
-import { AppError, NotFoundError, UnauthorizedError } from '../utils/errors';
+import { verifyPanelLockPassword } from '../config/panel-lock';
+import { AppError, NotFoundError } from '../utils/errors';
 
 export const idParamSchema = z.object({ id: z.string().uuid() });
 
 export const unlockSchema = z.object({
-  email: z.string().min(1),
   password: z.string().min(1),
+  /** Aceito por compat, ignorado — o cadeado pede só senha. */
+  email: z.string().optional(),
 });
 
 /**
- * Valida o login/senha especial e emite um token (12h) com escopo 'blocklist'
+ * Valida a senha do cadeado e emite um token (12h) com escopo 'blocklist'
  * que libera o acesso à área de números bloqueados.
  */
 export async function unlockBlocked(req: Request, res: Response): Promise<void> {
-  const { email, password } = req.body as z.infer<typeof unlockSchema>;
-  if (!env.BLOCK_ADMIN_EMAIL || !env.BLOCK_ADMIN_PASSWORD_HASH) {
-    throw new AppError(
-      'Cadeado não configurado no servidor (BLOCK_ADMIN_EMAIL / BLOCK_ADMIN_PASSWORD_HASH).',
-      503,
-      'MISCONFIGURED',
-    );
-  }
-  const emailOk = email.trim().toLowerCase() === env.BLOCK_ADMIN_EMAIL.toLowerCase();
-  const passOk = emailOk && (await verifyPassword(password, env.BLOCK_ADMIN_PASSWORD_HASH));
-  if (!emailOk || !passOk) {
-    throw new UnauthorizedError('Login ou senha do cadeado incorretos.');
+  const { password } = req.body as z.infer<typeof unlockSchema>;
+  if (!verifyPanelLockPassword(password)) {
+    throw new AppError('Senha do cadeado incorreta.', 403, 'CHAT_LOCK_BAD_PASSWORD');
   }
   const token = jwt.sign({ scope: 'blocklist' }, env.JWT_SECRET, { expiresIn: '12h' });
   res.json({ token });
