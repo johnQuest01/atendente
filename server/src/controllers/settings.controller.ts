@@ -361,7 +361,7 @@ export async function putReminderPersona(req: Request, res: Response): Promise<v
 }
 
 export const updateSecretaryPlaybookSchema = z.object({
-  prompt: z.string().max(16000, 'O texto está muito longo (máx. 16000 caracteres).'),
+  prompt: z.string(),
 });
 
 export async function getSecretaryPlaybookHandler(req: Request, res: Response): Promise<void> {
