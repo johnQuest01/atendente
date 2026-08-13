@@ -12,7 +12,6 @@ import {
   getReminderPersona,
   setReminderPersona,
   getSecretaryPlaybook,
-  bustSecretaryPlaybookCache,
   isMemoryScanEnabled,
   setMemoryScanEnabled,
   readSetting,
@@ -26,6 +25,7 @@ import {
 } from '../config/behavior-settings';
 import { getHealthReport } from '../services/health.service';
 import { previewReply } from '../services/ai.service';
+import { normalizePlaybookOrders } from '../services/secretary-playbook.service';
 import { parseReminder } from '../services/reminders/parse.service';
 import { getOwnerModeFlags } from '../services/owner-chat.service';
 import { isWebSearchToolAvailable } from '../services/ai/tools';
@@ -383,11 +383,10 @@ export async function putSecretaryPlaybook(req: Request, res: Response): Promise
     throw new AppError('Informe a conexão (connectionId).', 400);
   }
   await requireConnection(tenantId, connectionId);
-  const clean = prompt.trim();
+  const clean = normalizePlaybookOrders(prompt);
   await patchConnectionConfig(tenantId, connectionId, {
     secretaryPlaybook: clean || null,
   });
-  bustSecretaryPlaybookCache(tenantId, connectionId);
   res.json({ prompt: clean });
 }
 

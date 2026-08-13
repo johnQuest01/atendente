@@ -9,6 +9,14 @@ import { getErrorMessage } from '@/services/api';
 const TEXTAREA_CLASS =
   'mt-1 w-full resize-y rounded-xl border border-border bg-bg p-3 font-sans text-sm font-normal leading-relaxed text-text-primary outline-none focus:border-primary';
 
+function countOrders(text: string): number {
+  return text
+    .replace(/\r\n/g, '\n')
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((c) => c.trim())
+    .filter((c) => c.replace(/[.!?]+$/g, '').trim().length >= 3).length;
+}
+
 export function SecretaryPlaybookSection({
   connectionId,
   canEdit,
@@ -27,14 +35,16 @@ export function SecretaryPlaybookSection({
 
   const dirty = touched && data ? text !== data.prompt : false;
   const hasRules = Boolean((data?.prompt ?? '').trim());
+  const orders = countOrders(text);
 
   function save() {
     saveMut.mutate(
       { prompt: text },
       {
-        onSuccess: () => {
+        onSuccess: (saved) => {
+          setText(saved.prompt);
           setTouched(false);
-          toast('Treino da secretária salvo. Ela já segue essas regras.', 'success');
+          toast('Secretária atualizada agora. Ela já segue esses pedidos.', 'success');
         },
         onError: (err) => toast(getErrorMessage(err), 'error'),
       },
@@ -48,9 +58,8 @@ export function SecretaryPlaybookSection({
           <div className="min-w-0">
             <h2 className="text-base font-bold text-text-primary">Treino da secretária</h2>
             <p className="text-sm text-text-secondary">
-              Escreva em português o que ela deve fazer neste WhatsApp. Salve e vale na hora — sem
-              atualizar código. Ela interpreta o sentido e executa (responder, avisar, pesquisar,
-              falar com contato…).
+              Um pedido por frase, sempre com ponto final. Salve e vale na hora — a mensagem
+              seguinte já obedece.
             </p>
           </div>
           <Badge tone={hasRules ? 'success' : 'neutral'}>{hasRules ? 'Com treino' : 'Vazio'}</Badge>
@@ -66,17 +75,20 @@ export function SecretaryPlaybookSection({
           rows={14}
           spellCheck
           placeholder={
-            'Exemplos (pode juntar vários):\n\n' +
-            '• Só dê bom dia para qualquer pessoa que mandar mensagem. Nada mais.\n' +
-            '• Quando o Wender chamar, me avisa e não responde.\n' +
-            '• Se alguém pedir preço, manda o catálogo e pergunta o que precisa.\n' +
-            '• Fala curto, sem emoji.'
+            'Separe cada pedido com ponto final.\n\n' +
+            'Fala curto.\n' +
+            'Não use emoji para responder o Bruno 5511915287476.\n' +
+            'Quando o Wender chamar, me avisa e não responde.\n' +
+            'Se alguém pedir preço, manda o catálogo.'
           }
           className={TEXTAREA_CLASS}
         />
 
         <div className="mt-2 flex items-center justify-between gap-2">
-          <span className="text-xs text-text-secondary">{text.length} caracteres</span>
+          <span className="text-xs text-text-secondary">
+            {text.length} caracteres
+            {orders > 0 ? ` · ${orders} pedido${orders === 1 ? '' : 's'}` : ''}
+          </span>
           {canEdit && (
             <Button size="sm" onClick={save} disabled={!dirty} loading={saveMut.isPending}>
               Salvar treino
@@ -92,8 +104,11 @@ export function SecretaryPlaybookSection({
       <Card>
         <h3 className="text-sm font-bold text-text-primary">Como usar</h3>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-text-secondary">
+          <li>
+            Termine cada pedido com <strong>ponto final</strong>. Ex.: “Fala curto. Não use emoji.”
+          </li>
+          <li>Ao salvar, o texto é organizado um pedido por linha e a secretária atualiza na hora.</li>
           <li>Cada conexão (número) tem o próprio caderno.</li>
-          <li>Pode ir acrescentando regras; a mais específica ganha se houver conflito.</li>
           <li>
             “Quem te chamar / qualquer pessoa” vale para <strong>contatos</strong>. Você, dono,
             continua mandando comando no WhatsApp.
