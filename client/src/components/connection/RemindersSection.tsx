@@ -15,6 +15,7 @@ import {
   useRemoveReminderOwner,
   useSetMemoryScan,
   useSetOwnerModes,
+  useSetReminderOwnerSecretary,
 } from '@/hooks/useReminderOwners';
 import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
@@ -50,7 +51,8 @@ function OwnerModesCard({
         <h2 className="text-base font-bold text-text-primary">Secretária e Agente</h2>
         <p className="text-sm text-text-secondary">
           Alavancas deste WhatsApp. Respostas no modo ligado são otimizadas para{' '}
-          <strong>rapidez</strong>. Só números autorizados abaixo usam isso — clientes nunca entram.
+          <strong>rapidez</strong>. Só números autorizados abaixo usam isso — cada um tem a própria
+          alavanca. Clientes nunca entram.
         </p>
       </div>
 
@@ -154,6 +156,7 @@ function ReminderOwnersCard({
   const { data: owners, isLoading } = useReminderOwners(connectionId);
   const add = useAddReminderOwner(connectionId);
   const remove = useRemoveReminderOwner(connectionId);
+  const setSecretary = useSetReminderOwnerSecretary(connectionId);
 
   const [phone, setPhone] = useState('');
   const [label, setLabel] = useState('');
@@ -166,7 +169,7 @@ function ReminderOwnersCard({
         onSuccess: () => {
           setPhone('');
           setLabel('');
-          toast('Número autorizado a usar os lembretes.', 'success');
+          toast('Número autorizado. Assistente secretário liberado para este usuário.', 'success');
         },
         onError: (err) => toast(getErrorMessage(err), 'error'),
       },
@@ -178,8 +181,9 @@ function ReminderOwnersCard({
       <div>
         <h2 className="text-base font-bold text-text-primary">Lembretes</h2>
         <p className="text-sm text-text-secondary">
-          Números autorizados falam com seu assistente pessoal por este WhatsApp. Eles não viram
-          clientes e não recebem resposta de vendas — só lembretes.
+          Números autorizados falam com o assistente secretário por este WhatsApp. Use a alavanca
+          para liberar ou pausar cada pessoa — com a alavanca desligada, o número volta a ser
+          tratado como cliente.
         </p>
       </div>
 
@@ -194,6 +198,28 @@ function ReminderOwnersCard({
             <p className="truncate text-sm font-semibold text-text-primary">{o.label ?? o.phone}</p>
             {o.label && <p className="truncate text-xs text-text-secondary">{o.phone}</p>}
           </div>
+          {canEdit && (
+            <Toggle
+              checked={o.secretary_enabled !== false}
+              disabled={setSecretary.isPending}
+              onChange={(next) =>
+                setSecretary.mutate(
+                  { phone: o.phone, secretaryEnabled: next },
+                  {
+                    onSuccess: () =>
+                      toast(
+                        next
+                          ? `Assistente liberado para ${o.label ?? o.phone}.`
+                          : `Assistente pausado para ${o.label ?? o.phone}.`,
+                        'success',
+                      ),
+                    onError: (err) => toast(getErrorMessage(err), 'error'),
+                  },
+                )
+              }
+              label={`Liberar assistente secretário para ${o.label ?? o.phone}`}
+            />
+          )}
           {canEdit && (
             <Button
               size="sm"

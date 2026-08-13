@@ -9,6 +9,7 @@ import { api } from '@/services/api';
 export interface ReminderOwner {
   phone: string;
   label: string | null;
+  secretary_enabled?: boolean;
 }
 
 export function reminderOwnersQueryKey(connectionId?: string) {
@@ -39,6 +40,21 @@ export function useAddReminderOwner(connectionId?: string) {
       const { data } = await api.post<{ owners: ReminderOwner[] }>(
         '/settings/reminder-owners',
         input,
+        { params: connectionId ? { connectionId } : undefined },
+      );
+      return data.owners;
+    },
+    onSuccess: (owners) => qc.setQueryData(reminderOwnersQueryKey(connectionId), owners),
+  });
+}
+
+export function useSetReminderOwnerSecretary(connectionId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ phone, secretaryEnabled }: { phone: string; secretaryEnabled: boolean }) => {
+      const { data } = await api.patch<{ owners: ReminderOwner[] }>(
+        `/settings/reminder-owners/${phone}`,
+        { secretaryEnabled },
         { params: connectionId ? { connectionId } : undefined },
       );
       return data.owners;

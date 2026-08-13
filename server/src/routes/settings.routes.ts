@@ -56,6 +56,8 @@ import {
   postReminderOwner,
   createReminderOwnerSchema,
   deleteReminderOwner,
+  patchReminderOwner,
+  patchReminderOwnerSchema,
   reminderOwnerParamSchema,
   getReminders,
   listRemindersQuerySchema,
@@ -189,6 +191,12 @@ router.delete(
   adminOnly,
   validate({ params: reminderOwnerParamSchema }),
   asyncHandler(deleteReminderOwner),
+);
+router.patch(
+  '/reminder-owners/:phone',
+  adminOnly,
+  validate({ params: reminderOwnerParamSchema, body: patchReminderOwnerSchema }),
+  asyncHandler(patchReminderOwner),
 );
 router.get(
   '/reminders',

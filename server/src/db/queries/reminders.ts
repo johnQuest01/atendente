@@ -11,6 +11,14 @@ import { AppError } from '../../utils/errors';
  * agendador varrendo todas as empresas) e por isso não recebe tenantId.
  */
 
+export interface ReminderOwnerRow {
+  phone: string;
+  label: string | null;
+  connection_id?: string;
+  secretary_enabled: boolean;
+}
+
+/** Número autorizado E com a alavanca do assistente ligada. */
 export async function isReminderOwner(
   tenantId: string,
   phone: string,
@@ -20,13 +28,15 @@ export async function isReminderOwner(
   if (connectionId) {
     const row = await queryOne<{ phone: string }>(
       `SELECT phone FROM reminder_owners
-        WHERE tenant_id = $1 AND phone = $2 AND connection_id = $3`,
+        WHERE tenant_id = $1 AND phone = $2 AND connection_id = $3
+          AND secretary_enabled = true`,
       [tenantId, phone, connectionId],
     );
     return row !== null;
   }
   const row = await queryOne<{ phone: string }>(
-    'SELECT phone FROM reminder_owners WHERE tenant_id = $1 AND phone = $2',
+    `SELECT phone FROM reminder_owners
+      WHERE tenant_id = $1 AND phone = $2 AND secretary_enabled = true`,
     [tenantId, phone],
   );
   return row !== null;
@@ -35,19 +45,19 @@ export async function isReminderOwner(
 export async function listReminderOwners(
   tenantId: string,
   connectionId?: string | null,
-): Promise<Array<{ phone: string; label: string | null; connection_id?: string }>> {
+): Promise<ReminderOwnerRow[]> {
   assertTenantMatchesScope(tenantId);
   if (connectionId) {
-    const { rows } = await query<{ phone: string; label: string | null; connection_id: string }>(
-      `SELECT phone, label, connection_id FROM reminder_owners
+    const { rows } = await query<ReminderOwnerRow>(
+      `SELECT phone, label, connection_id, secretary_enabled FROM reminder_owners
         WHERE tenant_id = $1 AND connection_id = $2
         ORDER BY created_at ASC`,
       [tenantId, connectionId],
     );
     return rows;
   }
-  const { rows } = await query<{ phone: string; label: string | null; connection_id: string }>(
-    `SELECT phone, label, connection_id FROM reminder_owners
+  const { rows } = await query<ReminderOwnerRow>(
+    `SELECT phone, label, connection_id, secretary_enabled FROM reminder_owners
       WHERE tenant_id = $1 ORDER BY created_at ASC`,
     [tenantId],
   );
@@ -69,11 +79,36 @@ export async function addReminderOwner(
     );
   }
   await query(
-    `INSERT INTO reminder_owners (tenant_id, phone, label, connection_id)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO reminder_owners (tenant_id, phone, label, connection_id, secretary_enabled)
+     VALUES ($1, $2, $3, $4, true)
      ON CONFLICT (tenant_id, phone, connection_id) DO UPDATE SET label = EXCLUDED.label`,
     [tenantId, phone, label ?? null, connectionId],
   );
+}
+
+/** Liga/desliga o assistente secretário para um número da whitelist. */
+export async function setReminderOwnerSecretary(
+  tenantId: string,
+  phone: string,
+  enabled: boolean,
+  connectionId?: string | null,
+): Promise<boolean> {
+  assertTenantMatchesScope(tenantId);
+  if (connectionId) {
+    const { rowCount } = await query(
+      `UPDATE reminder_owners
+          SET secretary_enabled = $4
+        WHERE tenant_id = $1 AND phone = $2 AND connection_id = $3`,
+      [tenantId, phone, connectionId, enabled],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+  const { rowCount } = await query(
+    `UPDATE reminder_owners SET secretary_enabled = $3
+      WHERE tenant_id = $1 AND phone = $2`,
+    [tenantId, phone, enabled],
+  );
+  return (rowCount ?? 0) > 0;
 }
 
 export async function removeReminderOwner(

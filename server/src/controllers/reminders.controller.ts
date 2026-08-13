@@ -5,6 +5,7 @@ import {
   listReminderOwners,
   listReminders,
   removeReminderOwner,
+  setReminderOwnerSecretary,
 } from '../db/queries/reminders';
 import { AppError, NotFoundError } from '../utils/errors';
 import { parseConnectionIdQuery, requireConnection } from './connectionScope';
@@ -55,6 +56,27 @@ export async function postReminderOwner(req: Request, res: Response): Promise<vo
 }
 
 export const reminderOwnerParamSchema = z.object({ phone: z.string().min(8).max(20) });
+
+export const patchReminderOwnerSchema = z.object({
+  secretaryEnabled: z.boolean(),
+});
+
+/** Liga/desliga o assistente secretário para um número autorizado. */
+export async function patchReminderOwner(req: Request, res: Response): Promise<void> {
+  const connectionId = parseConnectionIdQuery(req);
+  if (connectionId) await requireConnection(req.user!.tenant_id, connectionId);
+  const { phone } = req.params as z.infer<typeof reminderOwnerParamSchema>;
+  const { secretaryEnabled } = req.body as z.infer<typeof patchReminderOwnerSchema>;
+  const ok = await setReminderOwnerSecretary(
+    req.user!.tenant_id,
+    onlyDigits(phone),
+    secretaryEnabled,
+    connectionId,
+  );
+  if (!ok) throw new NotFoundError('Número autorizado');
+  const owners = await listReminderOwners(req.user!.tenant_id, connectionId);
+  res.json({ owners });
+}
 
 export async function deleteReminderOwner(req: Request, res: Response): Promise<void> {
   const connectionId = parseConnectionIdQuery(req);
