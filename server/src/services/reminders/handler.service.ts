@@ -53,6 +53,7 @@ import {
   setContactAutoReply,
 } from '../contact-reply.service';
 import { rememberContactChoice } from '../owner-contact-memory.service';
+import { applySecretaryPlaybookToText } from '../secretary-playbook.service';
 
 /**
  * Assistente pessoal do dono. O mesmo número que atende clientes aceita comandos
@@ -263,6 +264,12 @@ async function flushOwnerCoalesce(k: string): Promise<void> {
 
 async function reply(tenantId: string, phone: string, text: string, skipPersist = false): Promise<void> {
   const connectionId = ownerReplyConnection.get(stateKey(tenantId, phone));
+  text = await applySecretaryPlaybookToText({
+    tenantId,
+    connectionId,
+    toPhone: phone,
+    text,
+  });
   const wa = connectionId
     ? await getWhatsappByConnection(tenantId, connectionId)
     : await getTenantWhatsapp(tenantId);

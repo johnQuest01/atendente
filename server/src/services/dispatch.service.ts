@@ -9,6 +9,7 @@ import { renderTemplate, formatBRL } from '../utils/text';
 import { signMediaToken } from '../utils/media-token';
 import * as whatsapp from './whatsapp.service';
 import { assertCustomerOutboundAllowed } from './outbound/safe-mode.service';
+import { applySecretaryPlaybookToText } from './secretary-playbook.service';
 import type { OutboundMeta } from './outbound/types';
 import type { Audio, Client, Conversation, MessageLog, MessageOrigin } from '../types';
 
@@ -209,16 +210,26 @@ export async function dispatchText(
     triggeringInboundId: opts.triggeringInboundId,
   });
 
+  let body = text;
+  if (opts.origin !== 'human') {
+    body = await applySecretaryPlaybookToText({
+      tenantId: ctx.conversation.tenant_id,
+      connectionId: ctx.conversation.connection_id,
+      toPhone: ctx.client.phone,
+      text,
+    });
+  }
+
   const wa = await whatsapp.getWhatsappForConversation(
     ctx.conversation.tenant_id,
     ctx.conversation.connection_id,
   );
-  const zapiId = await wa.sendText(ctx.client.phone, text);
+  const zapiId = await wa.sendText(ctx.client.phone, body);
   const msg = await insertMessage(ctx.conversation.tenant_id, {
     conversationId: ctx.conversation.id,
     direction: 'outbound',
     type: 'text',
-    content: text,
+    content: body,
     zapiMessageId: zapiId,
     origin: opts.origin,
   });

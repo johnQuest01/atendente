@@ -14,7 +14,6 @@ import {
 } from './ai/tools';
 import type { ChatImage, ChatMessage } from './ai/types';
 import { getReminderPersona, getSecretaryPlaybook } from '../db/queries/settings';
-import { formatSecretaryPlaybook } from './secretary-playbook.service';
 import { getConnectionById } from '../db/queries/whatsapp_connections';
 import {
   appendOwnerChatMessage,
@@ -22,6 +21,7 @@ import {
 } from '../db/queries/owner_chat_messages';
 import { loadOwnerAgenda } from './reminders/parse.service';
 import { formatForOwner, DEFAULT_TZ } from './reminders/time';
+import { applySecretaryPlaybookToText, formatSecretaryPlaybook } from './secretary-playbook.service';
 
 /**
  * Modo Agente do dono: chat livre no WhatsApp.
@@ -120,11 +120,12 @@ function buildFastSystem(
       : webSearchOn
         ? 'Busca na web está ligada na alavanca, mas a tool ainda não tem chave no servidor. Responda o que souber com cautela; NÃO peça API key.'
         : 'Busca na web está desligada. Se pedirem pesquisa, diga pra ligar a alavanca "Busca na web" em Lembretes.',
-    persona?.trim() ? `Tom:\n${persona.trim()}` : '',
+    persona?.trim() ? `Tom (NÃO usa emoji / NÃO alonga se o TREINO acima proibir):\n${persona.trim()}` : '',
     agendaLines.length
       ? `Caderno de compromissos (próximos dias):\n${agendaLines.join('\n')}`
       : 'Caderno de compromissos: (vazio por enquanto).',
     memoryBlock,
+    playbookBlock,
   ];
   return parts.filter(Boolean).join('\n\n');
 }
@@ -171,6 +172,7 @@ async function runFreeChatOnce(
   const persona = await getReminderPersona(tenantId, opts.connectionId);
   const playbookBlock = formatSecretaryPlaybook(
     await getSecretaryPlaybook(tenantId, opts.connectionId),
+    phone,
   );
   const agenda = await loadOwnerAgenda(tenantId, phone, tz);
   const agendaLines = agenda.slice(0, 12).map((r, i) => {
@@ -305,6 +307,12 @@ async function drainQueue(tenantId: string, phone: string, k: string): Promise<v
     // Grava a resposta no histórico ANTES do próximo job — senão o turno
     // seguinte vê dois pedidos do dono sem a confirmação do anterior.
     if (text) {
+      text = await applySecretaryPlaybookToText({
+        tenantId,
+        connectionId: job.opts.connectionId,
+        toPhone: phone,
+        text,
+      });
       await persistOwnerAssistantReply(tenantId, phone, text, job.opts.connectionId);
     }
     job.resolve({ status: 'reply', text, alreadyPersisted: Boolean(text) });

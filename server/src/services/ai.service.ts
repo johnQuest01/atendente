@@ -314,6 +314,7 @@ export async function generateReply(
     : '';
   const playbook = formatSecretaryPlaybook(
     await getSecretaryPlaybook(tenantId, input.connectionId).catch(() => ''),
+    input.client?.phone,
   );
   const parts = await buildSystemPromptParts({ ...input, memoryBlock, tenantId });
   const dynamicExtra =
