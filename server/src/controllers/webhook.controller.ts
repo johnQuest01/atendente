@@ -391,7 +391,8 @@ async function processInbound(
       inbound.type === 'audio' ||
       inbound.type === 'image' ||
       inbound.type === 'video') &&
-    (await isReminderOwner(tenantId, inbound.phone, connectionId))
+    ((await isReminderOwner(tenantId, inbound.phone, connectionId)) ||
+      connection?.owner_open_access_enabled === true)
   ) {
     await hydrateProviderMedia(tenantId, inbound, connection);
     const handled = await handleOwnerMessage(tenantId, inbound, connectionId);

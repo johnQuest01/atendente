@@ -338,18 +338,19 @@ export async function persistOwnerUserMessage(input: {
   }).catch((err) => logger.warn('Secretária: falha ao persistir msg do dono', err));
 }
 
-/** Flags efetivos da conexão (defaults: secretária ON, agente OFF, busca OFF). */
+/** Flags efetivos da conexão (defaults: secretária ON, agente OFF, busca OFF, acesso livre OFF). */
 export async function getOwnerModeFlags(
   tenantId: string,
   connectionId?: string | null,
-): Promise<{ secretary: boolean; agent: boolean; webSearch: boolean }> {
+): Promise<{ secretary: boolean; agent: boolean; webSearch: boolean; openAccess: boolean }> {
   if (!connectionId) {
-    return { secretary: true, agent: false, webSearch: false };
+    return { secretary: true, agent: false, webSearch: false, openAccess: false };
   }
   const conn = await getConnectionById(tenantId, connectionId);
   return {
     secretary: conn?.owner_secretary_enabled !== false,
     agent: conn?.owner_free_chat_enabled === true,
     webSearch: conn?.owner_web_search_enabled === true,
+    openAccess: conn?.owner_open_access_enabled === true,
   };
 }

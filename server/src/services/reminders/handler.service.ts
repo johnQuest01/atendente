@@ -575,7 +575,13 @@ async function handleOwnerMessageInner(
 
   const normalized = normalize(text);
   const owner = getState(tenantId, phone);
-  const flags = await getOwnerModeFlags(tenantId, connectionId);
+  const stored = await getOwnerModeFlags(tenantId, connectionId);
+  const listed = await isReminderOwner(tenantId, phone, connectionId);
+  // Acesso livre: qualquer pessoa neste WhatsApp usa secretária + chat + busca.
+  // Sem a alavanca, valem só os flags da conexão para quem está na whitelist.
+  const flags = stored.openAccess
+    ? { secretary: true, agent: true, webSearch: true, openAccess: true }
+    : stored;
 
   // Foto/vídeo: a secretária/agente ENXERGA via visão (não cai no fluxo só-texto).
   if (visionImages.length > 0) {
@@ -598,7 +604,8 @@ async function handleOwnerMessageInner(
   }
 
   // 0.5. Escolha de contato pendente ("1", "2"…) depois de vários matches.
-  if (owner.pendingRelay) {
+  // Relay só para número cadastrado — acesso livre não manda msg a contatos da empresa.
+  if (owner.pendingRelay && listed) {
     const pick = normalized.match(/^(\d{1,2})$/);
     if (pick) {
       const idx = Number(pick[1]) - 1;
@@ -749,11 +756,12 @@ async function handleOwnerMessageInner(
   // hoje. Vive aqui de propósito — só roda para a whitelist —, com re-checagem
   // defensiva para o cliente jamais receber lembrete (isolamento máximo).
   if (await matchesReminderKeyword(tenantId, text, connectionId)) {
-    if (!(await isReminderOwner(tenantId, phone, connectionId))) return true;
+    if (listed) {
     const todays = await getTodayReminders(tenantId, phone);
     setState(tenantId, phone, { lastList: todays.map((r) => r.id) });
     await sendReminderList(tenantId, phone, todays, QUERY_TITLE.hoje, tz);
     return true;
+    }
   }
 
   // 3. Gestão por índice da última lista.
@@ -785,6 +793,7 @@ async function handleOwnerMessageInner(
   // "RECUPERAR COMPROMISSOS". OFF por padrão; sob demanda; propõe e só grava
   // com a confirmação em massa. Custa token só aqui.
   if (/^varrer\b/.test(normalized) || /recuperar\s+compromiss/.test(normalized)) {
+    if (listed) {
     if (!(await isMemoryScanEnabled(tenantId, connectionId))) {
       await reply(
         tenantId,
@@ -809,6 +818,7 @@ async function handleOwnerMessageInner(
       `Encontrei possíveis compromissos nas conversas:\n\n${renderConfirmation(items, tz)}`,
     );
     return true;
+    }
   }
   } // flags.secretary
 
@@ -823,7 +833,8 @@ async function handleOwnerMessageInner(
 
   // 3.8. Mandar mensagem a contato da lista (secretária).
   // Ex.: "mande um boa noite para o wender agora"
-  if (flags.secretary) {
+  // Só número cadastrado — acesso livre não envia msg a contatos da empresa.
+  if (flags.secretary && listed) {
     const relay = parseRelayIntent(text);
     if (relay) {
       const candidates = await resolveRelayContacts(tenantId, relay.contactQuery, connectionId);

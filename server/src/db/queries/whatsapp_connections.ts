@@ -52,6 +52,8 @@ export interface WhatsappConnection {
   owner_free_chat_enabled: boolean | null;
   /** NULL/false = off; true = busca web no Agente. */
   owner_web_search_enabled: boolean | null;
+  /** NULL/false = só whitelist; true = qualquer número usa secretária + busca. */
+  owner_open_access_enabled: boolean | null;
   provider_mode: ProviderMode;
   instance_origin: InstanceOrigin;
   connection_status: ConnectionLifecycleStatus;
@@ -87,6 +89,7 @@ interface ConnectionRow {
   owner_secretary_enabled?: boolean | null;
   owner_free_chat_enabled?: boolean | null;
   owner_web_search_enabled?: boolean | null;
+  owner_open_access_enabled?: boolean | null;
   provider_mode?: ProviderMode | null;
   instance_origin?: InstanceOrigin | null;
   connection_status?: ConnectionLifecycleStatus | null;
@@ -106,6 +109,7 @@ const COLS = `id, tenant_id, provider, label, phone_number, secrets_encrypted, b
   webhook_token, is_active, ai_persona, ai_temperature, ai_max_tokens, agent_enabled,
   reminder_assistant_persona, memory_scan_enabled,
   owner_secretary_enabled, owner_free_chat_enabled, owner_web_search_enabled,
+  owner_open_access_enabled,
   provider_mode, instance_origin, connection_status, webhook_configured, zapi_subscribed,
   pool_instance_id, onboarding_started_at, onboarding_expires_at,
   last_status, last_status_detail, last_status_at, created_at, updated_at`;
@@ -142,6 +146,7 @@ function mapRow(row: ConnectionRow): WhatsappConnection {
     owner_secretary_enabled: row.owner_secretary_enabled ?? null,
     owner_free_chat_enabled: row.owner_free_chat_enabled ?? null,
     owner_web_search_enabled: row.owner_web_search_enabled ?? null,
+    owner_open_access_enabled: row.owner_open_access_enabled ?? null,
     provider_mode: row.provider_mode ?? 'web',
     instance_origin: row.instance_origin ?? 'manual',
     connection_status: row.connection_status ?? 'DESCONECTADO',
@@ -518,6 +523,7 @@ export async function patchConnectionConfig(
     ownerSecretaryEnabled?: boolean | null;
     ownerFreeChatEnabled?: boolean | null;
     ownerWebSearchEnabled?: boolean | null;
+    ownerOpenAccessEnabled?: boolean | null;
   },
 ): Promise<WhatsappConnection | null> {
   const sets: string[] = [];
@@ -544,6 +550,9 @@ export async function patchConnectionConfig(
   }
   if (patch.ownerWebSearchEnabled !== undefined) {
     push('owner_web_search_enabled', patch.ownerWebSearchEnabled);
+  }
+  if (patch.ownerOpenAccessEnabled !== undefined) {
+    push('owner_open_access_enabled', patch.ownerOpenAccessEnabled);
   }
 
   if (sets.length === 0) return getConnectionById(tenantId, id);

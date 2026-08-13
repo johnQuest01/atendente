@@ -125,6 +125,7 @@ export interface OwnerModes {
   secretary: boolean;
   agent: boolean;
   webSearch: boolean;
+  openAccess: boolean;
   webSearchConfigured: boolean;
 }
 
@@ -149,7 +150,9 @@ export function useOwnerModes(connectionId?: string, enabled = true) {
 export function useSetOwnerModes(connectionId?: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async (patch: Partial<Pick<OwnerModes, 'secretary' | 'agent' | 'webSearch'>>) => {
+    mutationFn: async (
+      patch: Partial<Pick<OwnerModes, 'secretary' | 'agent' | 'webSearch' | 'openAccess'>>,
+    ) => {
       const { data } = await api.put<OwnerModes>(
         '/settings/owner-modes',
         patch,

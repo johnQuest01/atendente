@@ -466,6 +466,7 @@ export async function getOwnerModes(req: Request, res: Response): Promise<void> 
     secretary: flags.secretary,
     agent: flags.agent,
     webSearch: flags.webSearch,
+    openAccess: flags.openAccess,
     // Tool web_search só com chave Tavily/Brave (fase 3) — não DuckDuckGo “sempre true”.
     webSearchConfigured: isWebSearchToolAvailable(),
   });
@@ -475,6 +476,7 @@ export const updateOwnerModesSchema = z.object({
   secretary: z.boolean().optional(),
   agent: z.boolean().optional(),
   webSearch: z.boolean().optional(),
+  openAccess: z.boolean().optional(),
 });
 
 export async function putOwnerModes(req: Request, res: Response): Promise<void> {
@@ -495,6 +497,7 @@ export async function putOwnerModes(req: Request, res: Response): Promise<void> 
     ownerSecretaryEnabled: body.secretary,
     ownerFreeChatEnabled: body.agent,
     ownerWebSearchEnabled: webSearch,
+    ownerOpenAccessEnabled: body.openAccess,
   });
 
   const flags = await getOwnerModeFlags(tenantId, connectionId);
@@ -502,6 +505,7 @@ export async function putOwnerModes(req: Request, res: Response): Promise<void> 
     secretary: flags.secretary,
     agent: flags.agent,
     webSearch: flags.webSearch,
+    openAccess: flags.openAccess,
     webSearchConfigured: isWebSearchToolAvailable(),
   });
 }

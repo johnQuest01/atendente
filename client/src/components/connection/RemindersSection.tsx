@@ -36,9 +36,13 @@ function OwnerModesCard({
   const secretary = data?.secretary ?? true;
   const agent = data?.agent ?? false;
   const webSearch = data?.webSearch ?? false;
+  const openAccess = data?.openAccess ?? false;
   const searchReady = data?.webSearchConfigured ?? false;
 
-  function patch(next: { secretary?: boolean; agent?: boolean; webSearch?: boolean }, ok: string) {
+  function patch(
+    next: { secretary?: boolean; agent?: boolean; webSearch?: boolean; openAccess?: boolean },
+    ok: string,
+  ) {
     setModes.mutate(next, {
       onSuccess: () => toast(ok, 'success'),
       onError: (err) => toast(getErrorMessage(err), 'error'),
@@ -51,12 +55,46 @@ function OwnerModesCard({
         <h2 className="text-base font-bold text-text-primary">Secretária e Agente</h2>
         <p className="text-sm text-text-secondary">
           Alavancas deste WhatsApp. Respostas no modo ligado são otimizadas para{' '}
-          <strong>rapidez</strong>. Só números autorizados abaixo usam isso — cada um tem a própria
-          alavanca. Clientes nunca entram.
+          <strong>rapidez</strong>. Com acesso livre desligado, só os números cadastrados abaixo
+          usam isso — cada um com a própria alavanca.
         </p>
       </div>
 
       {isLoading && <Spinner label="Carregando..." />}
+
+      <div className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-bold text-text-primary">Acesso livre</h3>
+            <Badge tone={openAccess ? 'success' : 'neutral'}>
+              {openAccess ? 'Ligado' : 'Desligado'}
+            </Badge>
+          </div>
+          <p className="mt-1 text-xs text-text-secondary">
+            Qualquer pessoa neste WhatsApp usa a secretária e a busca na web. Desligado: só os
+            números cadastrados abaixo — a lista por pessoa continua valendo.
+          </p>
+        </div>
+        <Toggle
+          checked={openAccess}
+          disabled={setModes.isPending || !canEdit || isLoading}
+          onChange={(next) => {
+            if (
+              next &&
+              !confirm(
+                'Qualquer pessoa que mandar mensagem neste WhatsApp vai usar a secretária e a busca, não só os números cadastrados. Continuar?',
+              )
+            ) {
+              return;
+            }
+            patch(
+              { openAccess: next },
+              next ? 'Acesso livre ligado.' : 'Acesso livre desligado. Só números cadastrados.',
+            );
+          }}
+          label="Ligar ou desligar o acesso livre da secretária"
+        />
+      </div>
 
       <div className="flex items-center justify-between gap-3 rounded-xl border border-border px-3 py-3">
         <div className="min-w-0 flex-1">
@@ -154,9 +192,11 @@ function ReminderOwnersCard({
   canEdit: boolean;
 }) {
   const { data: owners, isLoading } = useReminderOwners(connectionId);
+  const { data: modes } = useOwnerModes(connectionId);
   const add = useAddReminderOwner(connectionId);
   const remove = useRemoveReminderOwner(connectionId);
   const setSecretary = useSetReminderOwnerSecretary(connectionId);
+  const openAccess = modes?.openAccess === true;
 
   const [phone, setPhone] = useState('');
   const [label, setLabel] = useState('');
@@ -181,11 +221,19 @@ function ReminderOwnersCard({
       <div>
         <h2 className="text-base font-bold text-text-primary">Lembretes</h2>
         <p className="text-sm text-text-secondary">
-          Números autorizados falam com o assistente secretário por este WhatsApp. Use a alavanca
-          para liberar ou pausar cada pessoa — com a alavanca desligada, o número volta a ser
-          tratado como cliente.
+          Cadastro por pessoa. Com o acesso livre desligado, só estes números falam com o
+          assistente — use a alavanca de cada um para liberar ou pausar. Com o acesso livre
+          ligado, qualquer pessoa usa a secretária; esta lista continua aqui para quando você
+          desligar.
         </p>
       </div>
+
+      {openAccess && (
+        <p className="rounded-lg bg-primary/10 px-3 py-2 text-xs text-text-secondary">
+          Acesso livre está <strong>ligado</strong>: qualquer número neste WhatsApp usa a
+          secretária e a busca agora. Desligue a alavanca geral para voltar a valer só esta lista.
+        </p>
+      )}
 
       {isLoading && <Spinner label="Carregando..." />}
 
