@@ -19,6 +19,7 @@ import {
   sendOwnerRelay,
 } from '../../owner-relay.service';
 import { extractPhoneHint } from '../../../utils/phone-hint';
+import { describeInboundVisual } from '../../inbound-understand.service';
 import { recordOwnerEvent } from '../../owner-memory.service';
 import { DEFAULT_TZ, formatForOwner, parseLocalIso } from '../../reminders/time';
 import {
@@ -125,7 +126,7 @@ const agendarMensagemTool: Tool = {
 const lerConversaTool: Tool = {
   name: 'ler_conversa_contato',
   description:
-    'Lê o histórico recente da conversa de um contato no WhatsApp business (o que ele e a loja falaram). USE sempre que o dono pedir para conversar, atender, responder ou ver o que o contato disse (ex.: Wender).',
+    'Lê o histórico recente da conversa de um contato. Inclui o TEXTO de áudios transcritos e a DESCRIÇÃO de fotos/vídeos — use isso como o que a pessoa falou ou mostrou, com a mesma precisão de quando o dono manda áudio/foto pra você.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -328,17 +329,47 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
       );
     }
 
-    const lines = history.map((m) => {
+    let described = 0;
+    const lines: string[] = [];
+    for (const m of history) {
       const who = m.direction === 'inbound' ? resolved.name : 'Loja';
       let text = (m.content || m.transcription || '').trim();
-      if (!text) {
-        if (m.type === 'image') text = '[imagem]';
-        else if (m.type === 'audio') text = '[áudio]';
-        else if (m.type === 'video') text = '[vídeo]';
-        else text = `[${m.type}]`;
+      if (
+        !text &&
+        described < 4 &&
+        (m.type === 'image' || m.type === 'video') &&
+        m.media_url
+      ) {
+        const desc = await describeInboundVisual(
+          ctx.tenantId,
+          {
+            type: m.type,
+            mediaUrl: m.media_url,
+            mediaBase64: null,
+            mediaMime: m.media_mime,
+            caption: '',
+            text: '',
+          },
+          ctx.connectionId,
+          m.media_url,
+        );
+        described += 1;
+        text = (desc ?? '').trim();
       }
-      return `${who}: ${text.slice(0, 500)}`;
-    });
+      if (!text) {
+        if (m.type === 'image') text = '[imagem sem descrição]';
+        else if (m.type === 'audio') text = '[áudio sem transcrição]';
+        else if (m.type === 'video') text = '[vídeo sem descrição]';
+        else text = `[${m.type}]`;
+      } else if (m.type === 'audio') {
+        text = `(áudio) ${text}`;
+      } else if (m.type === 'image') {
+        text = `(foto) ${text}`;
+      } else if (m.type === 'video') {
+        text = `(vídeo) ${text}`;
+      }
+      lines.push(`${who}: ${text.slice(0, 800)}`);
+    }
 
     return (
       `Conversa com ${resolved.name} (${resolved.phone}) · client_id=${resolved.id}\n` +

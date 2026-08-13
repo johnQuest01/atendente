@@ -651,7 +651,7 @@ async function handleOwnerMessageInner(
   if (inbound.type === 'text') {
     text = inbound.text;
   } else if (inbound.type === 'audio') {
-    text = await transcribeOwnerAudio(inbound);
+    text = (inbound.text && inbound.text.trim()) || (await transcribeOwnerAudio(inbound));
     if (!text) {
       await reply(
         tenantId,

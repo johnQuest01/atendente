@@ -50,6 +50,7 @@ import {
   transcribeAudioFromUrl,
 } from '../services/transcription.service';
 import { persistInboundMedia } from '../services/inbound-media.service';
+import { describeInboundVisual } from '../services/inbound-understand.service';
 import type { AiHistoryMessage, Client, Conversation } from '../types';
 import {
   dispatchAudio,
@@ -403,7 +404,10 @@ async function processInbound(
   ) {
     await hydrateProviderMedia(tenantId, inbound, connection);
     if (!listedOwner) {
-      const preview = (inbound.text || inbound.caption || '').trim() || null;
+      const enriched = await enrichInboundMedia(tenantId, inbound, connectionId);
+      await recordContactInbound(tenantId, inbound, connectionId, enriched).catch((err) =>
+        logger.warn('Falha ao registrar mídia do contato na conversa', err),
+      );
       await notifyContactWatchesForInbound({
         tenantId,
         phone: inbound.phone,
@@ -411,7 +415,7 @@ async function processInbound(
         phoneIsLid: inbound.phoneIsLid,
         senderName: inbound.senderName,
         connectionId,
-        preview,
+        preview: enriched.preview,
         inboundType: inbound.type,
       }).catch((err) => logger.warn('Falha ao avisar dono sobre mensagem de contato', err));
     }
@@ -420,6 +424,11 @@ async function processInbound(
   }
 
   await hydrateProviderMedia(tenantId, inbound, connection);
+
+  if (inbound.providerMessageId && (await inboundMessageExists(tenantId, inbound.providerMessageId))) {
+    logger.info(`Mensagem já registrada no painel: ${inbound.providerMessageId}`);
+    return;
+  }
 
   const client = await findOrCreateClient(tenantId, inbound.phone, inbound.senderName, {
     lid: inbound.lid,
@@ -513,13 +522,17 @@ async function processInbound(
   }
 
   const isAudio = inbound.type === 'audio';
+  let visualDesc: string | null = null;
+  if (inbound.type === 'image' || inbound.type === 'video') {
+    visualDesc = await describeInboundVisual(tenantId, inbound, connectionId, mediaUrl);
+    if (visualDesc) logger.info(`Mídia visual do cliente descrita (${visualDesc.length} chars).`);
+  }
   const inboundMsg = await insertMessage(tenantId, {
     conversationId: conversation.id,
     direction: 'inbound',
     type: inbound.type,
-    // Áudio: a transcrição vira o "texto" (cai no histórico da IA). Demais
-    // mídias: a legenda (se houver). Texto puro: a própria mensagem.
-    content: isAudio ? transcription : inbound.text || null,
+    // Áudio: transcrição. Foto/vídeo: descrição da visão. Texto: a mensagem.
+    content: isAudio ? transcription : visualDesc || inbound.text || inbound.caption || null,
     mediaUrl,
     mediaMime,
     transcription: isAudio ? transcription : null,
@@ -763,6 +776,103 @@ async function buildTranscriptionPrompt(tenantId: string): Promise<string> {
   } catch {
     return base;
   }
+}
+
+/**
+ * Transcreve áudio / descreve foto-vídeo para a secretária e o aviso ao dono.
+ */
+async function enrichInboundMedia(
+  tenantId: string,
+  inbound: NormalizedInbound,
+  connectionId: string | null,
+): Promise<{
+  preview: string | null;
+  mediaUrl: string | null;
+  mediaMime: string | null;
+  transcription: string | null;
+  visualDesc: string | null;
+}> {
+  let mediaUrl: string | null = null;
+  let mediaMime: string | null = inbound.mediaMime ?? null;
+  if (inbound.type !== 'text' && (inbound.mediaUrl || inbound.mediaBase64)) {
+    const stored = await persistInboundMedia(tenantId, {
+      type: inbound.type,
+      url: inbound.mediaUrl,
+      base64: inbound.mediaBase64,
+      mime: inbound.mediaMime,
+    }).catch((err) => {
+      logger.warn('Falha ao re-hospedar mídia recebida', err);
+      return null;
+    });
+    if (stored) {
+      mediaUrl = stored.url;
+      mediaMime = stored.mime;
+    }
+  }
+
+  let transcription: string | null = null;
+  if (inbound.type === 'audio') {
+    transcription = await transcribeInboundAudio(tenantId, inbound);
+    if (transcription) {
+      inbound.text = transcription;
+      logger.info(`Áudio do contato transcrito (${transcription.length} chars).`);
+    }
+  }
+
+  let visualDesc: string | null = null;
+  if (inbound.type === 'image' || inbound.type === 'video') {
+    visualDesc = await describeInboundVisual(tenantId, inbound, connectionId, mediaUrl);
+    if (visualDesc) logger.info(`Mídia visual do contato descrita (${visualDesc.length} chars).`);
+  }
+
+  const preview =
+    (inbound.type === 'audio' ? transcription : null) ||
+    visualDesc ||
+    (inbound.text || inbound.caption || '').trim() ||
+    null;
+
+  return { preview, mediaUrl, mediaMime, transcription, visualDesc };
+}
+
+async function recordContactInbound(
+  tenantId: string,
+  inbound: NormalizedInbound,
+  connectionId: string | null,
+  enriched: {
+    preview: string | null;
+    mediaUrl: string | null;
+    mediaMime: string | null;
+    transcription: string | null;
+    visualDesc: string | null;
+  },
+): Promise<void> {
+  if (inbound.providerMessageId && (await inboundMessageExists(tenantId, inbound.providerMessageId))) {
+    return;
+  }
+  const client = await findOrCreateClient(tenantId, inbound.phone, inbound.senderName, {
+    lid: inbound.lid,
+    phoneIsLid: inbound.phoneIsLid,
+  });
+  const existing = await findOpenConversationByClient(tenantId, client.id, connectionId);
+  const conversation =
+    existing ?? (await findOrCreateOpenConversation(tenantId, client.id, connectionId));
+  if (!existing) emitNewConversation(tenantId, conversation);
+
+  const isAudio = inbound.type === 'audio';
+  const inboundMsg = await insertMessage(tenantId, {
+    conversationId: conversation.id,
+    direction: 'inbound',
+    type: inbound.type,
+    content: isAudio
+      ? enriched.transcription
+      : enriched.visualDesc || inbound.text || inbound.caption || null,
+    mediaUrl: enriched.mediaUrl,
+    mediaMime: enriched.mediaMime,
+    transcription: isAudio ? enriched.transcription : null,
+    zapiMessageId: inbound.providerMessageId,
+    origin: 'client',
+  });
+  emitNewMessage(tenantId, conversation.id, inboundMsg);
 }
 
 /**
