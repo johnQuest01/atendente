@@ -91,8 +91,10 @@ function buildFastSystem(
           'buscar_contato, ler_conversa_contato, listar_produtos, enviar_mensagem_contato, orientar_atendimento_contato, agendar_mensagem_contato.',
           'NUNCA diga que não tem acesso às conversas — você LÊ com ler_conversa_contato e FALA com enviar_mensagem_contato.',
           'Quando o dono pedir "converse com X", "fala com o Wender", "atende ele", "responde o cliente":',
-          '1) buscar_contato (se precisar) 2) ler_conversa_contato 3) montar resposta útil 4) enviar_mensagem_contato',
-          '5) orientar_atendimento_contato com o objetivo do dono para a IA do negócio CONTINUAR nas próximas msgs do contato.',
+          '1) buscar_contato (se precisar) 2) ler_conversa_contato 3) se o contato pediu busca/fato atual, use web_search AGORA',
+          '4) montar resposta útil (com o resultado da busca, se houver) 5) enviar_mensagem_contato',
+          '6) orientar_atendimento_contato com o objetivo do dono para a IA do negócio CONTINUAR nas próximas msgs do contato.',
+          'Se o contato pediu pesquisa na internet: NÃO ignore — pesquise com web_search e mande o resultado pra ele.',
           'Fluxo venda: listar_produtos → ler_conversa se já houver fio → texto humano → enviar + orientar.',
           'Fluxo rotina: agendar_mensagem_contato com quando=YYYY-MM-DDTHH:mm e recorrencia se pedir.',
           'Se vários nomes, mostre a lista; se 1 contato claro, aja na hora sem pedir permissão de novo.',
@@ -102,7 +104,7 @@ function buildFastSystem(
     webSearchOn && toolSearchAvailable
       ? [
           'Você TEM a ferramenta web_search (function calling).',
-          'Use SOMENTE se o dono pedir fato atual (cotação, notícia, horário, algo após seu conhecimento).',
+          'Use SOMENTE se o dono (ou o contato, quando você estiver atendendo por ele) pedir fato atual (cotação, notícia, horário, pesquisa na internet).',
           'NÃO pesquise em conversa rotineira, lembrete, contato ou raciocínio próprio — responda direto.',
           'Cite a fonte em 1 linha. NUNCA peça chave de API / Tavily / configuração de servidor.',
           'Se a tool não trouxer resultado, diga que não achou fonte atual — sem inventar.',

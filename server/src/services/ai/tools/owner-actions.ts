@@ -311,7 +311,8 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
 
     const prompt =
       `ORIENTAÇÃO DO DONO (prioridade alta para este contato):\n${instrucao.slice(0, 1800)}\n\n` +
-      'Continue a conversa de forma natural no WhatsApp, alinhada a essa orientação e ao catálogo.';
+      'Continue a conversa de forma natural no WhatsApp, alinhada a essa orientação e ao catálogo. ' +
+      'Se o contato pedir busca na internet, cotação, notícia ou fato atual, use a ferramenta web_search e responda com o resultado — não ignore nem invente.';
 
     const updated = await updateClient(ctx.tenantId, resolved.id, {
       ai_enabled: true,

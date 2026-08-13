@@ -12,7 +12,7 @@ const MAX_RESULTS = 5;
 export const webSearchTool: Tool = {
   name: 'web_search',
   description:
-    'Busca informações atuais na web (Tavily). Use SOMENTE quando o dono pedir fato atual que você não sabe: cotação, notícia, horário, dado recente. NÃO use para conversa, lembrete, contato, raciocínio ou opinião — nesses casos responda direto, sem pesquisar.',
+    'Busca informações atuais na web (Tavily). Use quando o DONO ou o CLIENTE/CONTATO pedir fato atual: cotação, notícia, horário, "pesquisa na internet", "busca pra mim". NÃO use para catálogo da loja, lembrete, raciocínio ou opinião — nesses casos responda direto.',
   inputSchema: {
     type: 'object',
     properties: {

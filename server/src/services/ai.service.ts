@@ -5,6 +5,7 @@ import { getAiMaxTokens, getAiTemperature, readSetting } from '../db/queries/set
 import type { AiHistoryMessage, Client, Product, TextScript } from '../types';
 import { complete, hasVisionProvider, isAiConfigured } from './ai/orchestrator';
 import type { ChatImage, ChatMessage } from './ai/types';
+import { isWebSearchToolAvailable } from './ai/tools';
 import { buildMemoryPromptBlock } from './memory.service';
 
 export { isAiConfigured, hasVisionProvider };
@@ -252,6 +253,14 @@ const HUMAN_TURN_INSTRUCTION =
   'atendente humano da loja, não por você. Trate-os como já ditos ao cliente: não repita nem ' +
   'contradiga. NUNCA escreva "[operador]" na sua resposta.';
 
+/** Cliente pediu fato atual: use web_search; não invente nem ignore o pedido. */
+const WEB_SEARCH_INSTRUCTION =
+  '\n\nVocê TEM a ferramenta web_search. Use SOMENTE se o cliente pedir fato atual ' +
+  '(cotação, notícia, horário, pesquisa na internet, "busca pra mim"). ' +
+  'Pesquise de verdade, responda com o que a tool devolver e cite a fonte em 1 linha. ' +
+  'NÃO invente resultado. NÃO ignore o pedido de busca. ' +
+  'NÃO use para catálogo, preço da loja ou conversa rotineira — isso vem do CATÁLOGO acima.';
+
 /** Anexa imagens ao último turno do cliente (cria um turno 'user' se necessário). */
 function attachImagesToLastUser(messages: ChatMessage[], images: ChatImage[]): void {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -298,12 +307,15 @@ export async function generateReply(
   }
 
   const hasHumanTurns = input.history.some((m) => m.origin === 'human');
+  const searchOn = isWebSearchToolAvailable() && !hasImages;
   const memoryBlock = input.client
     ? await buildMemoryPromptBlock(tenantId, input.client.id).catch(() => '')
     : '';
   const parts = await buildSystemPromptParts({ ...input, memoryBlock, tenantId });
   const dynamicExtra =
-    (hasImages ? VISION_INSTRUCTION : '') + (hasHumanTurns ? HUMAN_TURN_INSTRUCTION : '');
+    (hasImages ? VISION_INSTRUCTION : '') +
+    (hasHumanTurns ? HUMAN_TURN_INSTRUCTION : '') +
+    (searchOn ? WEB_SEARCH_INSTRUCTION : '');
   const systemCached = parts.cached;
   const systemDynamic = parts.dynamic + dynamicExtra;
   const system = systemCached + systemDynamic;
@@ -328,6 +340,7 @@ export async function generateReply(
     {
       meter: true,
       connectionId: input.connectionId,
+      tools: searchOn,
     },
   );
   if (!result) {
