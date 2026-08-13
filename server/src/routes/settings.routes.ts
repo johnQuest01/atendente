@@ -19,6 +19,9 @@ import {
   getReminderPersonaHandler,
   putReminderPersona,
   updateReminderPersonaSchema,
+  getSecretaryPlaybookHandler,
+  putSecretaryPlaybook,
+  updateSecretaryPlaybookSchema,
   getBehaviorSettings,
   putBehaviorSetting,
   behaviorKeyParamSchema,
@@ -94,6 +97,14 @@ router.put(
   adminOnly,
   validate({ body: updateReminderPersonaSchema }),
   asyncHandler(putReminderPersona),
+);
+
+router.get('/secretary-playbook', adminOnly, asyncHandler(getSecretaryPlaybookHandler));
+router.put(
+  '/secretary-playbook',
+  adminOnly,
+  validate({ body: updateSecretaryPlaybookSchema }),
+  asyncHandler(putSecretaryPlaybook),
 );
 
 // Registro de comportamento (config-driven): ajustes simples, editáveis no painel.

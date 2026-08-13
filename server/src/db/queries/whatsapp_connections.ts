@@ -45,6 +45,8 @@ export interface WhatsappConnection {
   ai_max_tokens: number | null;
   agent_enabled: boolean | null;
   reminder_assistant_persona: string | null;
+  /** Ordens permanentes da secretária em linguagem natural. */
+  secretary_playbook: string | null;
   memory_scan_enabled: boolean | null;
   /** NULL/true = secretária ligada; false = desliga agenda neste número. */
   owner_secretary_enabled: boolean | null;
@@ -85,6 +87,7 @@ interface ConnectionRow {
   ai_max_tokens: number | null;
   agent_enabled: boolean | null;
   reminder_assistant_persona: string | null;
+  secretary_playbook?: string | null;
   memory_scan_enabled: boolean | null;
   owner_secretary_enabled?: boolean | null;
   owner_free_chat_enabled?: boolean | null;
@@ -107,7 +110,7 @@ interface ConnectionRow {
 
 const COLS = `id, tenant_id, provider, label, phone_number, secrets_encrypted, base_url,
   webhook_token, is_active, ai_persona, ai_temperature, ai_max_tokens, agent_enabled,
-  reminder_assistant_persona, memory_scan_enabled,
+  reminder_assistant_persona, memory_scan_enabled, secretary_playbook,
   owner_secretary_enabled, owner_free_chat_enabled, owner_web_search_enabled,
   owner_open_access_enabled,
   provider_mode, instance_origin, connection_status, webhook_configured, zapi_subscribed,
@@ -142,6 +145,7 @@ function mapRow(row: ConnectionRow): WhatsappConnection {
     ai_max_tokens: row.ai_max_tokens,
     agent_enabled: row.agent_enabled,
     reminder_assistant_persona: row.reminder_assistant_persona ?? null,
+    secretary_playbook: row.secretary_playbook ?? null,
     memory_scan_enabled: row.memory_scan_enabled ?? null,
     owner_secretary_enabled: row.owner_secretary_enabled ?? null,
     owner_free_chat_enabled: row.owner_free_chat_enabled ?? null,
@@ -519,6 +523,7 @@ export async function patchConnectionConfig(
     aiMaxTokens?: number | null;
     agentEnabled?: boolean | null;
     reminderAssistantPersona?: string | null;
+    secretaryPlaybook?: string | null;
     memoryScanEnabled?: boolean | null;
     ownerSecretaryEnabled?: boolean | null;
     ownerFreeChatEnabled?: boolean | null;
@@ -540,6 +545,9 @@ export async function patchConnectionConfig(
   if (patch.agentEnabled !== undefined) push('agent_enabled', patch.agentEnabled);
   if (patch.reminderAssistantPersona !== undefined) {
     push('reminder_assistant_persona', patch.reminderAssistantPersona?.trim() || null);
+  }
+  if (patch.secretaryPlaybook !== undefined) {
+    push('secretary_playbook', patch.secretaryPlaybook?.trim() || null);
   }
   if (patch.memoryScanEnabled !== undefined) push('memory_scan_enabled', patch.memoryScanEnabled);
   if (patch.ownerSecretaryEnabled !== undefined) {

@@ -192,6 +192,34 @@ export async function setReminderPersona(tenantId: string, prompt: string): Prom
   return effective;
 }
 
+const playbookCache = new Map<string, { text: string; at: number }>();
+
+function playbookCacheKey(tenantId: string, connectionId?: string | null): string {
+  return `${tenantId}:${connectionId ?? ''}`;
+}
+
+/** Treino da secretária deste WhatsApp. Vazio = só o comportamento padrão. */
+export async function getSecretaryPlaybook(
+  tenantId: string,
+  connectionId?: string | null,
+): Promise<string> {
+  const key = playbookCacheKey(tenantId, connectionId);
+  const cached = playbookCache.get(key);
+  if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.text;
+
+  let text = '';
+  if (connectionId) {
+    const conn = await getConnectionById(tenantId, connectionId);
+    if (conn?.secretary_playbook?.trim()) text = conn.secretary_playbook.trim();
+  }
+  playbookCache.set(key, { text, at: Date.now() });
+  return text;
+}
+
+export function bustSecretaryPlaybookCache(tenantId: string, connectionId?: string | null): void {
+  playbookCache.delete(playbookCacheKey(tenantId, connectionId));
+}
+
 // ---------------------------------------------------------------------------
 // Temperatura da IA (criatividade) — mesma tabela chave-valor das settings
 // ---------------------------------------------------------------------------

@@ -1,7 +1,8 @@
 import { applyPersonaPlaceholders, DEFAULT_AI_PERSONA } from '../config/persona';
 import { logger } from '../config/logger';
 import { formatBRL } from '../utils/text';
-import { getAiMaxTokens, getAiTemperature, readSetting } from '../db/queries/settings';
+import { getAiMaxTokens, getAiTemperature, getSecretaryPlaybook, readSetting } from '../db/queries/settings';
+import { formatSecretaryPlaybook } from './secretary-playbook.service';
 import type { AiHistoryMessage, Client, Product, TextScript } from '../types';
 import { complete, hasVisionProvider, isAiConfigured } from './ai/orchestrator';
 import type { ChatImage, ChatMessage } from './ai/types';
@@ -311,13 +312,17 @@ export async function generateReply(
   const memoryBlock = input.client
     ? await buildMemoryPromptBlock(tenantId, input.client.id).catch(() => '')
     : '';
+  const playbook = formatSecretaryPlaybook(
+    await getSecretaryPlaybook(tenantId, input.connectionId).catch(() => ''),
+  );
   const parts = await buildSystemPromptParts({ ...input, memoryBlock, tenantId });
   const dynamicExtra =
     (hasImages ? VISION_INSTRUCTION : '') +
     (hasHumanTurns ? HUMAN_TURN_INSTRUCTION : '') +
     (searchOn ? WEB_SEARCH_INSTRUCTION : '');
   const systemCached = parts.cached;
-  const systemDynamic = parts.dynamic + dynamicExtra;
+  const systemDynamic =
+    (playbook ? `${playbook}\n` : '') + parts.dynamic + dynamicExtra;
   const system = systemCached + systemDynamic;
   const [tenantTemp, tenantMax] = await Promise.all([
     input.temperature !== undefined ? Promise.resolve(input.temperature) : getAiTemperature(tenantId),

@@ -13,7 +13,8 @@ import {
   registryAsRequestFields,
 } from './ai/tools';
 import type { ChatImage, ChatMessage } from './ai/types';
-import { getReminderPersona } from '../db/queries/settings';
+import { getReminderPersona, getSecretaryPlaybook } from '../db/queries/settings';
+import { formatSecretaryPlaybook } from './secretary-playbook.service';
 import { getConnectionById } from '../db/queries/whatsapp_connections';
 import {
   appendOwnerChatMessage,
@@ -76,6 +77,7 @@ function buildFastSystem(
   webSearchOn: boolean,
   toolSearchAvailable: boolean,
   contactToolsOn: boolean,
+  playbookBlock: string,
 ): string {
   const parts = [
     'Você fala com o DONO no WhatsApp — como um assistente humano rápido (estilo Claude), não como robô.',
@@ -83,6 +85,7 @@ function buildFastSystem(
     'Nunca diga que é IA/bot. Não invente compromissos: agenda real está abaixo.',
     'Leitura completa: use o histórico + a memória interpretada (eventos, histórias, acontecimentos, problemas) + os contatos que o dono JÁ ESCOLHEU + o que você leu nas conversas e buscou na internet.',
     'Interprete o sentido do que o dono diz — não dependa de palavras-chave; entenda contexto e continuidade. Raciocine com o que já sabe; não peça de novo o que já está na memória.',
+    playbookBlock,
     'No WhatsApp o dono costuma quebrar o mesmo pedido em vários balões seguidos. Vários user seguidos sem a sua resposta no meio são UM pedido só — junte o sentido e execute uma vez. Não peça para repetir o que já está nesses balões.',
     'Se nesta mensagem (já juntada) houver VÁRIOS pedidos distintos (ex.: "manda oi pro João e pesquisa o dólar"), faça TODOS em sequência com as tools, um a um, e confirme cada um em 1 linha.',
     'Nunca ignore um pedido desta fala. Nunca misture com um pedido antigo já respondido.',
@@ -166,6 +169,9 @@ async function runFreeChatOnce(
 ): Promise<string | null> {
   const tz = DEFAULT_TZ;
   const persona = await getReminderPersona(tenantId, opts.connectionId);
+  const playbookBlock = formatSecretaryPlaybook(
+    await getSecretaryPlaybook(tenantId, opts.connectionId),
+  );
   const agenda = await loadOwnerAgenda(tenantId, phone, tz);
   const agendaLines = agenda.slice(0, 12).map((r, i) => {
     const when = formatForOwner(new Date(r.next_fire_at), r.timezone || tz);
@@ -246,6 +252,7 @@ async function runFreeChatOnce(
       webSearchOn,
       toolSearchAvailable,
       contactToolsOn,
+      playbookBlock,
     ) + (hasImages ? OWNER_VISION_HINT : '');
 
   const maxTokens = hasImages

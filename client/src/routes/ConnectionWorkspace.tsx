@@ -8,6 +8,7 @@ import {
   BackIcon,
   ChatIcon,
   DashboardIcon,
+  EditIcon,
   KeyIcon,
   SettingsIcon,
   SparklesIcon,
@@ -18,13 +19,14 @@ import { OverviewSection } from '@/components/connection/OverviewSection';
 import { AiBehaviorSection } from '@/components/connection/AiBehaviorSection';
 import { KeywordsSection } from '@/components/connection/KeywordsSection';
 import { RemindersSection } from '@/components/connection/RemindersSection';
+import { SecretaryPlaybookSection } from '@/components/connection/SecretaryPlaybookSection';
 import { AdvancedSection } from '@/components/connection/AdvancedSection';
 import { getConnectionStatus } from '@/components/connection/connectionStatus';
 import { useWhatsappConnections } from '@/hooks/useWhatsappConnection';
 import { useAuth } from '@/hooks/useAuth';
 import { formatPhone } from '@/utils/formatters';
 
-type SectionId = 'overview' | 'ai' | 'keywords' | 'reminders' | 'advanced';
+type SectionId = 'overview' | 'playbook' | 'ai' | 'keywords' | 'reminders' | 'advanced';
 
 const ESSENTIAL_SECTIONS: SectionListItem[] = [
   {
@@ -32,6 +34,12 @@ const ESSENTIAL_SECTIONS: SectionListItem[] = [
     label: 'Visão geral',
     description: 'Atendente, status e credenciais',
     icon: DashboardIcon,
+  },
+  {
+    id: 'playbook',
+    label: 'Treino da secretária',
+    description: 'Escreva regras; ela interpreta e executa',
+    icon: EditIcon,
   },
   {
     id: 'ai',
@@ -63,6 +71,7 @@ const ADVANCED_SECTION: SectionListItem = {
 function isSectionId(value: string | null): value is SectionId {
   return (
     value === 'overview' ||
+    value === 'playbook' ||
     value === 'ai' ||
     value === 'keywords' ||
     value === 'reminders' ||
@@ -118,7 +127,9 @@ export default function ConnectionWorkspace() {
   const sectionTitle =
     activeSection === 'overview'
       ? 'Visão geral'
-      : activeSection === 'ai'
+      : activeSection === 'playbook'
+        ? 'Treino da secretária'
+        : activeSection === 'ai'
         ? 'Como a IA atende'
         : activeSection === 'keywords'
           ? 'Palavras que chamam a IA'
@@ -201,6 +212,9 @@ export default function ConnectionWorkspace() {
 
         {activeSection === 'overview' && (
           <OverviewSection connectionId={connectionId} canEdit={canEdit} />
+        )}
+        {activeSection === 'playbook' && (
+          <SecretaryPlaybookSection connectionId={connectionId} canEdit={canEdit} />
         )}
         {activeSection === 'ai' && (
           <AiBehaviorSection connectionId={connectionId} canEdit={canEdit} />

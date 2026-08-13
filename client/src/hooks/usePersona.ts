@@ -117,6 +117,42 @@ export function useSetReminderPersona(connectionId?: string) {
   });
 }
 
+export function secretaryPlaybookQueryKey(connectionId: string) {
+  return ['secretary-playbook', connectionId] as const;
+}
+
+export interface SecretaryPlaybookData {
+  prompt: string;
+}
+
+export function useSecretaryPlaybook(connectionId: string, enabled = true) {
+  return useQuery({
+    queryKey: secretaryPlaybookQueryKey(connectionId),
+    queryFn: async () => {
+      const { data } = await api.get<SecretaryPlaybookData>('/settings/secretary-playbook', {
+        params: { connectionId },
+      });
+      return data;
+    },
+    enabled: enabled && Boolean(connectionId),
+  });
+}
+
+export function useSetSecretaryPlaybook(connectionId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { prompt: string }) => {
+      const { data } = await api.put<SecretaryPlaybookData>(
+        '/settings/secretary-playbook',
+        input,
+        { params: { connectionId } },
+      );
+      return data;
+    },
+    onSuccess: (data) => qc.setQueryData(secretaryPlaybookQueryKey(connectionId), data),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Registro de comportamento (config-driven)
 // ---------------------------------------------------------------------------

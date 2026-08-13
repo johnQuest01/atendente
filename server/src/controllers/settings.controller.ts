@@ -11,6 +11,8 @@ import {
   setAiMaxTokens,
   getReminderPersona,
   setReminderPersona,
+  getSecretaryPlaybook,
+  bustSecretaryPlaybookCache,
   isMemoryScanEnabled,
   setMemoryScanEnabled,
   readSetting,
@@ -356,6 +358,37 @@ export async function putReminderPersona(req: Request, res: Response): Promise<v
     default: DEFAULT_REMINDER_PERSONA,
     isDefault: effective === DEFAULT_REMINDER_PERSONA,
   });
+}
+
+export const updateSecretaryPlaybookSchema = z.object({
+  prompt: z.string().max(16000, 'O texto está muito longo (máx. 16000 caracteres).'),
+});
+
+export async function getSecretaryPlaybookHandler(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const connectionId = parseConnectionIdQuery(req);
+  if (!connectionId) {
+    throw new AppError('Informe a conexão (connectionId).', 400);
+  }
+  await requireConnection(tenantId, connectionId);
+  const prompt = await getSecretaryPlaybook(tenantId, connectionId);
+  res.json({ prompt });
+}
+
+export async function putSecretaryPlaybook(req: Request, res: Response): Promise<void> {
+  const tenantId = req.user!.tenant_id;
+  const { prompt } = req.body as z.infer<typeof updateSecretaryPlaybookSchema>;
+  const connectionId = parseConnectionIdQuery(req);
+  if (!connectionId) {
+    throw new AppError('Informe a conexão (connectionId).', 400);
+  }
+  await requireConnection(tenantId, connectionId);
+  const clean = prompt.trim();
+  await patchConnectionConfig(tenantId, connectionId, {
+    secretaryPlaybook: clean || null,
+  });
+  bustSecretaryPlaybookCache(tenantId, connectionId);
+  res.json({ prompt: clean });
 }
 
 // ---------------------------------------------------------------------------
