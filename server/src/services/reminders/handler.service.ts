@@ -6,6 +6,7 @@ import {
   getTodayReminders,
   isReminderOwner,
   listReminders,
+  updateOwnerReminder,
   type CreateReminderInput,
   type ListRemindersFilter,
 } from '../../db/queries/reminders';
@@ -20,7 +21,7 @@ import type { NormalizedInbound } from '../whatsapp/types';
 import type { Reminder } from '../../types';
 import type { ChatImage } from '../ai/types';
 import { extractVideoFrames } from '../ai/video-frames';
-import { describeLead, describeRecurrence, parseReminders, type ParsedReminder } from './parse.service';
+import { describeLead, describeRecurrence, expandReminderUpdates, loadOwnerAgenda, parseReminders, type ParsedReminder } from './parse.service';
 import { DEFAULT_TZ, formatForOwner, fromWallClock, toWallClock } from './time';
 import {
   freeChatOwner,
@@ -79,6 +80,8 @@ interface PendingItem {
   leadMinutes: number | null;
   /** Frase de confirmação (com o tom da persona) para item único. */
   confirmationText: string;
+  /** Se preenchido, o SIM faz UPDATE neste id em vez de INSERT. */
+  existingId?: string;
 }
 
 /** Estado curto por dono: confirmação pendente (em massa) e a última lista. */
@@ -497,6 +500,17 @@ const SCOPE_WORDS: Array<[RegExp, string]> = [
  */
 const STRONG_CREATE = /\b(lembr|anota|marca|avisa|nao me deixa esquecer)/;
 
+/** Pedido de MUDAR horário/compromisso já anotado — não é cadastro novo nem consulta. */
+const EDIT_TRIGGERS = new RegExp(
+  [
+    String.raw`\b(?:altera|muda|mudar|edita|editar|troca|trocar|adianta|reagenda|antecipa)\w*.{0,80}\b(?:horario|compromisso|lembrete|despert|alarme|acordar)`,
+    String.raw`\b(?:horario|compromisso|lembrete|despert|alarme|acordar)\w*.{0,80}\b(?:altera|muda|mudar|edita|editar|troca|trocar|adianta|reagenda)`,
+    String.raw`\b(?:coloca|passar|passe|ponha|bota|botar)\w*.{0,60}\b(?:madrugada|manha|despert)`,
+    String.raw`\b(?:madrugada|manha).{0,50}\b(?:despert|horario|lembrar|lembre|compromisso)`,
+  ].join('|'),
+  'i',
+);
+
 /** Frases de busca/fato — não são consulta de agenda ("cotação do dólar hoje"). */
 const WEB_OR_FACT_TASK =
   /\b(pesquis|busca|buscar|procure|procura|google|na internet|na web|cotac|dolar|dolar|euro|bitcoin|noticia|noticias|selic|ipca|clima|temperatura|preco do|preco da|quanto esta|quanto custa)\b/;
@@ -524,6 +538,7 @@ function detectQuery(normalized: string): string | null {
   // "me lembra de pagar amanhã" é cadastro, mesmo citando um dia — a menos que
   // a frase seja explicitamente uma pergunta ("o que você tem pra me lembrar?").
   if (STRONG_CREATE.test(normalized) && !asks) return null;
+  if (EDIT_TRIGGERS.test(normalized)) return null;
 
   // Pergunta de agenda precisa citar agenda/compromisso, OU ser bem curta só com
   // o escopo ("o que temos hoje?"). "qual ... hoje" sem substantivo de agenda
@@ -596,6 +611,7 @@ function pad2(n: number): string {
  */
 function detectDateQuery(normalized: string, tz: string): { filter: ListRemindersFilter; title: string } | null {
   if (STRONG_CREATE.test(normalized)) return null;
+  if (EDIT_TRIGGERS.test(normalized)) return null;
 
   const slash = normalized.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
   const diaN = normalized.match(/\bdia\s+(\d{1,2})\b/);
@@ -980,36 +996,57 @@ async function handleOwnerMessageInner(
 
     if (isAffirmative(text)) {
       const replyConnectionId = ownerReplyConnection.get(stateKey(tenantId, phone)) ?? null;
-      const inputs: CreateReminderInput[] = items.map((p) => ({
-        ownerPhone: phone,
-        task: p.task,
-        category: p.category,
-        recurrence: p.recurrence,
-        nextFireAt: p.nextFireAt,
-        leadMinutes: p.leadMinutes,
-        timezone: tz,
-        connectionId: replyConnectionId,
-      }));
-      // Tudo-ou-nada: ou grava todos, ou nenhum (transação).
-      await createRemindersBulk(tenantId, inputs);
+      const toUpdate = items.filter((p) => p.existingId);
+      const toCreate = items.filter((p) => !p.existingId);
+      for (const item of toUpdate) {
+        const updated = await updateOwnerReminder(tenantId, phone, item.existingId!, {
+          nextFireAt: item.nextFireAt,
+          recurrence: item.recurrence,
+          task: item.task,
+          leadMinutes: item.leadMinutes,
+        });
+        if (!updated) {
+          logger.warn(`Lembretes: update falhou para ${item.existingId} (${item.task})`);
+        }
+      }
+      if (toCreate.length > 0) {
+        const inputs: CreateReminderInput[] = toCreate.map((p) => ({
+          ownerPhone: phone,
+          task: p.task,
+          category: p.category,
+          recurrence: p.recurrence,
+          nextFireAt: p.nextFireAt,
+          leadMinutes: p.leadMinutes,
+          timezone: tz,
+          connectionId: replyConnectionId,
+        }));
+        await createRemindersBulk(tenantId, inputs);
+      }
       setState(tenantId, phone, { pending: undefined });
       for (const item of items) {
         void recordOwnerEvent({
           tenantId,
           ownerPhone: phone,
           kind: 'evento',
-          summary: `Compromisso anotado: ${item.task} (${formatForOwner(item.nextFireAt, tz)})`,
+          summary: item.existingId
+            ? `Compromisso alterado: ${item.task} (${formatForOwner(item.nextFireAt, tz)})`
+            : `Compromisso anotado: ${item.task} (${formatForOwner(item.nextFireAt, tz)})`,
           connectionId: replyConnectionId,
           occurredAt: item.nextFireAt,
           source: 'reminder',
         });
       }
+      const onlyUpdates = toUpdate.length > 0 && toCreate.length === 0;
       await reply(
         tenantId,
         phone,
-        items.length === 1
-          ? `Pronto, anotei. Te chamo ${formatForOwner(items[0].nextFireAt, tz)}.`
-          : `Pronto, anotei os ${items.length}.`,
+        onlyUpdates
+          ? items.length === 1
+            ? `Pronto, alterei. Te chamo ${formatForOwner(items[0].nextFireAt, tz)}.`
+            : `Pronto, alterei os ${items.length}.`
+          : items.length === 1
+            ? `Pronto, anotei. Te chamo ${formatForOwner(items[0].nextFireAt, tz)}.`
+            : `Pronto, anotei os ${items.length}.`,
       );
       return true;
     }
@@ -1032,7 +1069,10 @@ async function handleOwnerMessageInner(
         });
         if (reparsed.length > 0) {
           const nextItems = items.slice();
-          nextItems[idx] = toPendingItem(reparsed[0]);
+          nextItems[idx] = {
+            ...toPendingItem(reparsed[0]),
+            existingId: items[idx].existingId,
+          };
           setState(tenantId, phone, { pending: { items: nextItems, source } });
           await reply(tenantId, phone, renderConfirmation(nextItems, tz));
         } else {
@@ -1358,7 +1398,10 @@ async function handleOwnerMessageInner(
 
   // 4. Secretária: cadastro em linguagem natural (gatilho forte).
   const wantsReminder =
-    CREATE_TRIGGERS.test(text) || STRONG_CREATE.test(normalized);
+    CREATE_TRIGGERS.test(text) ||
+    STRONG_CREATE.test(normalized) ||
+    EDIT_TRIGGERS.test(text) ||
+    EDIT_TRIGGERS.test(normalized);
   if (wantsReminder && flags.secretary) {
     return handleCreate(tenantId, phone, text, tz, text);
   }
@@ -1403,13 +1446,18 @@ function toPendingItem(p: ParsedReminder): PendingItem {
     nextFireAt: p.nextFireAt,
     leadMinutes: p.leadMinutes,
     confirmationText: p.confirmationText,
+    existingId: p.existingId,
   };
 }
 
 /** UMA confirmação, numerada quando há vários (Parte 1: massa). */
 function renderConfirmation(items: PendingItem[], tz: string): string {
+  const updating = items.some((it) => it.existingId);
   if (items.length === 1) {
-    return `${items[0].confirmationText}\n\nFecha assim? (*sim* ou me corrige)`;
+    const ask = updating
+      ? 'Fecha a alteração? (*sim* ou me corrige)'
+      : 'Fecha assim? (*sim* ou me corrige)';
+    return `${items[0].confirmationText}\n\n${ask}`;
   }
   const lines = items.map((it, i) => {
     const when = formatForOwner(it.nextFireAt, tz);
@@ -1417,13 +1465,11 @@ function renderConfirmation(items: PendingItem[], tz: string): string {
     const lead = it.leadMinutes ? ` · aviso ${describeLead(it.leadMinutes)}` : '';
     return `${i + 1}. ${it.task}\n   ${when}${repeat}${lead}`;
   });
-  return [
-    `Anotei ${items.length}:`,
-    '',
-    ...lines,
-    '',
-    'Manda *SIM* pra salvar todos, ou corrige pelo número (ex.: "2 na verdade às 16h").',
-  ].join('\n');
+  const header = updating ? `Vou alterar ${items.length}:` : `Anotei ${items.length}:`;
+  const footer = updating
+    ? 'Manda *SIM* pra gravar as alterações, ou corrige pelo número (ex.: "2 na verdade às 16h").'
+    : 'Manda *SIM* pra salvar todos, ou corrige pelo número (ex.: "2 na verdade às 16h").';
+  return [header, '', ...lines, '', footer].join('\n');
 }
 
 async function handleCreate(
@@ -1433,31 +1479,74 @@ async function handleCreate(
   tz: string,
   originalText: string,
 ): Promise<boolean> {
-  const looksLikeReminder = CREATE_TRIGGERS.test(message);
-  const parsed = await parseReminders(tenantId, message, tz, { ownerPhone: phone });
+  const looksLikeReminder = CREATE_TRIGGERS.test(message) || EDIT_TRIGGERS.test(message);
+  const connectionId = ownerReplyConnection.get(stateKey(tenantId, phone)) ?? null;
+  const looksLikeEdit = EDIT_TRIGGERS.test(message);
+  let parsed = await parseReminders(tenantId, message, tz, {
+    ownerPhone: phone,
+    connectionId,
+  });
+
+  if (looksLikeEdit && parsed.length > 0) {
+    const coerced = parsed.map((p) =>
+      p.action === 'create' ? { ...p, action: 'update' as const } : p,
+    );
+    const agenda = await loadOwnerAgenda(tenantId, phone, tz);
+    parsed = expandReminderUpdates(coerced, agenda, new Date(), tz);
+  }
 
   if (parsed.length === 0) {
-    // Sem gatilho claro E sem interpretação: provavelmente não era um lembrete.
-    // Mesmo assim respondemos o menu — o dono nunca deve cair no fluxo de vendas.
     await reply(
       tenantId,
       phone,
       looksLikeReminder
-        ? 'Peguei a ideia, mas não ficou clara a data. Manda de novo dizendo quando?'
+        ? EDIT_TRIGGERS.test(message)
+          ? 'Não achei esse no caderno. Manda *HOJE* e o número do item pra eu alterar.'
+          : 'Peguei a ideia, mas não ficou clara a data. Manda de novo dizendo quando?'
         : HELP_TEXT,
     );
     return true;
   }
 
-  // Frase aberta sobre algo JÁ no caderno — confirma sem duplicar no banco.
   const acks = parsed.filter((p) => p.action === 'acknowledge');
-  const creates = parsed.filter((p) => p.action !== 'acknowledge');
-  if (creates.length === 0 && acks.length > 0) {
+  const updates = parsed.filter((p) => p.action === 'update');
+  const creates = parsed.filter((p) => p.action === 'create');
+
+  if (looksLikeEdit && creates.length === 0 && updates.length === 0 && acks.length > 0) {
+    await reply(
+      tenantId,
+      phone,
+      'Pra mudar o horário preciso do novo — tipo "muda o despertar pra 5h da manhã". Ou manda *HOJE* e o número do item.',
+    );
+    return true;
+  }
+
+  if (looksLikeEdit && creates.length === 0 && updates.length === 0 && acks.length > 0) {
+    await reply(
+      tenantId,
+      phone,
+      'Pra mudar o horário preciso do novo — tipo "muda o despertar pra 5h da manhã". Ou manda *HOJE* e o número do item.',
+    );
+    return true;
+  }
+
+  if (creates.length === 0 && updates.length === 0 && acks.length > 0) {
     await reply(tenantId, phone, acks.map((a) => a.confirmationText).join('\n\n'));
     return true;
   }
 
-  const items = creates.map(toPendingItem);
+  const unmatched = updates.filter((u) => !u.existingId);
+  const matchedUpdates = updates.filter((u) => u.existingId);
+  if (creates.length === 0 && matchedUpdates.length === 0 && unmatched.length > 0) {
+    await reply(
+      tenantId,
+      phone,
+      'Não achei esse no caderno. Manda *HOJE* e o número do item pra eu alterar.',
+    );
+    return true;
+  }
+
+  const items = [...matchedUpdates, ...creates].map(toPendingItem);
   setState(tenantId, phone, { pending: { items, source: originalText } });
   await reply(tenantId, phone, renderConfirmation(items, tz));
   return true;

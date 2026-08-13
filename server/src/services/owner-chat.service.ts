@@ -93,6 +93,7 @@ function buildFastSystem(
     'Se nesta mensagem (já juntada) houver VÁRIOS pedidos distintos (ex.: "manda oi pro João e pesquisa o dólar"), faça TODOS em sequência com as tools, um a um, e confirme cada um em 1 linha.',
     'Nunca ignore um pedido desta fala. Nunca misture com um pedido antigo já respondido.',
     'Se pedirem para anotar/lembrar algo com data (só pra ele), diga pra mandar tipo "me lembra amanhã às 9h de…".',
+    'Se pedirem para MUDAR horário de compromisso/despertar já anotado: NÃO finja que alterou. Diga pra mandar tipo "muda o despertar pra 5h" — a secretária confirma com SIM e grava no caderno.',
     contactToolsOn
       ? [
           'Você TEM acesso às conversas e aos contatos do WhatsApp business via tools:',

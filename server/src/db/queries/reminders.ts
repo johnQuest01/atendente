@@ -337,6 +337,43 @@ export async function claimReminder(id: string): Promise<boolean> {
 }
 
 /**
+ * O dono pede para mudar horário/tarefa de um compromisso ainda pendente.
+ * Zera `lead_fired_at` para o aviso prévio valer no novo horário.
+ */
+export async function updateOwnerReminder(
+  tenantId: string,
+  ownerPhone: string,
+  id: string,
+  patch: {
+    nextFireAt: Date;
+    recurrence?: string | null;
+    task?: string;
+    leadMinutes?: number | null;
+  },
+): Promise<Reminder | null> {
+  assertTenantMatchesScope(tenantId);
+  return queryOne<Reminder>(
+    `UPDATE reminders
+        SET next_fire_at = $4,
+            recurrence = COALESCE($5, recurrence),
+            task = COALESCE($6, task),
+            lead_minutes = COALESCE($7, lead_minutes),
+            lead_fired_at = NULL
+      WHERE id = $3 AND tenant_id = $1 AND owner_phone = $2 AND status = 'pendente'
+      RETURNING *`,
+    [
+      tenantId,
+      ownerPhone,
+      id,
+      patch.nextFireAt.toISOString(),
+      patch.recurrence === undefined ? null : patch.recurrence,
+      patch.task ?? null,
+      patch.leadMinutes === undefined ? null : patch.leadMinutes,
+    ],
+  );
+}
+
+/**
  * Reagenda uma recorrência já reservada (volta para 'pendente').
  * Zera `lead_fired_at`: o aviso prévio do próximo ciclo ainda não aconteceu.
  */

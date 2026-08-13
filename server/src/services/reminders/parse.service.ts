@@ -2,10 +2,20 @@ import { z } from 'zod';
 import { logger } from '../../config/logger';
 import { complete } from '../ai/orchestrator';
 import { listReminders } from '../../db/queries/reminders';
+import { listOwnerChatHistory } from '../../db/queries/owner_chat_messages';
 import { getReminderPersona } from '../../db/queries/settings';
 import { buildOwnerMemoryPromptBlock } from '../owner-memory.service';
 import type { Reminder, ReminderCategory } from '../../types';
-import { DEFAULT_TZ, formatForOwner, fromWallClock, isValidRecurrence, parseLocalIso, toWallClock, weekdayNamePt } from './time';
+import {
+  DEFAULT_TZ,
+  formatForOwner,
+  fromWallClock,
+  isValidRecurrence,
+  nextOccurrence,
+  parseLocalIso,
+  toWallClock,
+  weekdayNamePt,
+} from './time';
 
 /**
  * Interpretação do lembrete em linguagem natural. Usa o orquestrador de IA da
@@ -27,8 +37,10 @@ const parsedSchema = z.object({
   remind_before_minutes: z.coerce.number().int().nullable().optional(),
   category: z.enum(['importante', 'rotina', 'data_especifica']),
   confirmation_text: z.string().trim().min(1).max(400),
-  /** create = novo; acknowledge = só confirma algo já anotado (não duplicar). */
-  action: z.enum(['create', 'acknowledge']).optional().default('create'),
+  /** create = novo; acknowledge = só confirma (não grava); update = muda item do caderno. */
+  action: z.enum(['create', 'acknowledge', 'update']).optional().default('create'),
+  /** Índice 1-based da lista CADERNO DO DONO (obrigatório em update quando der). */
+  caderno_n: z.coerce.number().int().positive().max(80).nullable().optional(),
 });
 
 export interface ParsedReminder {
@@ -39,7 +51,9 @@ export interface ParsedReminder {
   /** Minutos de aviso prévio, quando o dono pediu ("1h antes" = 60). */
   leadMinutes: number | null;
   confirmationText: string;
-  action: 'create' | 'acknowledge';
+  action: 'create' | 'acknowledge' | 'update';
+  /** Id do compromisso no banco, quando action=update e o caderno casou. */
+  existingId?: string;
 }
 
 /** Teto de 7 dias — bate com o CHECK da migration 025. */
@@ -57,23 +71,17 @@ export function describeLead(minutes: number): string {
   return `${minutes} min antes`;
 }
 
-/** Quantos dias à frente carregar do banco para o contexto do prompt. */
-const AGENDA_DAYS = 14;
-const AGENDA_LIMIT = 40;
+/** Pendentes no prompt (despertar diários entram primeiro pela data). */
+const AGENDA_LIMIT = 50;
 
 /** Lê o caderno do dono (pendentes) para a IA não “esquecer” o que já foi anotado. */
 export async function loadOwnerAgenda(
   tenantId: string,
   ownerPhone: string,
-  tz: string = DEFAULT_TZ,
+  _tz: string = DEFAULT_TZ,
 ): Promise<Reminder[]> {
-  const now = new Date();
-  const wc = toWallClock(now, tz);
-  const until = fromWallClock({ ...wc, day: wc.day + AGENDA_DAYS, hour: 23, minute: 59 }, tz);
   try {
     return await listReminders(tenantId, ownerPhone, {
-      from: now,
-      until,
       statuses: ['pendente'],
       limit: AGENDA_LIMIT,
     });
@@ -81,6 +89,57 @@ export async function loadOwnerAgenda(
     logger.warn('Lembretes: falha ao carregar agenda do banco para o parse', err);
     return [];
   }
+}
+
+export function foldReminderTask(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+export function matchRemindersByTask(task: string, agenda: Reminder[]): Reminder[] {
+  const t = foldReminderTask(task);
+  if (!t) return [];
+  const exact = agenda.filter((r) => foldReminderTask(r.task) === t);
+  if (exact.length) return exact;
+  return agenda.filter((r) => {
+    const rt = foldReminderTask(r.task);
+    if (!rt) return false;
+    return rt.includes(t) || t.includes(rt);
+  });
+}
+
+function matchCaderno(
+  data: { caderno_n?: number | null; task: string },
+  agenda: Reminder[],
+): Reminder | null {
+  const n = data.caderno_n;
+  if (typeof n === 'number' && n >= 1 && n <= agenda.length) return agenda[n - 1]!;
+  const hits = matchRemindersByTask(data.task, agenda);
+  return hits.length === 1 ? hits[0]! : null;
+}
+
+/** Se o relógio de parede já passou hoje, empurra para o próximo ciclo. */
+export function bumpUntilFuture(d: Date, now: Date, tz: string, recurrence?: string | null): Date {
+  if (d.getTime() > now.getTime()) return d;
+  if (recurrence && isValidRecurrence(recurrence)) {
+    const next = nextOccurrence(recurrence, d, tz, now);
+    if (next && next.getTime() > now.getTime()) return next;
+  }
+  let cur = d;
+  let guard = 0;
+  while (cur.getTime() <= now.getTime() && guard < 14) {
+    const wc = toWallClock(cur, tz);
+    cur = fromWallClock(
+      { year: wc.year, month: wc.month, day: wc.day + 1, hour: wc.hour, minute: wc.minute },
+      tz,
+    );
+    guard += 1;
+  }
+  return cur;
 }
 
 function formatAgendaBlock(reminders: Reminder[], tz: string): string {
@@ -105,6 +164,9 @@ function formatAgendaBlock(reminders: Reminder[], tz: string): string {
     '- Identifique o item no caderno (task e horário reais).',
     '- action=acknowledge (NÃO invente outro igual; o alarme já está salvo).',
     '- confirmation_text humano citando o nome real (ex.: "Pode deixar — te chamo pra Ir dormir às 22h.").',
+    'Se ele pedir para ALTERAR / MUDAR / EDITAR horário (madrugada, manhã, despertar, "os horários que falei"):',
+    '- action=update. NUNCA acknowledge (não grava) e NUNCA create (duplica).',
+    '- caderno_n = o número da linha acima. Um objeto por item se forem vários.',
     'Só use action=create para compromisso NOVO que ainda não está no caderno.',
   ].join('\n');
 }
@@ -116,6 +178,7 @@ function buildSystemPrompt(
   bulk = false,
   agenda: Reminder[] = [],
   memoryBlock = '',
+  recentTurns = '',
 ): string {
   const wc = toWallClock(now, tz);
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -143,17 +206,20 @@ function buildSystemPrompt(
     '{',
     '  "task": "só a ação/assunto, curto (ex.: Ir dormir, Pagar fornecedor) — SEM a palavra lembrete",',
     '  "type": "unico" | "recorrente",',
-    '  "due_at": "YYYY-MM-DDTHH:mm do PRIMEIRO disparo (sempre preencha em create; em acknowledge use o horário do caderno)",',
+    '  "due_at": "YYYY-MM-DDTHH:mm do PRIMEIRO disparo (sempre preencha em create/update; em acknowledge use o horário do caderno)",',
     '  "recurrence": "daily | weekly:MON..SUN | monthly:N — apenas se recorrente, senão null",',
     '  "remind_before_minutes": "minutos de aviso ANTECIPADO se o usuário pediu, senão null",',
     '  "category": "importante" | "rotina" | "data_especifica",',
-    '  "confirmation_text": "1 frase humana (ex.: Anotei: ir dormir amanhã às 22h / Pode deixar — te chamo pra X)",',
-    '  "action": "create" | "acknowledge"',
+    '  "confirmation_text": "1 frase humana (ex.: Anotei: ir dormir amanhã às 22h / Vou alterar o despertar para 05h)",',
+    '  "action": "create" | "acknowledge" | "update",',
+    '  "caderno_n": "número 1-based do CADERNO DO DONO quando action=update, senão null"',
     '}',
     '',
     'Regras de action:',
     '- create: compromisso novo a salvar.',
-    '- acknowledge: ele fala de algo JÁ no caderno ("não esquece do de hoje", "me avisa da reunião"); não duplicar.',
+    '- acknowledge: ele fala de algo JÁ no caderno SEM pedir mudança ("não esquece do de hoje"); não duplicar.',
+    '- update: ALTERAR/MUDAR/EDITAR horário ou tarefa de item JÁ no caderno. Nunca acknowledge (não grava) nem create (duplica).',
+    '- "os horários que falei" / despertar / alarme: use o caderno + o fio recente; um JSON update por item.',
     '',
     'Regras de task e confirmation_text:',
     '- task NUNCA começa com "Lembrete", "Lembrar de" genérico ou "Aviso:"; só o que fazer.',
@@ -169,6 +235,8 @@ function buildSystemPrompt(
     '- "daqui a X minutos" / "daqui a X horas" / "em X min" é o horário de agora + X, no MESMO dia.',
     '- "toda segunda" = weekly:MON; "todo dia N" = monthly:N; "todo dia" = daily.',
     '- Sem horário explícito, use 09:00 e diga isso no confirmation_text.',
+    '- "madrugada" sem hora = 05:00. "de manhã" / "manhã" sem hora = 08:00.',
+    '- Se due_at já passou hoje (ex.: despertar 05:00 às 23h), use o PRÓXIMO disparo (amanhã nesse horário) — não deixe vazio.',
     '- NUNCA use fuso ou "Z" no due_at: escreva a hora como o usuário leria no relógio dele.',
     '- Se a mensagem for ambígua, escolha a interpretação mais provável e explique-a no confirmation_text.',
     '',
@@ -180,6 +248,7 @@ function buildSystemPrompt(
     'Categorias: "importante" para pagamentos/prazos críticos; "rotina" para hábitos repetidos;',
     '"data_especifica" para compromissos pontuais.',
     formatAgendaBlock(agenda, tz),
+    recentTurns,
     memoryBlock ? `\n${memoryBlock}` : '',
     personaBlock,
   ].join('\n');
@@ -216,9 +285,14 @@ const MAX_BULK = 20;
 /**
  * Converte UM objeto validado da IA em ParsedReminder resolvendo data,
  * recorrência e aviso prévio. Retorna null quando não dá para confiar (sem
- * due_at, data no passado, etc.) — o item é simplesmente ignorado.
+ * due_at) — o item é simplesmente ignorado.
  */
-function resolveParsed(data: z.infer<typeof parsedSchema>, now: Date, tz: string): ParsedReminder | null {
+function resolveParsed(
+  data: z.infer<typeof parsedSchema>,
+  now: Date,
+  tz: string,
+  agenda: Reminder[] = [],
+): ParsedReminder | null {
   const action = data.action ?? 'create';
   const task = stripReminderLabel(data.task);
 
@@ -240,18 +314,13 @@ function resolveParsed(data: z.infer<typeof parsedSchema>, now: Date, tz: string
     return null;
   }
 
-  const nextFireAt = parseLocalIso(data.due_at, tz);
-  if (!nextFireAt) {
+  const parsedDue = parseLocalIso(data.due_at, tz);
+  if (!parsedDue) {
     logger.warn(`Lembretes: due_at inválido — "${data.due_at}"`);
     return null;
   }
 
-  // A IA às vezes calcula um horário que já passou (ex.: "às 8h" quando são 9h).
-  // Salvar assim faria o agendador disparar no mesmo minuto.
-  if (nextFireAt.getTime() <= now.getTime()) {
-    logger.warn(`Lembretes: due_at no passado (${data.due_at}) — descartado.`);
-    return null;
-  }
+  const existing = action === 'update' ? matchCaderno(data, agenda) : null;
 
   let recurrence: string | null = null;
   if (data.type === 'recorrente' && data.recurrence) {
@@ -259,10 +328,12 @@ function resolveParsed(data: z.infer<typeof parsedSchema>, now: Date, tz: string
     if (isValidRecurrence(rule)) recurrence = rule;
     else logger.warn(`Lembretes: recorrência não reconhecida — "${data.recurrence}" (salvando como único).`);
   }
+  if (action === 'update' && !recurrence && existing?.recurrence) {
+    recurrence = existing.recurrence;
+  }
 
-  // Antecedência: descartada se não couber antes do próprio compromisso — avisar
-  // "1 dia antes" de algo que é daqui a 2h não faz sentido e o toque prévio
-  // nunca dispararia.
+  const nextFireAt = bumpUntilFuture(parsedDue, now, tz, recurrence);
+
   let leadMinutes: number | null = null;
   const rawLead = data.remind_before_minutes ?? null;
   if (rawLead && rawLead > 0) {
@@ -270,21 +341,23 @@ function resolveParsed(data: z.infer<typeof parsedSchema>, now: Date, tz: string
     const fitsBeforeNow = nextFireAt.getTime() - clamped * 60_000 > now.getTime();
     if (fitsBeforeNow) leadMinutes = clamped;
     else logger.warn(`Lembretes: aviso de ${clamped}min antes não cabe até o compromisso — ignorado.`);
+  } else if (action === 'update' && existing) {
+    leadMinutes = existing.lead_minutes;
   }
 
+  const verb = data.confirmation_text;
   return {
-    task,
+    task: existing?.task ?? task,
     category: data.category,
     recurrence,
     nextFireAt,
     leadMinutes,
-    // Anexamos a data resolvida: é a checagem que o dono realmente precisa ver
-    // antes de confirmar, e não dá para confiar que o modelo a escreveu certo.
     confirmationText:
-      `${data.confirmation_text}\n${formatForOwner(nextFireAt, tz)}` +
+      `${verb}\n${formatForOwner(nextFireAt, tz)}` +
       `${recurrence ? ` · repete ${describeRecurrence(recurrence)}` : ''}` +
       `${leadMinutes ? `\nTe aviso ${describeLead(leadMinutes)}` : ''}`,
-    action: 'create',
+    action: action === 'update' ? 'update' : 'create',
+    existingId: existing?.id,
   };
 }
 
@@ -294,6 +367,32 @@ function stripReminderLabel(task: string): string {
     .replace(/^(lembrete|aviso|alerta)\s*[:\-–—]?\s*/i, '')
     .replace(/^lembrar\s+de\s+/i, '')
     .trim() || task.trim();
+}
+
+async function loadRecentTurns(
+  tenantId: string,
+  ownerPhone: string,
+  connectionId?: string | null,
+): Promise<string> {
+  try {
+    const rows = await listOwnerChatHistory(tenantId, ownerPhone, {
+      connectionId,
+      limit: 12,
+    });
+    if (rows.length === 0) return '';
+    const lines = rows.map((m) => {
+      const who = m.role === 'user' ? 'DONO' : 'VOCÊ';
+      return `${who}: ${m.content.slice(0, 400)}`;
+    });
+    return [
+      '',
+      'FIO RECENTE (ele pode dizer "os horários que falei" — use isto + o caderno):',
+      ...lines,
+    ].join('\n');
+  } catch (err) {
+    logger.warn('Lembretes: falha ao carregar fio recente para o parse', err);
+    return '';
+  }
 }
 
 /**
@@ -306,6 +405,8 @@ export interface ParseReminderOptions {
   personaOverride?: string | null;
   /** Dono: carrega o caderno dele do banco para frases abertas. */
   ownerPhone?: string;
+  /** WhatsApp da conversa, para filtrar o fio recente. */
+  connectionId?: string | null;
 }
 
 export async function parseReminder(
@@ -321,9 +422,12 @@ export async function parseReminder(
   const memoryBlock = opts.ownerPhone
     ? await buildOwnerMemoryPromptBlock(tenantId, opts.ownerPhone)
     : '';
+  const recentTurns = opts.ownerPhone
+    ? await loadRecentTurns(tenantId, opts.ownerPhone, opts.connectionId)
+    : '';
   const result = await complete(
     {
-      system: buildSystemPrompt(now, tz, persona, false, agenda, memoryBlock),
+      system: buildSystemPrompt(now, tz, persona, false, agenda, memoryBlock, recentTurns),
       messages: [{ role: 'user', content: message.slice(0, 1000) }],
       maxTokens: 400,
       temperature: 0,
@@ -348,7 +452,9 @@ export async function parseReminder(
     return null;
   }
 
-  return resolveParsed(parsed.data, now, tz);
+  const resolved = resolveParsed(parsed.data, now, tz, agenda);
+  if (!resolved) return null;
+  return expandReminderUpdates([resolved], agenda, now, tz)[0] ?? null;
 }
 
 /**
@@ -369,12 +475,15 @@ export async function parseReminders(
   const memoryBlock = opts.ownerPhone
     ? await buildOwnerMemoryPromptBlock(tenantId, opts.ownerPhone)
     : '';
+  const recentTurns = opts.ownerPhone
+    ? await loadRecentTurns(tenantId, opts.ownerPhone, opts.connectionId)
+    : '';
   if (agenda.length > 0) {
     logger.info(`Lembretes: parse com ${agenda.length} item(ns) do caderno no contexto.`);
   }
   const result = await complete(
     {
-      system: buildSystemPrompt(now, tz, persona, true, agenda, memoryBlock),
+      system: buildSystemPrompt(now, tz, persona, true, agenda, memoryBlock, recentTurns),
       messages: [{ role: 'user', content: message.slice(0, 4000) }],
       // Mais itens = mais tokens; ainda modesto. O orquestrador dobra se truncar.
       maxTokens: 900,
@@ -405,8 +514,65 @@ export async function parseReminders(
       logger.warn(`Lembretes: item fora do formato — ${parsed.error.issues[0]?.message}`);
       continue;
     }
-    const resolved = resolveParsed(parsed.data, now, tz);
+    const resolved = resolveParsed(parsed.data, now, tz, agenda);
     if (resolved) out.push(resolved);
+  }
+  return expandReminderUpdates(out, agenda, now, tz);
+}
+
+/**
+ * Se o modelo mandou um update sem caderno_n e a task casa com vários
+ * (ex.: todos os "despertar"), aplica o mesmo relógio novo em cada um.
+ */
+export function expandReminderUpdates(
+  parsed: ParsedReminder[],
+  agenda: Reminder[],
+  now: Date,
+  tz: string,
+): ParsedReminder[] {
+  const out: ParsedReminder[] = [];
+  for (const item of parsed) {
+    if (item.action !== 'update' || item.existingId) {
+      out.push(item);
+      continue;
+    }
+    const hits = matchRemindersByTask(item.task, agenda);
+    if (hits.length === 0) {
+      out.push(item);
+      continue;
+    }
+    if (hits.length === 1) {
+      const h = hits[0]!;
+      out.push({
+        ...item,
+        existingId: h.id,
+        task: h.task,
+        recurrence: item.recurrence ?? h.recurrence,
+        leadMinutes: item.leadMinutes ?? h.lead_minutes,
+      });
+      continue;
+    }
+    const wcNew = toWallClock(item.nextFireAt, tz);
+    for (const h of hits) {
+      const wcOld = toWallClock(new Date(h.next_fire_at), h.timezone || tz);
+      const candidate = fromWallClock(
+        { year: wcOld.year, month: wcOld.month, day: wcOld.day, hour: wcNew.hour, minute: wcNew.minute },
+        h.timezone || tz,
+      );
+      const recurrence = item.recurrence ?? h.recurrence;
+      const nextFireAt = bumpUntilFuture(candidate, now, h.timezone || tz, recurrence);
+      out.push({
+        ...item,
+        existingId: h.id,
+        task: h.task,
+        recurrence,
+        nextFireAt,
+        leadMinutes: item.leadMinutes ?? h.lead_minutes,
+        confirmationText:
+          `${item.confirmationText.split('\n')[0]}\n${formatForOwner(nextFireAt, h.timezone || tz)}` +
+          `${recurrence ? ` · repete ${describeRecurrence(recurrence)}` : ''}`,
+      });
+    }
   }
   return out;
 }
