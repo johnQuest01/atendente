@@ -5,6 +5,7 @@ import {
   findOrCreateOpenConversation,
 } from '../db/queries/conversations';
 import type { Client } from '../types';
+import { extractPhoneHint, phoneMatchesHint } from '../utils/phone-hint';
 import { dispatchText } from './dispatch.service';
 
 /**
@@ -126,11 +127,30 @@ export async function resolveRelayContacts(
   connectionId?: string | null,
 ): Promise<RelayCandidate[]> {
   const rows = await findClientsByName(tenantId, nameQuery, { connectionId, limit: 8 });
-  return rows.map((c) => ({
+  const mapped = rows.map((c) => ({
     id: c.id,
     name: c.name,
     phone: c.phone,
   }));
+  const hint = extractPhoneHint(nameQuery);
+  if (!hint) return mapped;
+  const narrowed = mapped.filter((c) => phoneMatchesHint(c.phone, hint));
+  return narrowed.length ? narrowed : mapped;
+}
+
+/** Escolha na lista: "1"/"2" ou o final do telefone ("3934", "final 3934"). */
+export function pickRelayCandidate(
+  candidates: RelayCandidate[],
+  reply: string,
+): RelayCandidate | null {
+  const hint = extractPhoneHint(reply);
+  if (hint && hint.length >= 4) {
+    const hits = candidates.filter((c) => phoneMatchesHint(c.phone, hint));
+    if (hits.length === 1) return hits[0]!;
+  }
+  const idx = reply.trim().match(/^(\d{1,2})$/);
+  if (!idx) return null;
+  return candidates[Number(idx[1]) - 1] ?? null;
 }
 
 export function displayName(c: Pick<Client, 'name' | 'phone'> | RelayCandidate): string {

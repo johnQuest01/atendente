@@ -18,6 +18,7 @@ import {
   resolveRelayContacts,
   sendOwnerRelay,
 } from '../../owner-relay.service';
+import { extractPhoneHint } from '../../../utils/phone-hint';
 import { recordOwnerEvent } from '../../owner-memory.service';
 import { DEFAULT_TZ, formatForOwner, parseLocalIso } from '../../reminders/time';
 import {
@@ -35,6 +36,8 @@ export interface OwnerToolContext {
   tenantId: string;
   ownerPhone: string;
   connectionId?: string | null;
+  /** Fala atual do dono — pra cruzar "final 3934" mesmo se a tool só mandar o nome. */
+  lastUserMessage?: string | null;
 }
 
 function asRecord(input: unknown): Record<string, unknown> {
@@ -50,11 +53,11 @@ function str(v: unknown): string {
 const buscarContatoTool: Tool = {
   name: 'buscar_contato',
   description:
-    'Busca livre no CRM (agenda sincronizada do WhatsApp + quem já falou): nome, trecho do nome, empresa ou telefone. Use antes de enviar/agendar. Ex.: "Wender", "wend", "55119…".',
+    'Busca livre no CRM (agenda sincronizada do WhatsApp + quem já falou): nome, trecho do nome, empresa ou telefone. Se o dono citar o FINAL do número, inclua os dígitos (ex.: "Jurandir 3934") — não liste os dois homônimos.',
   inputSchema: {
     type: 'object',
     properties: {
-      nome: { type: 'string', description: 'Nome, trecho, empresa ou telefone.' },
+      nome: { type: 'string', description: 'Nome, trecho, empresa ou telefone (inclua o final se o dono citou).' },
     },
     required: ['nome'],
     additionalProperties: false,
@@ -152,7 +155,11 @@ const avisarContatoTool: Tool = {
         type: 'boolean',
         description: 'true = qualquer pessoa neste WhatsApp (um aviso por contato).',
       },
-      nome: { type: 'string', description: 'Nome do contato (se não tiver client_id nem todos).' },
+      nome: {
+        type: 'string',
+        description:
+          'Nome do contato. Se o dono deu o final do telefone, inclua (ex.: "Jurandir 3934").',
+      },
       client_id: { type: 'string', description: 'UUID do contato, se já conhecido.' },
       modo: {
         type: 'string',
@@ -215,7 +222,9 @@ async function resolveOneContact(
   const q = nome.trim();
   if (!q) return { ok: false, text: 'Informe nome ou client_id do contato.' };
 
-  const matches = await resolveRelayContacts(ctx.tenantId, q, ctx.connectionId);
+  const hint = extractPhoneHint(q) ?? extractPhoneHint(ctx.lastUserMessage ?? '');
+  const search = hint && !q.includes(hint) ? `${q} ${hint}` : q;
+  const matches = await resolveRelayContacts(ctx.tenantId, search, ctx.connectionId);
   if (matches.length === 0) {
     return {
       ok: false,
@@ -240,7 +249,9 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
   const buscar: ToolExecutor = async (input) => {
     const nome = str(asRecord(input).nome);
     if (!nome) return 'Informe o nome do contato.';
-    const matches = await resolveRelayContacts(ctx.tenantId, nome, ctx.connectionId);
+    const hint = extractPhoneHint(nome) ?? extractPhoneHint(ctx.lastUserMessage ?? '');
+    const search = hint && !nome.includes(hint) ? `${nome} ${hint}` : nome;
+    const matches = await resolveRelayContacts(ctx.tenantId, search, ctx.connectionId);
     if (!matches.length) {
       return `Não achei "${nome}" nas conversas nem na agenda deste WhatsApp.`;
     }

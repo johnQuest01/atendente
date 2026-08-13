@@ -29,9 +29,11 @@ import {
   persistOwnerUserMessage,
 } from '../owner-chat.service';
 import { recordOwnerEvent } from '../owner-memory.service';
+import { extractPhoneHint } from '../../utils/phone-hint';
 import {
   displayName,
   parseRelayIntent,
+  pickRelayCandidate,
   resolveRelayContacts,
   sendOwnerRelay,
   type RelayCandidate,
@@ -163,6 +165,7 @@ function isHardImmediateOwnerTurn(text: string, owner: OwnerState): boolean {
   const cmd = normalizeCommand(text);
   if (owner.pendingRelay || owner.pendingWatch) {
     if (/^\d{1,2}$/.test(n) || isAffirmative(text) || isNegative(text)) return true;
+    if (extractPhoneHint(text)) return true;
   }
   if (owner.pending && (isAffirmative(text) || isNegative(text))) return true;
   if (n === 'ajuda' || n === 'menu' || n === '?') return true;
@@ -740,14 +743,8 @@ async function handleOwnerMessageInner(
   // 0.5. Escolha de contato pendente ("1", "2"…) depois de vários matches.
   // Relay só para número cadastrado — acesso livre não manda msg a contatos da empresa.
   if (owner.pendingRelay && listed) {
-    const pick = normalized.match(/^(\d{1,2})$/);
-    if (pick) {
-      const idx = Number(pick[1]) - 1;
-      const cand = owner.pendingRelay.candidates[idx];
-      if (!cand) {
-        await reply(tenantId, phone, 'Número inválido. Manda o da lista.');
-        return true;
-      }
+    const cand = pickRelayCandidate(owner.pendingRelay.candidates, text);
+    if (cand) {
       const body = owner.pendingRelay.body;
       setState(tenantId, phone, { pendingRelay: undefined });
       try {
@@ -780,6 +777,10 @@ async function handleOwnerMessageInner(
       }
       return true;
     }
+    if (/^\d{1,2}$/.test(normalized) || extractPhoneHint(text)) {
+      await reply(tenantId, phone, 'Não achei esse na lista. Manda o número da lista ou o final do telefone.');
+      return true;
+    }
     if (isNegative(text)) {
       setState(tenantId, phone, { pendingRelay: undefined });
       await reply(tenantId, phone, 'Beleza, cancelei o envio.');
@@ -788,14 +789,8 @@ async function handleOwnerMessageInner(
   }
 
   if (owner.pendingWatch && listed) {
-    const pick = normalized.match(/^(\d{1,2})$/);
-    if (pick) {
-      const idx = Number(pick[1]) - 1;
-      const cand = owner.pendingWatch.candidates[idx];
-      if (!cand) {
-        await reply(tenantId, phone, 'Número inválido. Manda o da lista.');
-        return true;
-      }
+    const cand = pickRelayCandidate(owner.pendingWatch.candidates, text);
+    if (cand) {
       const pending = owner.pendingWatch;
       setState(tenantId, phone, { pendingWatch: undefined });
       if (pending.action === 'cancel') {
@@ -827,6 +822,14 @@ async function handleOwnerMessageInner(
         created.mode === 'always'
           ? `OK — te aviso sempre que *${created.name}* mandar mensagem.`
           : `OK — te aviso quando *${created.name}* mandar a próxima mensagem.`,
+      );
+      return true;
+    }
+    if (/^\d{1,2}$/.test(normalized) || extractPhoneHint(text)) {
+      await reply(
+        tenantId,
+        phone,
+        'Não achei esse na lista. Manda o número da lista (1, 2…) ou o final do telefone.',
       );
       return true;
     }

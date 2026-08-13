@@ -89,7 +89,7 @@ function buildFastSystem(
           'Você TEM acesso às conversas e aos contatos do WhatsApp business via tools:',
           'buscar_contato, ler_conversa_contato, listar_produtos, enviar_mensagem_contato, orientar_atendimento_contato, agendar_mensagem_contato, avisar_quando_contato_falar.',
           'NUNCA diga que não tem acesso às conversas — você LÊ com ler_conversa_contato e FALA com enviar_mensagem_contato.',
-          'Quando o dono quiser ser AVISADO que alguém falou com este WhatsApp, use avisar_quando_contato_falar — em QUALQUER formulação, não só a frase pronta. Exemplos que são o MESMO pedido: "me avisa quando o Wender mandar mensagem", "quando o Wender chamar", "se a Maria falar me avisa", "me chama quando o João mandar zap", "avisa se o Pedro aparecer". Extraia o NOME e chame a tool (todos=false). Se disser "sempre que o X…", modo always; senão once. todos=true SOMENTE se pedir de qualquer pessoa / alguém / todo mundo SEM citar um nome. NUNCA use todos=true se houver um contato específico. Para parar um nome: acao=cancelar + nome. Para parar o geral: acao=cancelar + todos=true. Lista: acao=listar.',
+          'Quando o dono quiser ser AVISADO que alguém falou com este WhatsApp, use avisar_quando_contato_falar — em QUALQUER formulação, não só a frase pronta. Exemplos que são o MESMO pedido: "me avisa quando o Wender mandar mensagem", "quando o Wender chamar", "se a Maria falar me avisa", "me chama quando o João mandar zap", "avisa se o Pedro aparecer". Extraia o NOME e chame a tool (todos=false). Se citar o FINAL do número ("Jurandir final 3934", "o do 3934"), passe nome COM os dígitos ("Jurandir 3934") e NÃO pergunte qual contato — escolha o telefone que TERMINA com esses dígitos. Se disser "sempre que o X…", modo always; senão always também, salvo se pedir só a próxima. todos=true SOMENTE se pedir de qualquer pessoa / alguém / todo mundo SEM citar um nome. NUNCA use todos=true se houver um contato específico. Para parar um nome: acao=cancelar + nome. Para parar o geral: acao=cancelar + todos=true. Lista: acao=listar.',
           'Quando o dono pedir "converse com X", "fala com o Wender", "atende ele", "responde o cliente":',
           '1) buscar_contato (se precisar) 2) ler_conversa_contato 3) se o contato pediu busca/fato atual, use web_search AGORA',
           '4) montar resposta útil (com o resultado da busca, se houver) 5) enviar_mensagem_contato',
@@ -97,7 +97,7 @@ function buildFastSystem(
           'Se o contato pediu pesquisa na internet: NÃO ignore — pesquise com web_search e mande o resultado pra ele.',
           'Fluxo venda: listar_produtos → ler_conversa se já houver fio → texto humano → enviar + orientar.',
           'Fluxo rotina: agendar_mensagem_contato com quando=YYYY-MM-DDTHH:mm e recorrencia se pedir.',
-          'Se vários nomes, mostre a lista; se 1 contato claro, aja na hora sem pedir permissão de novo.',
+          'Se vários nomes SEM final de telefone, mostre a lista; se 1 contato claro OU o dono já deu o final do número, aja na hora sem perguntar.',
           'Confirme ao dono em 1–2 linhas o que leu/enviou. Nunca invente envio sem OK da tool.',
         ].join(' ')
       : '',
@@ -197,12 +197,14 @@ async function runFreeChatOnce(
   const webSearchOn = Boolean(opts.webSearchEnabled);
   const toolSearchAvailable = webSearchOn && isWebSearchToolAvailable() && !hasImages;
   const contactToolsOn = !hasImages;
+  const lastUser = [...messages].reverse().find((m) => m.role === 'user');
   const ownerTools = contactToolsOn
     ? registryAsRequestFields(
         buildOwnerToolRegistry({
           tenantId,
           ownerPhone: phone,
           connectionId: opts.connectionId,
+          lastUserMessage: typeof lastUser?.content === 'string' ? lastUser.content : null,
         }),
       )
     : { tools: [], toolExecutors: {} };

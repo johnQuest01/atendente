@@ -13,6 +13,7 @@ import {
 } from '../db/queries/contact_watches';
 import { isReminderOwner } from '../db/queries/reminders';
 import { displayName, resolveRelayContacts, type RelayCandidate } from './owner-relay.service';
+import { extractPhoneHint } from '../utils/phone-hint';
 import { getTenantWhatsapp, getWhatsappByConnection } from './whatsapp.service';
 import { recordOwnerEvent } from './owner-memory.service';
 
@@ -141,10 +142,13 @@ export function parseWatchIntent(text: string): WatchIntent | null {
     const once =
       !specific.always &&
       /\b(pr[oó]xima|dessa vez|s[oó] (?:a |essa )?pr[oó]xima|uma vez)\b/i.test(raw);
+    const hint = extractPhoneHint(raw);
+    const contactQuery =
+      hint && !/\d{4,}/.test(specific.name) ? `${specific.name} ${hint}` : specific.name;
     return {
       action: 'create',
       scope: 'one',
-      contactQuery: specific.name,
+      contactQuery,
       mode: once ? 'once' : 'always',
     };
   }

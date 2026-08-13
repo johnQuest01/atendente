@@ -1,5 +1,6 @@
 import { query, queryOne } from '../index';
 import type { Client } from '../../types';
+import { extractPhoneHint } from '../../utils/phone-hint';
 
 export async function findClientByPhone(tenantId: string, phone: string): Promise<Client | null> {
   return queryOne<Client>('SELECT * FROM clients WHERE tenant_id = $1 AND phone = $2', [
@@ -270,6 +271,15 @@ const NAME_SEARCH_STOP = new Set([
   'mandar',
   'mensagem',
   'msg',
+  'final',
+  'numero',
+  'número',
+  'nro',
+  'termina',
+  'terminando',
+  'telefone',
+  'celular',
+  'zap',
 ]);
 
 function stripNameDecorations(s: string): string {
@@ -304,13 +314,14 @@ export async function findClientsByName(
   const limit = Math.min(Math.max(opts?.limit ?? 12, 1), 30);
   const connectionId = opts?.connectionId ?? null;
   const digits = q.replace(/\D/g, '');
+  const hint = extractPhoneHint(q) ?? (digits.length >= 4 && digits.length <= 13 ? digits : null);
   const relation = relationSearchHint(q);
   const tokens = stripNameDecorations(q)
     .split(/\s+/)
     .map((t) => t.trim())
-    .filter((t) => t.length >= 1 && !NAME_SEARCH_STOP.has(t.toLowerCase()))
+    .filter((t) => t.length >= 1 && !NAME_SEARCH_STOP.has(t.toLowerCase()) && !/^\d+$/.test(t))
     .slice(0, 6);
-  if (!tokens.length && digits.length < 4 && !relation) return [];
+  if (!tokens.length && !hint && !relation) return [];
 
   const params: unknown[] = [tenantId];
   const parts: string[] = [];
@@ -324,13 +335,16 @@ export async function findClientsByName(
   }
 
   let phoneIdx: number | null = null;
-  if (digits.length >= 4) {
-    params.push(`%${digits}%`);
+  if (hint) {
+    params.push(`%${hint}`);
     phoneIdx = params.length;
   }
 
   const nameMatch = parts.length ? `(${parts.join(' AND ')})` : '';
-  const phoneMatch = phoneIdx != null ? `cl.phone LIKE $${phoneIdx}` : '';
+  const phoneMatch =
+    phoneIdx != null
+      ? `regexp_replace(cl.phone, '[^0-9]', '', 'g') LIKE $${phoneIdx}`
+      : '';
   let relationMatch = '';
   if (relation === 'esposa') {
     params.push('%💍%');
@@ -350,7 +364,11 @@ export async function findClientsByName(
     relationMatch = `(cl.name ILIKE $${ring} OR cl.name ILIKE $${w1} OR cl.name ILIKE $${w2})`;
   }
 
-  const chunks = [nameMatch, phoneMatch, relationMatch].filter(Boolean);
+  const identityMatch =
+    nameMatch && phoneMatch
+      ? `(${nameMatch} AND ${phoneMatch})`
+      : nameMatch || phoneMatch;
+  const chunks = [identityMatch, relationMatch].filter(Boolean);
   const whereMatch = chunks.length > 1 ? `(${chunks.join(' OR ')})` : chunks[0];
   if (!whereMatch) return [];
 
