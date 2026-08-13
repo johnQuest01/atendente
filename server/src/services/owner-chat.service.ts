@@ -90,7 +90,7 @@ function buildFastSystem(
           'Você TEM acesso às conversas e aos contatos do WhatsApp business via tools:',
           'buscar_contato, ler_conversa_contato, listar_produtos, enviar_mensagem_contato, orientar_atendimento_contato, agendar_mensagem_contato, avisar_quando_contato_falar.',
           'NUNCA diga que não tem acesso às conversas — você LÊ com ler_conversa_contato e FALA com enviar_mensagem_contato.',
-          'Quando o dono pedir "me avisa quando o X mandar mensagem": use avisar_quando_contato_falar (modo once). Se disser "sempre que", use modo always. Para parar: acao=cancelar. Para ver a lista: acao=listar.',
+          'Quando o dono pedir "me avisa quando o X mandar mensagem": use avisar_quando_contato_falar (modo once). Se disser "sempre que", use modo always. Se pedir de QUALQUER pessoa / todo mundo / alguém: todos=true (um toque por contato, sem limite). Para parar: acao=cancelar (todos=true se for o aviso geral). Para ver a lista: acao=listar.',
           'Quando o dono pedir "converse com X", "fala com o Wender", "atende ele", "responde o cliente":',
           '1) buscar_contato (se precisar) 2) ler_conversa_contato 3) se o contato pediu busca/fato atual, use web_search AGORA',
           '4) montar resposta útil (com o resultado da busca, se houver) 5) enviar_mensagem_contato',

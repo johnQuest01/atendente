@@ -37,7 +37,9 @@ import {
   type RelayCandidate,
 } from '../owner-relay.service';
 import {
+  cancelWatchForAnyone,
   cancelWatchForContact,
+  createWatchForAnyone,
   createWatchForContact,
   formatWatchList,
   parseWatchIntent,
@@ -238,12 +240,14 @@ const HELP_TEXT = [
   'Com o *Agente* ligado: pergunta livre, texto, pesquisa — eu respondo rápido no zap.',
   'Pra mandar msg a contato: _"mande um boa noite para o Wender agora"_',
   'Pra te avisar quando alguém falar: _"me avisa quando o Wender mandar mensagem"_',
+  'Pra te avisar de todo mundo: _"me avisa quando qualquer pessoa mandar mensagem"_',
   'Pode mandar vários lembretes de uma vez — eu confirmo antes de salvar.',
 ].join('\n');
 
 const HELP_AGENT_ONLY = [
   'Modo *Agente* ligado — manda pergunta, texto ou "pesquisa X".',
   'Pra te avisar quando alguém falar: _"me avisa quando o Wender mandar mensagem"_.',
+  'De todo mundo: _"me avisa quando qualquer pessoa mandar mensagem"_.',
   'Pra anotar compromisso, ligue a *Secretária* no painel (Lembretes).',
 ].join('\n');
 
@@ -903,6 +907,30 @@ async function handleOwnerMessageInner(
     if (watch) {
       if (watch.action === 'list') {
         await reply(tenantId, phone, await formatWatchList(tenantId, phone, connectionId));
+        return true;
+      }
+      if (watch.scope === 'all') {
+        if (watch.action === 'cancel') {
+          const ok = await cancelWatchForAnyone({
+            tenantId,
+            ownerPhone: phone,
+            connectionId,
+          });
+          await reply(
+            tenantId,
+            phone,
+            ok
+              ? 'OK — parei de te avisar de qualquer pessoa. Avisos de um contato específico continuam, se tiver.'
+              : 'Não tinha aviso de qualquer pessoa ativo.',
+          );
+          return true;
+        }
+        await createWatchForAnyone({ tenantId, ownerPhone: phone, connectionId });
+        await reply(
+          tenantId,
+          phone,
+          'OK — te aviso cada vez que alguém mandar mensagem neste WhatsApp, não importa quantas pessoas. Manda _"para de me avisar de todo mundo"_ pra parar.',
+        );
         return true;
       }
       const resolved = await resolveWatchContact(tenantId, watch.contactQuery, connectionId);

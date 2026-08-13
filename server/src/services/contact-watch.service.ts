@@ -5,8 +5,10 @@ import {
   claimOnceWatch,
   listActiveWatches,
   listActiveWatchesForClient,
+  stampWatchNotified,
   touchAlwaysWatch,
   upsertContactWatch,
+  type ContactMessageWatch,
   type ContactWatchMode,
 } from '../db/queries/contact_watches';
 import { isReminderOwner } from '../db/queries/reminders';
@@ -15,9 +17,26 @@ import { getTenantWhatsapp, getWhatsappByConnection } from './whatsapp.service';
 import { recordOwnerEvent } from './owner-memory.service';
 
 export type WatchIntent =
-  | { action: 'create'; contactQuery: string; mode: ContactWatchMode }
-  | { action: 'cancel'; contactQuery: string }
+  | { action: 'create'; scope: 'all'; mode: ContactWatchMode }
+  | { action: 'create'; scope: 'one'; contactQuery: string; mode: ContactWatchMode }
+  | { action: 'cancel'; scope: 'all' }
+  | { action: 'cancel'; scope: 'one'; contactQuery: string }
   | { action: 'list' };
+
+const ANYONE_PHRASE =
+  /qualquer\s+(?:pessoa|um|uma|contato|gente)|algu[eé]m|todo\s+mundo|todas?\s+(?:as\s+)?pessoas|ningu[eé]m|me\s+avisa\s+de\s+todos/i;
+
+function looksLikeAnyone(s: string): boolean {
+  const t = s
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+  if (!t) return false;
+  return /^(qualquer( pessoa| um| uma| contato| gente)?|alguem|todo mundo|todas?( as)? pessoas|todos|ninguem)$/.test(
+    t,
+  );
+}
 
 function cleanWatchName(raw: string): string {
   return raw
@@ -29,7 +48,7 @@ function cleanWatchName(raw: string): string {
     .trim();
 }
 
-/** Pedido do dono para ser avisado quando um contato mandar mensagem. */
+/** Pedido do dono para ser avisado quando um contato (ou qualquer um) mandar mensagem. */
 export function parseWatchIntent(text: string): WatchIntent | null {
   const raw = text.trim().replace(/\s+/g, ' ');
   if (!raw) return null;
@@ -47,7 +66,14 @@ export function parseWatchIntent(text: string): WatchIntent | null {
   );
   if (cancel) {
     const contactQuery = cleanWatchName(cancel[1] ?? '');
-    if (contactQuery.length >= 2) return { action: 'cancel', contactQuery };
+    if (looksLikeAnyone(contactQuery) || looksLikeAnyone(raw)) {
+      return { action: 'cancel', scope: 'all' };
+    }
+    if (contactQuery.length >= 2) return { action: 'cancel', scope: 'one', contactQuery };
+  }
+
+  if (ANYONE_PHRASE.test(raw) && /avis/i.test(raw)) {
+    return { action: 'create', scope: 'all', mode: 'always' };
   }
 
   const always = raw.match(
@@ -55,7 +81,10 @@ export function parseWatchIntent(text: string): WatchIntent | null {
   );
   if (always) {
     const contactQuery = cleanWatchName(always[1] ?? '');
-    if (contactQuery.length >= 2) return { action: 'create', contactQuery, mode: 'always' };
+    if (looksLikeAnyone(contactQuery)) return { action: 'create', scope: 'all', mode: 'always' };
+    if (contactQuery.length >= 2) {
+      return { action: 'create', scope: 'one', contactQuery, mode: 'always' };
+    }
   }
 
   const create =
@@ -67,7 +96,10 @@ export function parseWatchIntent(text: string): WatchIntent | null {
     );
   if (create) {
     const contactQuery = cleanWatchName(create[1] ?? '');
-    if (contactQuery.length >= 2) return { action: 'create', contactQuery, mode: 'once' };
+    if (looksLikeAnyone(contactQuery)) return { action: 'create', scope: 'all', mode: 'always' };
+    if (contactQuery.length >= 2) {
+      return { action: 'create', scope: 'one', contactQuery, mode: 'once' };
+    }
   }
 
   return null;
@@ -104,6 +136,41 @@ export async function createWatchForContact(input: {
   return { name, mode: input.mode };
 }
 
+export async function createWatchForAnyone(input: {
+  tenantId: string;
+  ownerPhone: string;
+  connectionId?: string | null;
+}): Promise<void> {
+  await upsertContactWatch({
+    tenantId: input.tenantId,
+    ownerPhone: input.ownerPhone,
+    clientId: null,
+    mode: 'always',
+    connectionId: input.connectionId,
+  });
+  void recordOwnerEvent({
+    tenantId: input.tenantId,
+    ownerPhone: input.ownerPhone,
+    kind: 'acao',
+    summary: 'Vou avisar quando qualquer pessoa mandar mensagem neste WhatsApp',
+    connectionId: input.connectionId,
+    source: 'watch',
+  });
+}
+
+export async function cancelWatchForAnyone(input: {
+  tenantId: string;
+  ownerPhone: string;
+  connectionId?: string | null;
+}): Promise<boolean> {
+  return cancelContactWatch({
+    tenantId: input.tenantId,
+    ownerPhone: input.ownerPhone,
+    clientId: null,
+    connectionId: input.connectionId,
+  });
+}
+
 export async function cancelWatchForContact(input: {
   tenantId: string;
   ownerPhone: string;
@@ -122,13 +189,19 @@ export async function formatWatchList(
   connectionId?: string | null,
 ): Promise<string> {
   const rows = await listActiveWatches(tenantId, ownerPhone, connectionId);
-  if (!rows.length) return 'Nenhum aviso ativo. Manda _"me avisa quando o Wender mandar mensagem"_.';
+  if (!rows.length) {
+    return (
+      'Nenhum aviso ativo. Manda _"me avisa quando o Wender mandar mensagem"_ ' +
+      'ou _"me avisa quando qualquer pessoa mandar mensagem"_.'
+    );
+  }
   const lines = rows.map((w) => {
+    if (!w.client_id) return '• qualquer pessoa (sempre — um toque por contato)';
     const who = (w.client_name && w.client_name.trim()) || w.client_phone || w.client_id;
     const how = w.mode === 'always' ? 'sempre' : 'próxima msg';
     return `• ${who} (${how})`;
   });
-  return `Te aviso destes contatos:\n${lines.join('\n')}`;
+  return `Te aviso destes:\n${lines.join('\n')}`;
 }
 
 function previewLine(preview: string | null, type: string): string {
@@ -143,9 +216,36 @@ function previewLine(preview: string | null, type: string): string {
   return 'uma mensagem';
 }
 
+/** Debounce por (aviso global + contato): não silencia os outros. */
+const globalPerClientAt = new Map<string, number>();
+const GLOBAL_PER_CLIENT_MS = 90_000;
+
+function claimGlobalForClient(watchId: string, clientId: string): boolean {
+  const key = `${watchId}:${clientId}`;
+  const last = globalPerClientAt.get(key) ?? 0;
+  if (Date.now() - last < GLOBAL_PER_CLIENT_MS) return false;
+  globalPerClientAt.set(key, Date.now());
+  return true;
+}
+
+function pickWatchPerOwner(watches: ContactMessageWatch[]): ContactMessageWatch[] {
+  const byOwner = new Map<string, ContactMessageWatch>();
+  for (const w of watches) {
+    const prev = byOwner.get(w.owner_phone);
+    if (!prev) {
+      byOwner.set(w.owner_phone, w);
+      continue;
+    }
+    // Específico ganha do "qualquer pessoa" (um toque só).
+    if (prev.client_id == null && w.client_id) byOwner.set(w.owner_phone, w);
+  }
+  return [...byOwner.values()];
+}
+
 /**
  * Dispara avisos quando um contato manda inbound.
  * Best-effort: falha de um dono não impede os outros nem o atendimento.
+ * Aviso global: um toque por pessoa, sem limite de quantos falarem.
  */
 export async function notifyContactWatches(input: {
   tenantId: string;
@@ -156,10 +256,8 @@ export async function notifyContactWatches(input: {
   preview: string | null;
   inboundType: string;
 }): Promise<void> {
-  const watches = await listActiveWatchesForClient(
-    input.tenantId,
-    input.clientId,
-    input.connectionId,
+  const watches = pickWatchPerOwner(
+    await listActiveWatchesForClient(input.tenantId, input.clientId, input.connectionId),
   );
   if (!watches.length) return;
 
@@ -174,8 +272,12 @@ export async function notifyContactWatches(input: {
     try {
       if (watch.owner_phone === input.clientPhone) continue;
 
+      const isAnyone = watch.client_id == null;
       let claimed = false;
-      if (watch.mode === 'once') {
+      if (isAnyone) {
+        claimed = claimGlobalForClient(watch.id, input.clientId);
+        if (claimed) void stampWatchNotified(input.tenantId, watch.id);
+      } else if (watch.mode === 'once') {
         claimed = await claimOnceWatch(input.tenantId, watch.id);
       } else {
         claimed = await touchAlwaysWatch(input.tenantId, watch.id);
@@ -185,8 +287,9 @@ export async function notifyContactWatches(input: {
       const body = quoted
         ? `*${input.clientName}* mandou:\n${snippet}`
         : `*${input.clientName}* mandou ${snippet}.`;
-      const footer =
-        watch.mode === 'once'
+      const footer = isAnyone
+        ? '\n\n(aviso de qualquer pessoa — continuo. Manda _"para de me avisar de todo mundo"_ pra parar.)'
+        : watch.mode === 'once'
           ? '\n\n(aviso único — já tirei da lista)'
           : '\n\n(continuo te avisando. Manda _"para de me avisar do ' +
             input.clientName +
@@ -194,7 +297,7 @@ export async function notifyContactWatches(input: {
 
       await wa.sendText(watch.owner_phone, `${body}${footer}`);
       logger.info(
-        `Aviso de contato: ${input.clientName} → dono ${watch.owner_phone} (${watch.mode})`,
+        `Aviso de contato: ${input.clientName} → dono ${watch.owner_phone} (${isAnyone ? 'anyone' : watch.mode})`,
       );
     } catch (err) {
       logger.warn(`Falha ao avisar dono ${watch.owner_phone} sobre ${input.clientName}`, err);

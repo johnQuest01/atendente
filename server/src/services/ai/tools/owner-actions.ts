@@ -22,7 +22,9 @@ import { recordOwnerEvent } from '../../owner-memory.service';
 import { DEFAULT_TZ, formatForOwner, parseLocalIso } from '../../reminders/time';
 import {
   assertListedOwner,
+  cancelWatchForAnyone,
   cancelWatchForContact,
+  createWatchForAnyone,
   createWatchForContact,
   formatWatchList,
 } from '../../contact-watch.service';
@@ -137,7 +139,7 @@ const lerConversaTool: Tool = {
 const avisarContatoTool: Tool = {
   name: 'avisar_quando_contato_falar',
   description:
-    'Cadastra um aviso: quando o contato mandar mensagem neste WhatsApp, o secretário avisa o DONO. Use quando pedir "me avisa quando o X mandar mensagem". acao=criar (padrão), cancelar ou listar. modo=once (próxima msg) ou always (sempre).',
+    'Cadastra um aviso: quando o contato (ou QUALQUER pessoa) mandar mensagem, o secretário avisa o DONO. Use todos=true para "me avisa quando qualquer um mandar mensagem" (um toque por pessoa, sem limite). acao=criar|cancelar|listar. modo=once|always (em todos, always).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -145,11 +147,15 @@ const avisarContatoTool: Tool = {
         type: 'string',
         description: 'criar | cancelar | listar',
       },
-      nome: { type: 'string', description: 'Nome do contato (se não tiver client_id).' },
+      todos: {
+        type: 'boolean',
+        description: 'true = qualquer pessoa neste WhatsApp (um aviso por contato).',
+      },
+      nome: { type: 'string', description: 'Nome do contato (se não tiver client_id nem todos).' },
       client_id: { type: 'string', description: 'UUID do contato, se já conhecido.' },
       modo: {
         type: 'string',
-        description: 'once = só a próxima mensagem; always = toda vez. Padrão once.',
+        description: 'once = só a próxima mensagem; always = toda vez. Com todos, use always.',
       },
     },
     additionalProperties: false,
@@ -435,6 +441,26 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
 
     if (acao === 'listar') {
       return formatWatchList(ctx.tenantId, ctx.ownerPhone, ctx.connectionId);
+    }
+
+    const todos = o.todos === true || /^(todos|qualquer|alguem|anyone)$/i.test(str(o.nome));
+    if (todos) {
+      if (acao === 'cancelar') {
+        const ok = await cancelWatchForAnyone({
+          tenantId: ctx.tenantId,
+          ownerPhone: ctx.ownerPhone,
+          connectionId: ctx.connectionId,
+        });
+        return ok
+          ? 'OK — parei de te avisar de qualquer pessoa.'
+          : 'Não tinha aviso de qualquer pessoa ativo.';
+      }
+      await createWatchForAnyone({
+        tenantId: ctx.tenantId,
+        ownerPhone: ctx.ownerPhone,
+        connectionId: ctx.connectionId,
+      });
+      return 'OK — te aviso cada vez que alguém mandar mensagem neste WhatsApp, não importa quantas pessoas. Manda "para de me avisar de todo mundo" pra parar.';
     }
 
     const resolved = await resolveOneContact(ctx, str(o.nome), str(o.client_id));
