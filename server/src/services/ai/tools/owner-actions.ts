@@ -218,7 +218,7 @@ async function resolveOneContact(
   if (matches.length === 0) {
     return {
       ok: false,
-      text: `Nenhum contato "${q}" no CRM. O nome precisa estar em Clientes no painel (já ter falado no WhatsApp ou importado).`,
+      text: `Não achei "${q}" nas conversas nem na agenda. Manda o nome como no zap (pode ter emoji).`,
     };
   }
   if (matches.length > 1) {
@@ -241,7 +241,7 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
     if (!nome) return 'Informe o nome do contato.';
     const matches = await resolveRelayContacts(ctx.tenantId, nome, ctx.connectionId);
     if (!matches.length) {
-      return `Nenhum contato "${nome}" no CRM/painel.`;
+      return `Não achei "${nome}" nas conversas nem na agenda deste WhatsApp.`;
     }
     return matches
       .map((c, i) => `${i + 1}. ${displayName(c)} | telefone ${c.phone} | client_id=${c.id}`)

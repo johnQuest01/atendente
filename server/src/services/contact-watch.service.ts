@@ -26,8 +26,14 @@ export type WatchIntent =
 const CONTACT_VERB =
   '(?:mandar|enviar|falar|responder|chamar|ligar|aparecer|escrever|chegar|entrar\\s+em\\s+contato|mandar\\s+(?:mensagem|msg|zap)|dar\\s+(?:um\\s+)?oi)';
 
+/** "te mandar" / "me chamar" — o pronome não faz parte do nome. */
+const CLITIC_BEFORE_VERB = '(?:\\s+(?:te|me|lhe|nos|vos|pra\\s+mim|para\\s+mim))?';
+
 const ANYONE_PHRASE =
   /qualquer\s+(?:pessoa|um|uma|contato|gente)|algu[eé]m|todo\s+mundo|todas?\s+(?:as\s+)?pessoas|ningu[eé]m|me\s+avisa\s+de\s+todos/i;
+
+const NOT_A_CONTACT_NAME =
+  /^(ela|ele|eles|elas|voce|você|tu|contato|pessoa|esse|essa|isto|isso|alguem|alguém)$/i;
 
 export function looksLikeAnyone(s: string): boolean {
   const t = s
@@ -52,6 +58,7 @@ function cleanWatchName(raw: string): string {
       ),
       '',
     )
+    .replace(/\s+(?:te|me|lhe|nos|vos|pra\s+mim|para\s+mim|pra\s+voc[eê])\s*$/i, '')
     .replace(/[.!?]+$/g, '')
     .trim();
 }
@@ -59,41 +66,46 @@ function cleanWatchName(raw: string): string {
 function extractSpecificName(raw: string): { name: string; always: boolean } | null {
   const always = /\bsempre\s+que\b/i.test(raw);
   const verb = CONTACT_VERB;
+  const clitic = CLITIC_BEFORE_VERB;
   const patterns = [
     new RegExp(
-      `(?:me\\s+)?avis[ae]\\w*\\s+(?:quando|assim\\s+que|se|caso)\\s+(?:o\\s+|a\\s+)?(.+?)\\s+${verb}\\b`,
+      `(?:me\\s+)?avis[ae]\\w*\\s+(?:quando|assim\\s+que|se|caso)\\s+(?:o\\s+|a\\s+)?(.+?)${clitic}\\s+${verb}\\b`,
       'i',
     ),
     new RegExp(
-      `(?:quando|assim\\s+que|se|caso)\\s+(?:o\\s+|a\\s+)?(.+?)\\s+${verb}\\b[\\s\\S]{0,80}\\bavis`,
+      `(?:quando|assim\\s+que|se|caso)\\s+(?:o\\s+|a\\s+)?(.+?)${clitic}\\s+${verb}\\b[\\s\\S]{0,80}\\bavis`,
       'i',
     ),
     new RegExp(
-      `quero\\s+que\\s+(?:voc[eê]|vc|tu)?\\s*(?:me\\s+)?avis\\w*\\s+quando\\s+(?:o\\s+|a\\s+)?(.+?)\\s+${verb}\\b`,
+      `quero\\s+que\\s+(?:voc[eê]|vc|tu)?\\s*(?:me\\s+)?avis\\w*\\s+quando\\s+(?:o\\s+|a\\s+)?(.+?)${clitic}\\s+${verb}\\b`,
       'i',
     ),
     new RegExp(
-      `me\\s+(?:chama|toca|notifica)\\s+quando\\s+(?:o\\s+|a\\s+)?(.+?)\\s+${verb}\\b`,
+      `me\\s+(?:chama|toca|notifica)\\s+quando\\s+(?:o\\s+|a\\s+)?(.+?)${clitic}\\s+${verb}\\b`,
       'i',
     ),
-    new RegExp(`sempre\\s+que\\s+(?:o\\s+|a\\s+)?(.+?)\\s+${verb}\\b`, 'i'),
+    new RegExp(`sempre\\s+que\\s+(?:o\\s+|a\\s+)?(.+?)${clitic}\\s+${verb}\\b`, 'i'),
   ];
   for (const re of patterns) {
     const m = raw.match(re);
     const name = cleanWatchName(m?.[1] ?? '');
-    if (name.length >= 2 && !looksLikeAnyone(name)) return { name, always };
+    if (name.length >= 2 && !looksLikeAnyone(name) && !NOT_A_CONTACT_NAME.test(name)) {
+      return { name, always };
+    }
   }
 
-  // Frase curta: "quando o Wender chamar" / "se a Maria falar"
-  if (raw.length <= 100 && !ANYONE_PHRASE.test(raw)) {
+  // Frase curta: "quando o Wender chamar" / "quando o Jurandir te mandar"
+  if (raw.length <= 120 && !ANYONE_PHRASE.test(raw)) {
     const short = raw.match(
       new RegExp(
-        `^(?:me\\s+)?(?:avis[ae]\\s+)?(?:quando|assim\\s+que|se)\\s+(?:o\\s+|a\\s+)?(.+?)\\s+${verb}\\b`,
+        `^(?:me\\s+)?(?:avis[ae]\\s+)?(?:quando|assim\\s+que|se)\\s+(?:o\\s+|a\\s+)?(.+?)${clitic}\\s+${verb}\\b`,
         'i',
       ),
     );
     const name = cleanWatchName(short?.[1] ?? '');
-    if (name.length >= 2 && !looksLikeAnyone(name)) return { name, always };
+    if (name.length >= 2 && !looksLikeAnyone(name) && !NOT_A_CONTACT_NAME.test(name)) {
+      return { name, always };
+    }
   }
 
   return null;
@@ -353,7 +365,9 @@ export async function resolveWatchContact(
   if (matches.length === 0) {
     return {
       ok: false,
-      text: `Não achei *${query}* nos contatos. O nome precisa estar na agenda (quem já conversou ou foi importado).`,
+      text:
+        `Não achei *${query}* nas conversas nem na agenda deste WhatsApp. ` +
+        'Manda o nome como aparece no zap (pode ter emoji). Se for esposa/marido, o nome com a aliança também vale.',
     };
   }
   if (matches.length > 1) {

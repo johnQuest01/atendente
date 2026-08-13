@@ -242,13 +242,57 @@ export async function listClientsForExport(
   return rows;
 }
 
-/**
- * Busca contatos pelo nome (lista da secretária). Preferência a quem já
- * conversou na conexão; match parcial case-insensitive.
- */
+const NAME_SEARCH_STOP = new Set([
+  'te',
+  'me',
+  'lhe',
+  'nos',
+  'vos',
+  'o',
+  'a',
+  'os',
+  'as',
+  'de',
+  'da',
+  'do',
+  'dos',
+  'das',
+  'um',
+  'uma',
+  'pra',
+  'para',
+  'pro',
+  'minha',
+  'meu',
+  'minhas',
+  'meus',
+  'quando',
+  'mandar',
+  'mensagem',
+  'msg',
+]);
+
+function stripNameDecorations(s: string): string {
+  return s
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F\u200D]/gu, ' ')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function relationSearchHint(q: string): 'esposa' | 'marido' | null {
+  const n = stripNameDecorations(q).toLowerCase();
+  if (/\b(esposa|mulher|wife)\b/.test(n)) return 'esposa';
+  if (/\b(marido|esposo|husband)\b/.test(n)) return 'marido';
+  return null;
+}
+
 /**
  * Busca livre por nome/empresa/telefone (IA / secretária).
- * Aceita trechos curtos, várias palavras e dígitos do telefone.
+ * Aceita trechos curtos, várias palavras, dígitos do telefone, nomes com emoji
+ * (ex.: "Jurandir 💍") e apelidos tipo "minha esposa".
  */
 export async function findClientsByName(
   tenantId: string,
@@ -260,12 +304,13 @@ export async function findClientsByName(
   const limit = Math.min(Math.max(opts?.limit ?? 12, 1), 30);
   const connectionId = opts?.connectionId ?? null;
   const digits = q.replace(/\D/g, '');
-  const tokens = q
+  const relation = relationSearchHint(q);
+  const tokens = stripNameDecorations(q)
     .split(/\s+/)
     .map((t) => t.trim())
-    .filter((t) => t.length >= 1)
+    .filter((t) => t.length >= 1 && !NAME_SEARCH_STOP.has(t.toLowerCase()))
     .slice(0, 6);
-  if (!tokens.length && digits.length < 4) return [];
+  if (!tokens.length && digits.length < 4 && !relation) return [];
 
   const params: unknown[] = [tenantId];
   const parts: string[] = [];
@@ -273,7 +318,9 @@ export async function findClientsByName(
   for (const t of tokens) {
     params.push(`%${t}%`);
     const i = params.length;
-    parts.push(`(cl.name ILIKE $${i} OR cl.company_name ILIKE $${i})`);
+    parts.push(
+      `(cl.name ILIKE $${i} OR cl.company_name ILIKE $${i} OR regexp_replace(COALESCE(cl.name, ''), '[^[:alnum:][:space:]]', '', 'g') ILIKE $${i})`,
+    );
   }
 
   let phoneIdx: number | null = null;
@@ -284,10 +331,28 @@ export async function findClientsByName(
 
   const nameMatch = parts.length ? `(${parts.join(' AND ')})` : '';
   const phoneMatch = phoneIdx != null ? `cl.phone LIKE $${phoneIdx}` : '';
-  const whereMatch =
-    nameMatch && phoneMatch
-      ? `(${nameMatch} OR ${phoneMatch})`
-      : nameMatch || phoneMatch;
+  let relationMatch = '';
+  if (relation === 'esposa') {
+    params.push('%💍%');
+    const ring = params.length;
+    params.push('%esposa%');
+    const w1 = params.length;
+    params.push('%mulher%');
+    const w2 = params.length;
+    relationMatch = `(cl.name ILIKE $${ring} OR cl.name ILIKE $${w1} OR cl.name ILIKE $${w2})`;
+  } else if (relation === 'marido') {
+    params.push('%💍%');
+    const ring = params.length;
+    params.push('%marido%');
+    const w1 = params.length;
+    params.push('%esposo%');
+    const w2 = params.length;
+    relationMatch = `(cl.name ILIKE $${ring} OR cl.name ILIKE $${w1} OR cl.name ILIKE $${w2})`;
+  }
+
+  const chunks = [nameMatch, phoneMatch, relationMatch].filter(Boolean);
+  const whereMatch = chunks.length > 1 ? `(${chunks.join(' OR ')})` : chunks[0];
+  if (!whereMatch) return [];
 
   params.push(q);
   const qIdx = params.length;
