@@ -18,9 +18,11 @@ import {
   resolveRelayContacts,
   sendOwnerRelay,
 } from '../../owner-relay.service';
+import { rememberContactChoice } from '../../owner-contact-memory.service';
 import { extractPhoneHint } from '../../../utils/phone-hint';
 import { describeInboundVisual } from '../../inbound-understand.service';
 import { recordOwnerEvent } from '../../owner-memory.service';
+import { buildMemoryPromptBlock } from '../../memory.service';
 import { DEFAULT_TZ, formatForOwner, parseLocalIso } from '../../reminders/time';
 import {
   assertListedOwner,
@@ -233,6 +235,17 @@ async function resolveOneContact(
   if (clientId) {
     const c = await getClientById(ctx.tenantId, clientId);
     if (!c) return { ok: false, text: 'client_id não encontrado no CRM.' };
+    if (nome.trim()) {
+      void rememberContactChoice({
+        tenantId: ctx.tenantId,
+        ownerPhone: ctx.ownerPhone,
+        query: nome,
+        clientId: c.id,
+        name: displayName(c),
+        phone: c.phone,
+        connectionId: ctx.connectionId,
+      });
+    }
     return { ok: true, id: c.id, name: displayName(c), phone: c.phone };
   }
 
@@ -241,7 +254,7 @@ async function resolveOneContact(
 
   const hint = extractPhoneHint(q) ?? extractPhoneHint(ctx.lastUserMessage ?? '');
   const search = hint && !q.includes(hint) ? `${q} ${hint}` : q;
-  const matches = await resolveRelayContacts(ctx.tenantId, search, ctx.connectionId);
+  const matches = await resolveRelayContacts(ctx.tenantId, search, ctx.connectionId, ctx.ownerPhone);
   if (matches.length === 0) {
     return {
       ok: false,
@@ -268,9 +281,16 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
     if (!nome) return 'Informe o nome do contato.';
     const hint = extractPhoneHint(nome) ?? extractPhoneHint(ctx.lastUserMessage ?? '');
     const search = hint && !nome.includes(hint) ? `${nome} ${hint}` : nome;
-    const matches = await resolveRelayContacts(ctx.tenantId, search, ctx.connectionId);
+    const matches = await resolveRelayContacts(ctx.tenantId, search, ctx.connectionId, ctx.ownerPhone);
     if (!matches.length) {
       return `Não achei "${nome}" nas conversas nem na agenda deste WhatsApp.`;
+    }
+    if (matches.length === 1) {
+      const c = matches[0]!;
+      return (
+        `PREFERIDO (o dono já escolheu este — use client_id, NÃO pergunte de novo):\n` +
+        `1. ${displayName(c)} | telefone ${c.phone} | client_id=${c.id}`
+      );
     }
     return matches
       .map((c, i) => `${i + 1}. ${displayName(c)} | telefone ${c.phone} | client_id=${c.id}`)
@@ -387,8 +407,10 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
       lines.push(`${who}: ${text.slice(0, 800)}`);
     }
 
+    const memory = await buildMemoryPromptBlock(ctx.tenantId, resolved.id).catch(() => '');
     return (
       `Conversa com ${resolved.name} (${resolved.phone}) · client_id=${resolved.id}\n` +
+      (memory ? `${memory.trim()}\n` : '') +
       `Últimas ${lines.length} msgs:\n` +
       lines.join('\n')
     );

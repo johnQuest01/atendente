@@ -1,7 +1,14 @@
 import { logger } from '../config/logger';
 import { complete, hasVisionProvider } from './ai/orchestrator';
 import {
+  buildOwnerMemoryPromptBlock,
+  scheduleOwnerMemoryExtract,
+  recordOwnerEvent,
+} from './owner-memory.service';
+import { buildContactAliasPromptBlock } from './owner-contact-memory.service';
+import {
   buildOwnerToolRegistry,
+  executeWebSearch,
   isWebSearchToolAvailable,
   registryAsRequestFields,
 } from './ai/tools';
@@ -14,10 +21,6 @@ import {
 } from '../db/queries/owner_chat_messages';
 import { loadOwnerAgenda } from './reminders/parse.service';
 import { formatForOwner, DEFAULT_TZ } from './reminders/time';
-import {
-  buildOwnerMemoryPromptBlock,
-  scheduleOwnerMemoryExtract,
-} from './owner-memory.service';
 
 /**
  * Modo Agente do dono: chat livre no WhatsApp.
@@ -78,8 +81,8 @@ function buildFastSystem(
     'Você fala com o DONO no WhatsApp — como um assistente humano rápido (estilo Claude), não como robô.',
     'Respostas CURTAS (WhatsApp): no máximo ~6 linhas; bullets quando ajudar.',
     'Nunca diga que é IA/bot. Não invente compromissos: agenda real está abaixo.',
-    'Leitura completa: use o histórico + a memória interpretada (eventos, histórias, acontecimentos, problemas).',
-    'Interprete o sentido do que o dono diz — não dependa de palavras-chave; entenda contexto e continuidade.',
+    'Leitura completa: use o histórico + a memória interpretada (eventos, histórias, acontecimentos, problemas) + os contatos que o dono JÁ ESCOLHEU + o que você leu nas conversas e buscou na internet.',
+    'Interprete o sentido do que o dono diz — não dependa de palavras-chave; entenda contexto e continuidade. Raciocine com o que já sabe; não peça de novo o que já está na memória.',
     'No WhatsApp o dono costuma quebrar o mesmo pedido em vários balões seguidos. Vários user seguidos sem a sua resposta no meio são UM pedido só — junte o sentido e execute uma vez. Não peça para repetir o que já está nesses balões.',
     'Se nesta mensagem (já juntada) houver VÁRIOS pedidos distintos (ex.: "manda oi pro João e pesquisa o dólar"), faça TODOS em sequência com as tools, um a um, e confirme cada um em 1 linha.',
     'Nunca ignore um pedido desta fala. Nunca misture com um pedido antigo já respondido.',
@@ -99,7 +102,7 @@ function buildFastSystem(
           'Se o contato pediu pesquisa na internet: NÃO ignore — pesquise com web_search e mande o resultado pra ele.',
           'Fluxo venda: listar_produtos → ler_conversa se já houver fio → texto humano → enviar + orientar.',
           'Fluxo rotina: agendar_mensagem_contato com quando=YYYY-MM-DDTHH:mm e recorrencia se pedir.',
-          'Se vários nomes SEM final de telefone, mostre a lista; se 1 contato claro OU o dono já deu o final do número, aja na hora sem perguntar.',
+          'Se o nome JÁ ESTIVER em CONTATOS QUE O DONO JÁ ESCOLHEU, use esse client_id e NÃO pergunte qual é. Só mostre lista se o nome NÃO estiver na memória e não houver final de telefone. Se 1 contato claro OU o dono já deu o final do número, aja na hora.',
           'Confirme ao dono em 1–2 linhas o que leu/enviou. Nunca invente envio sem OK da tool.',
         ].join(' ')
       : '',
@@ -174,13 +177,15 @@ async function runFreeChatOnce(
     return 'Recebi a foto, mas nenhuma IA com visão está ligada agora. Me descreve o que tem nela?';
   }
 
-  const [dbRows, memoryBlock] = await Promise.all([
+  const [dbRows, memoryBlock, aliasBlock] = await Promise.all([
     listOwnerChatHistory(tenantId, phone, {
       connectionId: opts.connectionId,
       limit: HISTORY_LIMIT,
     }),
     buildOwnerMemoryPromptBlock(tenantId, phone, opts.connectionId),
+    buildContactAliasPromptBlock(tenantId, phone, opts.connectionId),
   ]);
+  const contextBlock = [memoryBlock, aliasBlock].filter(Boolean).join('\n\n');
   const messages = historyToModelMessages(
     dbRows.map((r) => ({ role: r.role, content: r.content })),
   );
@@ -211,11 +216,33 @@ async function runFreeChatOnce(
       )
     : { tools: [], toolExecutors: {} };
 
+  const toolExecutors = { ...ownerTools.toolExecutors };
+  if (toolSearchAvailable) {
+    toolExecutors.web_search = async (input: unknown) => {
+      const query =
+        input && typeof input === 'object' && 'query' in input
+          ? String((input as { query: unknown }).query ?? '').trim()
+          : '';
+      const out = await executeWebSearch(input);
+      if (query && out && !out.startsWith('Nenhum resultado')) {
+        void recordOwnerEvent({
+          tenantId,
+          ownerPhone: phone,
+          kind: 'fato',
+          summary: `Pesquisa na internet: ${query.slice(0, 80)} — ${out.replace(/\s+/g, ' ').slice(0, 160)}`,
+          connectionId: opts.connectionId,
+          source: 'web_search',
+        });
+      }
+      return out;
+    };
+  }
+
   const system =
     buildFastSystem(
       persona,
       agendaLines,
-      memoryBlock,
+      contextBlock,
       webSearchOn,
       toolSearchAvailable,
       contactToolsOn,
@@ -233,8 +260,9 @@ async function runFreeChatOnce(
       messages,
       maxTokens,
       temperature: FAST_TEMPERATURE,
-      tools: ownerTools.tools.length ? ownerTools.tools : undefined,
-      toolExecutors: ownerTools.tools.length ? ownerTools.toolExecutors : undefined,
+      tools: ownerTools.tools.length || toolSearchAvailable ? ownerTools.tools : undefined,
+      toolExecutors:
+        ownerTools.tools.length || toolSearchAvailable ? toolExecutors : undefined,
     },
     tenantId,
     {

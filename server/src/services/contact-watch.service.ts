@@ -393,11 +393,12 @@ export async function resolveWatchContact(
   tenantId: string,
   query: string,
   connectionId?: string | null,
+  ownerPhone?: string | null,
 ): Promise<
   | { ok: true; id: string; name: string; phone: string }
   | { ok: false; text: string; candidates?: RelayCandidate[] }
 > {
-  const matches = await resolveRelayContacts(tenantId, query, connectionId);
+  const matches = await resolveRelayContacts(tenantId, query, connectionId, ownerPhone);
   if (matches.length === 0) {
     return {
       ok: false,

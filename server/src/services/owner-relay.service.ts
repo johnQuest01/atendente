@@ -7,6 +7,7 @@ import {
 import type { Client } from '../types';
 import { extractPhoneHint, phoneMatchesHint } from '../utils/phone-hint';
 import { dispatchText } from './dispatch.service';
+import { preferKnownContact, rememberContactChoice } from './owner-contact-memory.service';
 
 /**
  * Secretária envia mensagem a um contato da lista (clients) a pedido do dono.
@@ -125,6 +126,7 @@ export async function resolveRelayContacts(
   tenantId: string,
   nameQuery: string,
   connectionId?: string | null,
+  ownerPhone?: string | null,
 ): Promise<RelayCandidate[]> {
   const rows = await findClientsByName(tenantId, nameQuery, { connectionId, limit: 8 });
   const mapped = rows.map((c) => ({
@@ -133,9 +135,37 @@ export async function resolveRelayContacts(
     phone: c.phone,
   }));
   const hint = extractPhoneHint(nameQuery);
-  if (!hint) return mapped;
-  const narrowed = mapped.filter((c) => phoneMatchesHint(c.phone, hint));
-  return narrowed.length ? narrowed : mapped;
+  let result = mapped;
+  if (hint) {
+    const narrowed = mapped.filter((c) => phoneMatchesHint(c.phone, hint));
+    if (narrowed.length) result = narrowed;
+  }
+
+  if (ownerPhone && result.length > 1) {
+    const preferred = await preferKnownContact({
+      tenantId,
+      ownerPhone,
+      query: nameQuery,
+      candidates: result,
+      connectionId,
+    });
+    if (preferred?.length === 1) result = preferred;
+  }
+
+  if (ownerPhone && result.length === 1) {
+    const only = result[0]!;
+    void rememberContactChoice({
+      tenantId,
+      ownerPhone,
+      query: nameQuery,
+      clientId: only.id,
+      name: only.name,
+      phone: only.phone,
+      connectionId,
+    });
+  }
+
+  return result;
 }
 
 /** Escolha na lista: "1"/"2" ou o final do telefone ("3934", "final 3934"). */

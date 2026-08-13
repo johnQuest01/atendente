@@ -52,6 +52,7 @@ import {
   resolveMuteContact,
   setContactAutoReply,
 } from '../contact-reply.service';
+import { rememberContactChoice } from '../owner-contact-memory.service';
 
 /**
  * Assistente pessoal do dono. O mesmo número que atende clientes aceita comandos
@@ -91,17 +92,20 @@ interface OwnerState {
   /** Escolha de contato quando há vários "Wender". */
   pendingRelay?: {
     body: string;
+    contactQuery: string;
     candidates: RelayCandidate[];
   };
   /** Escolha de contato para aviso ("me avisa quando o X mandar"). */
   pendingWatch?: {
     action: 'create' | 'cancel';
     mode: 'once' | 'always';
+    contactQuery: string;
     candidates: RelayCandidate[];
   };
   /** Escolha de contato para parar/voltar a responder. */
   pendingMute?: {
     enabled: boolean;
+    contactQuery: string;
     candidates: RelayCandidate[];
   };
   lastList?: string[];
@@ -757,7 +761,17 @@ async function handleOwnerMessageInner(
     const cand = pickRelayCandidate(owner.pendingRelay.candidates, text);
     if (cand) {
       const body = owner.pendingRelay.body;
+      const contactQuery = owner.pendingRelay.contactQuery;
       setState(tenantId, phone, { pendingRelay: undefined });
+      void rememberContactChoice({
+        tenantId,
+        ownerPhone: phone,
+        query: contactQuery,
+        clientId: cand.id,
+        name: cand.name,
+        phone: cand.phone,
+        connectionId,
+      });
       try {
         const sent = await sendOwnerRelay({
           tenantId,
@@ -804,6 +818,15 @@ async function handleOwnerMessageInner(
     if (cand) {
       const pending = owner.pendingWatch;
       setState(tenantId, phone, { pendingWatch: undefined });
+      void rememberContactChoice({
+        tenantId,
+        ownerPhone: phone,
+        query: pending.contactQuery,
+        clientId: cand.id,
+        name: cand.name,
+        phone: cand.phone,
+        connectionId,
+      });
       if (pending.action === 'cancel') {
         const done = await cancelWatchForContact({
           tenantId,
@@ -855,7 +878,17 @@ async function handleOwnerMessageInner(
     const cand = pickRelayCandidate(owner.pendingMute.candidates, text);
     if (cand) {
       const enabled = owner.pendingMute.enabled;
+      const contactQuery = owner.pendingMute.contactQuery;
       setState(tenantId, phone, { pendingMute: undefined });
+      void rememberContactChoice({
+        tenantId,
+        ownerPhone: phone,
+        query: contactQuery,
+        clientId: cand.id,
+        name: cand.name,
+        phone: cand.phone,
+        connectionId,
+      });
       const done = await setContactAutoReply({
         tenantId,
         clientId: cand.id,
@@ -1094,13 +1127,19 @@ async function handleOwnerMessageInner(
         );
         return true;
       }
-      const resolved = await resolveWatchContact(tenantId, watch.contactQuery, connectionId);
+      const resolved = await resolveWatchContact(
+        tenantId,
+        watch.contactQuery,
+        connectionId,
+        phone,
+      );
       if (!resolved.ok) {
         if (resolved.candidates?.length) {
           setState(tenantId, phone, {
             pendingWatch: {
               action: watch.action,
               mode: watch.action === 'create' ? watch.mode : 'once',
+              contactQuery: watch.contactQuery,
               candidates: resolved.candidates,
             },
           });
@@ -1152,6 +1191,7 @@ async function handleOwnerMessageInner(
           setState(tenantId, phone, {
             pendingMute: {
               enabled: mute.action === 'unmute',
+              contactQuery: mute.contactQuery,
               candidates: resolved.candidates,
             },
           });
@@ -1183,7 +1223,12 @@ async function handleOwnerMessageInner(
   if (flags.secretary && listed) {
     const relay = parseRelayIntent(text);
     if (relay) {
-      const candidates = await resolveRelayContacts(tenantId, relay.contactQuery, connectionId);
+      const candidates = await resolveRelayContacts(
+        tenantId,
+        relay.contactQuery,
+        connectionId,
+        phone,
+      );
       if (candidates.length === 0) {
         await reply(
           tenantId,
@@ -1195,7 +1240,11 @@ async function handleOwnerMessageInner(
       }
       if (candidates.length > 1) {
         setState(tenantId, phone, {
-          pendingRelay: { body: relay.body, candidates },
+          pendingRelay: {
+            body: relay.body,
+            contactQuery: relay.contactQuery,
+            candidates,
+          },
         });
         const lines = candidates.map(
           (c, i) => `${i + 1}. ${displayName(c)} · ${c.phone}`,

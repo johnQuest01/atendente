@@ -116,7 +116,7 @@ export async function resolveMuteContact(
 
   const hint = extractPhoneHint(q);
   const search = hint && !q.includes(hint) ? `${q} ${hint}` : q;
-  const matches = await resolveRelayContacts(tenantId, search, connectionId);
+  const matches = await resolveRelayContacts(tenantId, search, connectionId, ownerPhone);
   if (matches.length === 0) {
     return {
       ok: false,

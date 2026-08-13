@@ -14,7 +14,7 @@ import { executeWebSearch, isWebSearchToolAvailable, webSearchTool } from './web
 
 export type { Tool, ToolExecutor, ToolRegistry } from './types';
 export { runTool } from './types';
-export { isWebSearchToolAvailable, webSearchTool } from './web-search';
+export { executeWebSearch, isWebSearchToolAvailable, webSearchTool } from './web-search';
 export { buildOwnerToolRegistry, type OwnerToolContext } from './owner-actions';
 
 /** Tools disponíveis agora (só as que têm credencial/config). */

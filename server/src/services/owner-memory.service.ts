@@ -176,6 +176,8 @@ export async function extractOwnerMemoriesFromChat(
           'Regras:',
           '- Só o que o dono disse ou confirmou; NÃO invente.',
           '- Interprete implicaturas: "o João sumiu de novo" → problema; "ontem fechei com a Maria" → acontecimento.',
+          '- Grave IDENTIDADE de contato: se o dono escolheu qual Wender/Maria (número da lista, final do telefone, "é esse"), fato do tipo "quando diz Wender, é o telefone X".',
+          '- Grave o que foi pesquisado na internet e o resultado útil (cotação, fato atual) se o dono ou a secretária usou isso na conversa.',
           '- Máximo 5 itens novos; summary claro ≤200 chars.',
           '- NÃO repita o que já está em MEMÓRIA JÁ SALVA (abaixo).',
           '- Se for só cumprimento, comando curto (hoje/ajuda/sim) ou nada novo: {"memories":[]}.',
