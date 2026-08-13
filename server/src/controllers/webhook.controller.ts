@@ -36,7 +36,7 @@ import { isReminderOwner } from '../db/queries/reminders';
 import { handleOwnerMessage } from '../services/reminders/handler.service';
 import {
   notifyContactWatches,
-  senderHasSpecificWatch,
+  notifyContactWatchesForInbound,
 } from '../services/contact-watch.service';
 import { isTenantBlocked } from '../middleware/tenantAccess.middleware';
 import { emitNewMessage, emitNewConversation, emitConversationUpdated } from '../socket';
@@ -388,29 +388,33 @@ async function processInbound(
   const aiCfg = await resolveConnectionAi(tenantId, connection);
   const listedOwner = await isReminderOwner(tenantId, inbound.phone, connectionId);
   const openAccess = connection?.owner_open_access_enabled === true;
-  // Acesso livre não pode engolir um contato que o dono pediu pra vigiar:
-  // essa mensagem segue o fluxo comercial e dispara o aviso.
-  const watchedContact =
-    !listedOwner &&
-    openAccess &&
-    (await senderHasSpecificWatch(tenantId, inbound.phone, inbound.lid, connectionId));
-  if (watchedContact) {
-    logger.info(
-      `Aviso de contato: ${inbound.phone} está na lista — trato como contato, não como secretária.`,
-    );
-  }
 
   // Assistente pessoal do dono (lembretes/agente). Entra ANTES de findOrCreateClient
   // para o dono não virar cliente nem abrir conversa comercial no painel.
   // Aceita texto, áudio e imagem/vídeo (visão).
+  // Aviso de contato: toca o dono E a secretária continua respondendo — só para
+  // se o dono pedir pra não responder (IA desligada neste contato).
   if (
     (inbound.type === 'text' ||
       inbound.type === 'audio' ||
       inbound.type === 'image' ||
       inbound.type === 'video') &&
-    (listedOwner || (openAccess && !watchedContact))
+    (listedOwner || openAccess)
   ) {
     await hydrateProviderMedia(tenantId, inbound, connection);
+    if (!listedOwner) {
+      const preview = (inbound.text || inbound.caption || '').trim() || null;
+      await notifyContactWatchesForInbound({
+        tenantId,
+        phone: inbound.phone,
+        lid: inbound.lid,
+        phoneIsLid: inbound.phoneIsLid,
+        senderName: inbound.senderName,
+        connectionId,
+        preview,
+        inboundType: inbound.type,
+      }).catch((err) => logger.warn('Falha ao avisar dono sobre mensagem de contato', err));
+    }
     const handled = await handleOwnerMessage(tenantId, inbound, connectionId);
     if (handled) return;
   }
@@ -462,9 +466,7 @@ async function processInbound(
   }
   const tenantBlocked = await isTenantBlocked(tenantId);
   const clientAiOff = client.ai_enabled === false;
-  // Contato vigiado: registra + avisa o dono, sem a IA de vendas responder.
-  const autoReply =
-    aiCfg.agentEnabled && !humanTakeover && !tenantBlocked && !clientAiOff && !watchedContact;
+  const autoReply = aiCfg.agentEnabled && !humanTakeover && !tenantBlocked && !clientAiOff;
 
   // Tique azul IMEDIATO: assim que a IA "vê" a mensagem, marcamos como lida —
   // sem esperar transcrição nem geração de resposta. Best-effort, não bloqueia.

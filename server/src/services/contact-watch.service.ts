@@ -1,5 +1,5 @@
 import { logger } from '../config/logger';
-import { findClientByLid, findClientByPhone, getClientById } from '../db/queries/clients';
+import { findOrCreateClient, getClientById } from '../db/queries/clients';
 import {
   cancelContactWatch,
   claimOnceWatch,
@@ -283,23 +283,30 @@ function claimGlobalForClient(watchId: string, clientId: string): boolean {
   return true;
 }
 
-/**
- * Contato com aviso específico ativo (não é o dono). Com acesso livre, essa
- * pessoa continua sendo CONTATO — a secretária não pode engolir a mensagem
- * e deixar de avisar o dono.
- */
-export async function senderHasSpecificWatch(
-  tenantId: string,
-  phone: string,
-  lid?: string | null,
-  connectionId?: string | null,
-): Promise<boolean> {
-  let client = phone ? await findClientByPhone(tenantId, phone) : null;
-  if (!client && lid) client = await findClientByLid(tenantId, lid);
-  if (!client && phone) client = await findClientByLid(tenantId, phone);
-  if (!client) return false;
-  const watches = await listActiveWatchesForClient(tenantId, client.id, connectionId);
-  return watches.some((w) => w.client_id != null && w.owner_phone !== phone);
+/** Avisa o dono sem impedir a secretária/IA de responder o contato. */
+export async function notifyContactWatchesForInbound(input: {
+  tenantId: string;
+  phone: string;
+  lid?: string | null;
+  phoneIsLid?: boolean;
+  senderName?: string | null;
+  connectionId?: string | null;
+  preview: string | null;
+  inboundType: string;
+}): Promise<void> {
+  const client = await findOrCreateClient(input.tenantId, input.phone, input.senderName, {
+    lid: input.lid,
+    phoneIsLid: input.phoneIsLid,
+  });
+  await notifyContactWatches({
+    tenantId: input.tenantId,
+    clientId: client.id,
+    clientName: (client.name && client.name.trim()) || input.senderName || client.phone,
+    clientPhone: client.phone,
+    connectionId: input.connectionId,
+    preview: input.preview,
+    inboundType: input.inboundType,
+  });
 }
 
 function pickWatchPerOwner(watches: ContactMessageWatch[]): ContactMessageWatch[] {
