@@ -140,6 +140,109 @@ function setState(tenantId: string, phone: string, patch: Partial<OwnerState>): 
 /** Conexão WhatsApp ativa durante o tratamento da mensagem do dono. */
 const ownerReplyConnection = new Map<string, string>();
 
+const OWNER_COALESCE_MS = 3_200;
+
+interface OwnerCoalesce {
+  parts: string[];
+  timer: NodeJS.Timeout;
+  tenantId: string;
+  phone: string;
+  tz: string;
+  connectionId?: string | null;
+}
+
+const ownerCoalesce = new Map<string, OwnerCoalesce>();
+
+function coalesceKey(tenantId: string, phone: string, connectionId?: string | null): string {
+  return `${tenantId}:${phone}:${connectionId ?? ''}`;
+}
+
+/** SIM/NÃO, agenda curta, ajuda — não espera o próximo balão. */
+function isHardImmediateOwnerTurn(text: string, owner: OwnerState): boolean {
+  const n = normalize(text);
+  const cmd = normalizeCommand(text);
+  if (owner.pendingRelay || owner.pendingWatch) {
+    if (/^\d{1,2}$/.test(n) || isAffirmative(text) || isNegative(text)) return true;
+  }
+  if (owner.pending && (isAffirmative(text) || isNegative(text))) return true;
+  if (n === 'ajuda' || n === 'menu' || n === '?') return true;
+  if (/^(concluir|conclui|feito|ok|cancelar|cancela|remover|apagar)\s+\d{1,2}$/.test(n)) {
+    return true;
+  }
+  if (detectQuery(n) && cmd.split(/\s+/).length <= 8) return true;
+  return false;
+}
+
+function isLikelyBrokenOwnerTurn(text: string): boolean {
+  const t = text.trim();
+  const words = t.split(/\s+/).filter(Boolean).length;
+  if (parseWatchIntent(t) && words >= 6) return false;
+  if (parseRelayIntent(t)) return false;
+  if (words <= 10) return true;
+  if (
+    /^(me\s+)?(avisa|avise|lembra|anota|quando|se|me\s+chama)\b/i.test(t) &&
+    !parseWatchIntent(t)
+  ) {
+    return true;
+  }
+  if (/^(te|o|a|pra|para|de|do|da|quando|assim que)\b/i.test(t) && words <= 14) return true;
+  return false;
+}
+
+function scheduleOwnerCoalesce(input: {
+  tenantId: string;
+  phone: string;
+  connectionId?: string | null;
+  text: string;
+  tz: string;
+}): void {
+  const k = coalesceKey(input.tenantId, input.phone, input.connectionId);
+  const existing = ownerCoalesce.get(k);
+  if (existing) {
+    existing.parts.push(input.text);
+    clearTimeout(existing.timer);
+    existing.timer = setTimeout(() => void flushOwnerCoalesce(k), OWNER_COALESCE_MS);
+    return;
+  }
+  const row: OwnerCoalesce = {
+    parts: [input.text],
+    tenantId: input.tenantId,
+    phone: input.phone,
+    tz: input.tz,
+    connectionId: input.connectionId,
+    timer: setTimeout(() => void flushOwnerCoalesce(k), OWNER_COALESCE_MS),
+  };
+  ownerCoalesce.set(k, row);
+}
+
+async function flushOwnerCoalesce(k: string): Promise<void> {
+  const row = ownerCoalesce.get(k);
+  if (!row) return;
+  ownerCoalesce.delete(k);
+  const joined = row.parts.join(' ').replace(/\s+/g, ' ').trim();
+  if (!joined) return;
+  const key = stateKey(row.tenantId, row.phone);
+  if (row.connectionId) ownerReplyConnection.set(key, row.connectionId);
+  try {
+    await handleOwnerMessageInner(
+      row.tenantId,
+      {
+        type: 'text',
+        text: joined,
+        phone: row.phone,
+      } as NormalizedInbound,
+      row.phone,
+      row.tz,
+      row.connectionId,
+      { skipPersist: true, skipCoalesce: true, forcedText: joined },
+    );
+  } catch (err) {
+    logger.warn('Secretária: falha ao juntar mensagens quebradas', err);
+  } finally {
+    ownerReplyConnection.delete(key);
+  }
+}
+
 async function reply(tenantId: string, phone: string, text: string, skipPersist = false): Promise<void> {
   const connectionId = ownerReplyConnection.get(stateKey(tenantId, phone));
   const wa = connectionId
@@ -530,16 +633,18 @@ async function handleOwnerMessageInner(
   phone: string,
   tz: string,
   connectionId?: string | null,
+  opts?: { skipPersist?: boolean; skipCoalesce?: boolean; forcedText?: string },
 ): Promise<boolean> {
-  if (alreadyHandled(inbound.providerMessageId)) {
+  if (!opts?.forcedText && alreadyHandled(inbound.providerMessageId)) {
     logger.info(`Lembretes: webhook repetido ignorado (${inbound.providerMessageId}).`);
     return true;
   }
 
   // Passo 0: texto, áudio (STT) ou imagem/vídeo (visão).
-  let text: string | null = null;
+  let text: string | null = opts?.forcedText ?? null;
   let visionImages: ChatImage[] = [];
 
+  if (!text) {
   if (inbound.type === 'text') {
     text = inbound.text;
   } else if (inbound.type === 'audio') {
@@ -575,6 +680,7 @@ async function handleOwnerMessageInner(
       `Secretária: ${inbound.type} do dono (${visionImages.length} quadro(s)) caption="${caption.slice(0, 80)}"`,
     );
   }
+  }
 
   if (!text || !text.trim()) return true;
 
@@ -583,14 +689,15 @@ async function handleOwnerMessageInner(
       ? `[${inbound.type === 'video' ? 'vídeo' : 'imagem'}] ${text}`
       : text;
 
-  // Histórico em tempo real: grava a fala do dono antes de qualquer ramo.
-  await persistOwnerUserMessage({
-    tenantId,
-    phone,
-    content: persistText,
-    connectionId,
-    providerMessageId: inbound.providerMessageId,
-  });
+  if (!opts?.skipPersist) {
+    await persistOwnerUserMessage({
+      tenantId,
+      phone,
+      content: persistText,
+      connectionId,
+      providerMessageId: inbound.providerMessageId,
+    });
+  }
 
   const normalized = normalize(text);
   const owner = getState(tenantId, phone);
@@ -620,6 +727,14 @@ async function handleOwnerMessageInner(
       result.alreadyPersisted,
     );
     return true;
+  }
+
+  if (!opts?.skipCoalesce && !isHardImmediateOwnerTurn(text, owner)) {
+    const ck = coalesceKey(tenantId, phone, connectionId);
+    if (ownerCoalesce.has(ck) || isLikelyBrokenOwnerTurn(text)) {
+      scheduleOwnerCoalesce({ tenantId, phone, connectionId, text, tz });
+      return true;
+    }
   }
 
   // 0.5. Escolha de contato pendente ("1", "2"…) depois de vários matches.

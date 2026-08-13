@@ -80,10 +80,9 @@ function buildFastSystem(
     'Nunca diga que é IA/bot. Não invente compromissos: agenda real está abaixo.',
     'Leitura completa: use o histórico + a memória interpretada (eventos, histórias, acontecimentos, problemas).',
     'Interprete o sentido do que o dono diz — não dependa de palavras-chave; entenda contexto e continuidade.',
-    'Cada mensagem do dono é UM turno. Execute o pedido DESTA última mensagem (a mais recente no histórico).',
-    'Se o histórico mostra vários pedidos seus ainda sem confirmação, foque no último — os anteriores já foram (ou serão) tratados em outros turnos.',
-    'Se nesta mensagem houver VÁRIOS pedidos distintos (ex.: "manda oi pro João e pesquisa o dólar"), faça TODOS em sequência com as tools, um a um, e confirme cada um em 1 linha.',
-    'Nunca ignore um pedido desta mensagem. Nunca misture com um pedido antigo já respondido.',
+    'No WhatsApp o dono costuma quebrar o mesmo pedido em vários balões seguidos. Vários user seguidos sem a sua resposta no meio são UM pedido só — junte o sentido e execute uma vez. Não peça para repetir o que já está nesses balões.',
+    'Se nesta mensagem (já juntada) houver VÁRIOS pedidos distintos (ex.: "manda oi pro João e pesquisa o dólar"), faça TODOS em sequência com as tools, um a um, e confirme cada um em 1 linha.',
+    'Nunca ignore um pedido desta fala. Nunca misture com um pedido antigo já respondido.',
     'Se pedirem para anotar/lembrar algo com data (só pra ele), diga pra mandar tipo "me lembra amanhã às 9h de…".',
     contactToolsOn
       ? [
