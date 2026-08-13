@@ -184,15 +184,34 @@ export function stripEmojis(text: string): string {
     .trim();
 }
 
+export function textHasEmoji(text: string): boolean {
+  EMOJI_RE.lastIndex = 0;
+  return EMOJI_RE.test(text);
+}
+
+/** Treino mandou emoji e o modelo não pôs nenhum — coloca no fim. */
+export function ensureEmojis(text: string): string {
+  const out = text.trim();
+  if (!out || textHasEmoji(out)) return text;
+  const t = fold(out);
+  const pair = /amor|beijo|saudade|obrigad|bom dia|boa noite|amo voce|amo você|linda|lindo|querida/.test(
+    t,
+  )
+    ? '❤️😘'
+    : '😊❤️';
+  return `${out} ${pair}`;
+}
+
 export function applyPlaybookStyle(
   playbook: string,
   toPhone: string,
   text: string,
   contactName?: string | null,
 ): string {
-  let out = text;
-  if (playbookForbidsEmoji(playbook, toPhone, contactName)) out = stripEmojis(out);
-  return out;
+  const policy = playbookEmojiPolicy(playbook, toPhone, contactName);
+  if (policy === 'forbid') return stripEmojis(text);
+  if (policy === 'allow') return ensureEmojis(text);
+  return text;
 }
 
 export async function applySecretaryPlaybookToText(input: {
@@ -212,9 +231,11 @@ export function recipientPlaybookConstraints(
   toPhone: string,
   contactName?: string | null,
 ): string {
-  const applicable = ordersForRecipient(playbook, toPhone, contactName);
-  if (!applicable.length) return '';
   const policy = playbookEmojiPolicy(playbook, toPhone, contactName);
+  let applicable = ordersForRecipient(playbook, toPhone, contactName);
+  if (policy === 'allow') {
+    applicable = applicable.filter((c) => !orderForbidsEmoji(c));
+  }
   const rules: string[] = [];
   if (policy === 'forbid') {
     rules.push(
@@ -222,15 +243,16 @@ export function recipientPlaybookConstraints(
     );
   } else if (policy === 'allow') {
     rules.push(
-      'EMOJI LIBERADO para ESTA pessoa. Use emoji de verdade nesta resposta (❤️ 😊 😘 etc). O treino mandou.',
+      'EXCEÇÃO ATIVA: esta pessoa PODE e DEVE receber emoji. Coloque pelo menos um (❤️ 😊 😘). Ignore qualquer "não use emoji" — não vale para ela.',
     );
   }
   if (playbookWantsShort(playbook, toPhone, contactName)) {
     rules.push('Fale CURTO: 1 a 3 frases. Sem textão.');
   }
+  if (!applicable.length && !rules.length) return '';
   const who = contactName ? `${contactName} (${toPhone})` : toPhone;
   return [
-    `TREINO ATIVO AGORA para ${who} — execute TODOS estes pedidos:`,
+    `TREINO ATIVO AGORA para ${who} — execute:`,
     ...applicable.map((c, i) => `${i + 1}. ${c.replace(/[.!?]+$/g, '')}.`),
     ...rules.map((r) => `- ${r}`),
     'Isto GANHA da persona e do tom. Não ignore.',
@@ -246,8 +268,18 @@ export function formatSecretaryPlaybook(
   if (!text) return '';
   const orders = splitPlaybookOrders(text);
   const listed = orders.map((o, i) => `${i + 1}. ${o.replace(/[.!?]+$/g, '')}.`).join('\n');
+  const policy = toPhone ? playbookEmojiPolicy(text, toPhone, contactName) : 'neutral';
+  const who = contactName ? `${contactName} (${toPhone})` : toPhone;
+  const banner =
+    policy === 'allow'
+      ? `*** AGORA VOCÊ FALA COM ${who}. EXCEÇÃO DO TREINO: USE EMOJI NESTA RESPOSTA (❤️ 😊 😘). O pedido "não use emoji" NÃO vale para esta pessoa. ***`
+      : policy === 'forbid'
+        ? `*** AGORA VOCÊ FALA COM ${who}. PROIBIDO EMOJI. Zero. ***`
+        : '';
   const live = toPhone ? recipientPlaybookConstraints(text, toPhone, contactName) : '';
   return [
+    banner,
+    live,
     'TREINO DO DONO — PRIORIDADE MÁXIMA DESTE WHATSAPP. Vale NA HORA. Obedeça.',
     'Cada item é um PEDIDO separado. "Exceto / exeto" separa a exceção do resto.',
     'Interprete o sentido (emogi/emoiji=emoji, contro=contato, exeto=exceto) e EXECUTE.',
@@ -257,7 +289,6 @@ export function formatSecretaryPlaybook(
     'Comandos do dono (lembrar, avisar, parar de responder) continuam.',
     '',
     listed || text,
-    live,
   ]
     .filter(Boolean)
     .join('\n');
