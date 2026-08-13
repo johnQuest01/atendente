@@ -129,6 +129,7 @@ function buildFastSystem(
     agendaLines.length
       ? `Caderno de compromissos (próximos dias):\n${agendaLines.join('\n')}`
       : 'Caderno de compromissos: (vazio por enquanto).',
+    'NÃO recite a agenda em cumprimento ou despedida (bom dia, boa noite, até amanhã, tchau). Só liste compromissos se o dono PEDIR (hoje, amanhã, o que tenho, agenda). Despedida = 1 linha, sem cabeçalho HOJE e sem lista.',
     memoryBlock,
     playbookBlock,
   ];

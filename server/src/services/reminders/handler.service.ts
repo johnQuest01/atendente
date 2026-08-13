@@ -178,6 +178,7 @@ function coalesceKey(tenantId: string, phone: string, connectionId?: string | nu
 function isHardImmediateOwnerTurn(text: string, owner: OwnerState): boolean {
   const n = normalize(text);
   const cmd = normalizeCommand(text);
+  if (isFarewellTurn(text)) return true;
   if (owner.pendingRelay || owner.pendingWatch || owner.pendingMute) {
     if (/^\d{1,2}$/.test(n) || isAffirmative(text) || isNegative(text)) return true;
     if (extractPhoneHint(text)) return true;
@@ -420,6 +421,39 @@ function rangeFor(keyword: string, tz: string): ListRemindersFilter | null {
   }
 }
 
+/**
+ * Despedida / cumprimento de encerramento. "até amanhã" NÃO é consulta da
+ * agenda de amanhã — senão a keyword "amanhã" dispara a lista de HOJE.
+ */
+const FAREWELL_CHUNK =
+  /\b(boa\s+noite|boa\s+tarde|bom\s+dia|boa\s+madrugada|ate\s+(amanha|logo|mais|ja|breve|depois)|tchau+|fui|flw|falou|abs|abraco|beijo|bj+|tenha\s+uma\s+boa\s+noite)\b/g;
+
+function isFarewellTurn(text: string): boolean {
+  const n = normalizeCommand(text);
+  if (!n) return false;
+  FAREWELL_CHUNK.lastIndex = 0;
+  if (!FAREWELL_CHUNK.test(n)) return false;
+  FAREWELL_CHUNK.lastIndex = 0;
+  const leftover = n
+    .replace(FAREWELL_CHUNK, ' ')
+    .replace(/\b(oi|ola|opa|eai|e\s+ai|blz|beleza|valeu|obrigad[oa]|vlw|viu|entao|ah|ok|okay|sim)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return leftover.length === 0;
+}
+
+function farewellReply(text: string): string {
+  const n = normalizeCommand(text);
+  const night = /\bboa\s+noite\b/.test(n);
+  const bye = /\bate\s+amanha\b/.test(n);
+  if (night && bye) return 'Boa noite, até amanhã.';
+  if (night) return 'Boa noite.';
+  if (bye) return 'Até amanhã.';
+  if (/\bbom\s+dia\b/.test(n)) return 'Bom dia.';
+  if (/\bboa\s+tarde\b/.test(n)) return 'Boa tarde.';
+  return 'Até mais.';
+}
+
 const QUERY_WORDS: Record<string, string> = {
   hoje: 'hoje',
   amanha: 'amanha',
@@ -472,6 +506,8 @@ function looksLikeWebOrFactTask(normalized: string): boolean {
 }
 
 function detectQuery(normalized: string): string | null {
+  if (isFarewellTurn(normalized)) return null;
+
   // 1) Palavra solta, como sempre funcionou.
   const exact = QUERY_WORDS[normalized];
   if (exact) return exact;
@@ -617,6 +653,7 @@ async function matchesReminderKeyword(
   connectionId?: string | null,
 ): Promise<boolean> {
   const normalized = normalizeCommand(text);
+  if (isFarewellTurn(text)) return false;
   // Keywords tipo "Hoje"/"Amanhã" são gatilho CURTO de consulta. Sem este
   // filtro, "me lembra hoje às 15h de ligar" casa a keyword e lista a agenda
   // em vez de criar o lembrete (bug comum em áudio).
@@ -625,9 +662,16 @@ async function matchesReminderKeyword(
   if (normalized.split(/\s+/).filter(Boolean).length > 4) return false;
 
   const keywords = await getActiveKeywords(tenantId, connectionId);
-  return keywords.some(
-    (k) => k.content_type === 'reminders_today' && keywordMatches(text, k.keyword),
-  );
+  return keywords.some((k) => {
+    if (k.content_type !== 'reminders_today') return false;
+    const needle = normalizeCommand(k.keyword);
+    if (!needle) return false;
+    // "amanhã" sozinho lista amanhã; "até amanhã" é despedida — não casa.
+    if (QUERY_WORDS[needle] || needle === 'amanha' || needle === 'hoje') {
+      return normalized === needle || detectQuery(normalized) === QUERY_WORDS[needle];
+    }
+    return keywordMatches(text, k.keyword);
+  });
 }
 
 /**
@@ -751,6 +795,13 @@ async function handleOwnerMessageInner(
       result.text ?? 'Recebi a foto, mas não consegui analisar agora. Manda de novo?',
       result.alreadyPersisted,
     );
+    return true;
+  }
+
+  if (!opts?.skipCoalesce && isFarewellTurn(text)) {
+    const ck = coalesceKey(tenantId, phone, connectionId);
+    if (ownerCoalesce.has(ck)) await flushOwnerCoalesce(ck);
+    await reply(tenantId, phone, farewellReply(text));
     return true;
   }
 
@@ -1027,9 +1078,19 @@ async function handleOwnerMessageInner(
   // defensiva para o cliente jamais receber lembrete (isolamento máximo).
   if (await matchesReminderKeyword(tenantId, text, connectionId)) {
     if (listed) {
-    const todays = await getTodayReminders(tenantId, phone);
-    setState(tenantId, phone, { lastList: todays.map((r) => r.id) });
-    await sendReminderList(tenantId, phone, todays, QUERY_TITLE.hoje, tz);
+    const queryKey = detectQuery(normalized) ?? 'hoje';
+    const filter = rangeFor(queryKey, tz);
+    const reminders = filter
+      ? await listReminders(tenantId, phone, filter)
+      : await getTodayReminders(tenantId, phone);
+    setState(tenantId, phone, { lastList: reminders.map((r) => r.id) });
+    await sendReminderList(
+      tenantId,
+      phone,
+      reminders,
+      QUERY_TITLE[queryKey] ?? QUERY_TITLE.hoje,
+      tz,
+    );
     return true;
     }
   }
