@@ -140,7 +140,8 @@ export async function listActiveWatchesForClient(
   if (connectionId) {
     const { rows } = await query<ContactMessageWatch>(
       `SELECT * FROM contact_message_watches
-        WHERE tenant_id = $1 AND status = 'active' AND connection_id = $2
+        WHERE tenant_id = $1 AND status = 'active'
+          AND (connection_id = $2 OR connection_id IS NULL)
           AND (client_id = $3 OR client_id IS NULL)`,
       [tenantId, connectionId, clientId],
     );

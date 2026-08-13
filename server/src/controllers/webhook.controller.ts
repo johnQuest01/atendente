@@ -34,7 +34,10 @@ import {
 import { isPhoneBlocked } from '../db/queries/blocked';
 import { isReminderOwner } from '../db/queries/reminders';
 import { handleOwnerMessage } from '../services/reminders/handler.service';
-import { notifyContactWatches } from '../services/contact-watch.service';
+import {
+  notifyContactWatches,
+  senderHasSpecificWatch,
+} from '../services/contact-watch.service';
 import { isTenantBlocked } from '../middleware/tenantAccess.middleware';
 import { emitNewMessage, emitNewConversation, emitConversationUpdated } from '../socket';
 import { matchIntent, getTriggerPhrases } from '../services/matcher.service';
@@ -383,6 +386,19 @@ async function processInbound(
 
   const connectionId = connection?.id ?? null;
   const aiCfg = await resolveConnectionAi(tenantId, connection);
+  const listedOwner = await isReminderOwner(tenantId, inbound.phone, connectionId);
+  const openAccess = connection?.owner_open_access_enabled === true;
+  // Acesso livre não pode engolir um contato que o dono pediu pra vigiar:
+  // essa mensagem segue o fluxo comercial e dispara o aviso.
+  const watchedContact =
+    !listedOwner &&
+    openAccess &&
+    (await senderHasSpecificWatch(tenantId, inbound.phone, inbound.lid, connectionId));
+  if (watchedContact) {
+    logger.info(
+      `Aviso de contato: ${inbound.phone} está na lista — trato como contato, não como secretária.`,
+    );
+  }
 
   // Assistente pessoal do dono (lembretes/agente). Entra ANTES de findOrCreateClient
   // para o dono não virar cliente nem abrir conversa comercial no painel.
@@ -392,8 +408,7 @@ async function processInbound(
       inbound.type === 'audio' ||
       inbound.type === 'image' ||
       inbound.type === 'video') &&
-    ((await isReminderOwner(tenantId, inbound.phone, connectionId)) ||
-      connection?.owner_open_access_enabled === true)
+    (listedOwner || (openAccess && !watchedContact))
   ) {
     await hydrateProviderMedia(tenantId, inbound, connection);
     const handled = await handleOwnerMessage(tenantId, inbound, connectionId);
@@ -447,7 +462,9 @@ async function processInbound(
   }
   const tenantBlocked = await isTenantBlocked(tenantId);
   const clientAiOff = client.ai_enabled === false;
-  const autoReply = aiCfg.agentEnabled && !humanTakeover && !tenantBlocked && !clientAiOff;
+  // Contato vigiado: registra + avisa o dono, sem a IA de vendas responder.
+  const autoReply =
+    aiCfg.agentEnabled && !humanTakeover && !tenantBlocked && !clientAiOff && !watchedContact;
 
   // Tique azul IMEDIATO: assim que a IA "vê" a mensagem, marcamos como lida —
   // sem esperar transcrição nem geração de resposta. Best-effort, não bloqueia.

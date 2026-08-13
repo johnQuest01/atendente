@@ -1,5 +1,5 @@
 import { logger } from '../config/logger';
-import { getClientById } from '../db/queries/clients';
+import { findClientByLid, findClientByPhone, getClientById } from '../db/queries/clients';
 import {
   cancelContactWatch,
   claimOnceWatch,
@@ -138,11 +138,14 @@ export function parseWatchIntent(text: string): WatchIntent | null {
   // Contato específico SEMPRE ganha do "qualquer pessoa".
   const specific = extractSpecificName(raw);
   if (specific) {
+    const once =
+      !specific.always &&
+      /\b(pr[oó]xima|dessa vez|s[oó] (?:a |essa )?pr[oó]xima|uma vez)\b/i.test(raw);
     return {
       action: 'create',
       scope: 'one',
       contactQuery: specific.name,
-      mode: specific.always ? 'always' : 'once',
+      mode: once ? 'once' : 'always',
     };
   }
 
@@ -274,6 +277,25 @@ function claimGlobalForClient(watchId: string, clientId: string): boolean {
   if (Date.now() - last < GLOBAL_PER_CLIENT_MS) return false;
   globalPerClientAt.set(key, Date.now());
   return true;
+}
+
+/**
+ * Contato com aviso específico ativo (não é o dono). Com acesso livre, essa
+ * pessoa continua sendo CONTATO — a secretária não pode engolir a mensagem
+ * e deixar de avisar o dono.
+ */
+export async function senderHasSpecificWatch(
+  tenantId: string,
+  phone: string,
+  lid?: string | null,
+  connectionId?: string | null,
+): Promise<boolean> {
+  let client = phone ? await findClientByPhone(tenantId, phone) : null;
+  if (!client && lid) client = await findClientByLid(tenantId, lid);
+  if (!client && phone) client = await findClientByLid(tenantId, phone);
+  if (!client) return false;
+  const watches = await listActiveWatchesForClient(tenantId, client.id, connectionId);
+  return watches.some((w) => w.client_id != null && w.owner_phone !== phone);
 }
 
 function pickWatchPerOwner(watches: ContactMessageWatch[]): ContactMessageWatch[] {

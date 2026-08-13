@@ -156,7 +156,8 @@ const avisarContatoTool: Tool = {
       client_id: { type: 'string', description: 'UUID do contato, se já conhecido.' },
       modo: {
         type: 'string',
-        description: 'once = só a próxima mensagem; always = toda vez. Com todos, use always.',
+        description:
+          'always = toda vez (padrão). once = só a próxima. Use once só se o dono pedir a próxima / uma vez.',
       },
     },
     additionalProperties: false,
@@ -484,7 +485,8 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
     }
 
     const modoRaw = str(o.modo).toLowerCase();
-    const mode = modoRaw === 'always' || modoRaw === 'sempre' ? 'always' : 'once';
+    const mode =
+      modoRaw === 'once' || modoRaw === 'proxima' || modoRaw === 'próxima' ? 'once' : 'always';
     const created = await createWatchForContact({
       tenantId: ctx.tenantId,
       ownerPhone: ctx.ownerPhone,
