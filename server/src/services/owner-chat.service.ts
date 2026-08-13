@@ -45,6 +45,8 @@ export interface FreeChatOptions {
   webSearchEnabled?: boolean;
   /** Imagens/quadros para visão (anexados ao último turno user). */
   images?: ChatImage[];
+  /** Fala atual do dono (pra emoji pedido nesta mensagem, etc.). */
+  lastUserMessage?: string | null;
 }
 
 export type FreeChatResult = {
@@ -83,6 +85,7 @@ function buildFastSystem(
     'Você fala com o DONO no WhatsApp — como um assistente humano rápido (estilo Claude), não como robô.',
     'Respostas CURTAS (WhatsApp): no máximo ~6 linhas; bullets quando ajudar.',
     'Nunca diga que é IA/bot. Não invente compromissos: agenda real está abaixo.',
+    'Emojis: você conhece TODOS. Se pedirem "emoji de coração", mande ❤️. De foguete, 🚀. De gato, 🐱. Qualquer nome ou o próprio emoji colado. Se pedirem só o emoji, responda SÓ com ele — sem frase.',
     'Leitura completa: use o histórico + a memória interpretada (eventos, histórias, acontecimentos, problemas) + os contatos que o dono JÁ ESCOLHEU + o que você leu nas conversas e buscou na internet.',
     'Interprete o sentido do que o dono diz — não dependa de palavras-chave; entenda contexto e continuidade. Raciocine com o que já sabe; não peça de novo o que já está na memória.',
     playbookBlock,
@@ -121,7 +124,7 @@ function buildFastSystem(
         ? 'Busca na web está ligada na alavanca, mas a tool ainda não tem chave no servidor. Responda o que souber com cautela; NÃO peça API key.'
         : 'Busca na web está desligada. Se pedirem pesquisa, diga pra ligar a alavanca "Busca na web" em Lembretes.',
     persona?.trim()
-      ? `Tom (emoji e tamanho: o TREINO manda; se o treino proibir emoji para esta pessoa, zero emoji):\n${persona.trim()}`
+      ? `Tom (se o dono PEDIR emoji nesta fala, mande o emoji pedido — você conhece todos; senão o TREINO manda):\n${persona.trim()}`
       : '',
     agendaLines.length
       ? `Caderno de compromissos (próximos dias):\n${agendaLines.join('\n')}`
@@ -175,6 +178,8 @@ async function runFreeChatOnce(
   const playbookBlock = formatSecretaryPlaybook(
     await getSecretaryPlaybook(tenantId, opts.connectionId),
     phone,
+    null,
+    opts.lastUserMessage,
   );
   const agenda = await loadOwnerAgenda(tenantId, phone, tz);
   const agendaLines = agenda.slice(0, 12).map((r, i) => {
@@ -314,6 +319,7 @@ async function drainQueue(tenantId: string, phone: string, k: string): Promise<v
         connectionId: job.opts.connectionId,
         toPhone: phone,
         text,
+        lastUserMessage: job.opts.lastUserMessage,
       });
       await persistOwnerAssistantReply(tenantId, phone, text, job.opts.connectionId);
     }
@@ -345,7 +351,7 @@ export async function freeChatOwner(
 
   return new Promise<FreeChatResult>((resolve) => {
     const q = queues.get(k) ?? { jobs: [], running: false };
-    q.jobs.push({ opts, resolve });
+    q.jobs.push({ opts: { ...opts, lastUserMessage: trimmed || opts.lastUserMessage }, resolve });
     queues.set(k, q);
     void drainQueue(tenantId, phone, k);
   });

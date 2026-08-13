@@ -77,7 +77,7 @@ export function SecretaryPlaybookSection({
           placeholder={
             'Separe cada pedido com ponto final. Use "exceto" para abrir exceção.\n\n' +
             'Não use emoji para o Bruno e nenhum contato, exceto minha esposa 5511970198779.\n' +
-            'Para a esposa pode responder com qualquer emoji.\n' +
+            'Para a esposa usa o emoji de coração.\n' +
             'Fala curto.\n' +
             'Quando o Wender chamar, me avisa e não responde.'
           }
@@ -105,8 +105,8 @@ export function SecretaryPlaybookSection({
         <h3 className="text-sm font-bold text-text-primary">Como usar</h3>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-text-secondary">
           <li>
-            Termine cada pedido com <strong>ponto final</strong>. Exceção: “Não use emoji pra ninguém, exceto a
-            esposa 5511970198779 — pra ela pode emoji.”
+            Ela conhece <strong>todos</strong> os emojis. Peça pelo nome (“emoji de coração”, “de foguete”)
+            ou cole. Se pedir só o emoji, ela manda só ele.
           </li>
           <li>Ao salvar, o texto é organizado um pedido por linha e a secretária atualiza na hora.</li>
           <li>Cada conexão (número) tem o próprio caderno.</li>
