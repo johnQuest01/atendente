@@ -216,6 +216,7 @@ export async function dispatchText(
       tenantId: ctx.conversation.tenant_id,
       connectionId: ctx.conversation.connection_id,
       toPhone: ctx.client.phone,
+      contactName: ctx.client.name,
       text,
     });
   }

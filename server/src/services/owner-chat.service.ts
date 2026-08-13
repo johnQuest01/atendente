@@ -120,7 +120,9 @@ function buildFastSystem(
       : webSearchOn
         ? 'Busca na web está ligada na alavanca, mas a tool ainda não tem chave no servidor. Responda o que souber com cautela; NÃO peça API key.'
         : 'Busca na web está desligada. Se pedirem pesquisa, diga pra ligar a alavanca "Busca na web" em Lembretes.',
-    persona?.trim() ? `Tom (NÃO usa emoji / NÃO alonga se o TREINO acima proibir):\n${persona.trim()}` : '',
+    persona?.trim()
+      ? `Tom (emoji e tamanho: o TREINO manda; se o treino proibir emoji para esta pessoa, zero emoji):\n${persona.trim()}`
+      : '',
     agendaLines.length
       ? `Caderno de compromissos (próximos dias):\n${agendaLines.join('\n')}`
       : 'Caderno de compromissos: (vazio por enquanto).',

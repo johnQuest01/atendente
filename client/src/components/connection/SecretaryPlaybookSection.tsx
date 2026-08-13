@@ -12,8 +12,8 @@ const TEXTAREA_CLASS =
 function countOrders(text: string): number {
   return text
     .replace(/\r\n/g, '\n')
-    .split(/(?<=[.!?])\s+|\n+/)
-    .map((c) => c.trim())
+    .split(/(?<=[.!?])\s+|\n+|,\s*(?=\bex+c?eto\b)|\s*(?=\b(?:ex+c?eto|excepto)\b)/i)
+    .map((c) => c.replace(/^(?:ex+c?eto|excepto|menos|tirando)\s+/i, '').trim())
     .filter((c) => c.replace(/[.!?]+$/g, '').trim().length >= 3).length;
 }
 
@@ -75,11 +75,11 @@ export function SecretaryPlaybookSection({
           rows={14}
           spellCheck
           placeholder={
-            'Separe cada pedido com ponto final.\n\n' +
+            'Separe cada pedido com ponto final. Use "exceto" para abrir exceção.\n\n' +
+            'Não use emoji para o Bruno e nenhum contato, exceto minha esposa 5511970198779.\n' +
+            'Para a esposa pode responder com qualquer emoji.\n' +
             'Fala curto.\n' +
-            'Não use emoji para responder o Bruno 5511915287476.\n' +
-            'Quando o Wender chamar, me avisa e não responde.\n' +
-            'Se alguém pedir preço, manda o catálogo.'
+            'Quando o Wender chamar, me avisa e não responde.'
           }
           className={TEXTAREA_CLASS}
         />
@@ -105,7 +105,8 @@ export function SecretaryPlaybookSection({
         <h3 className="text-sm font-bold text-text-primary">Como usar</h3>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-text-secondary">
           <li>
-            Termine cada pedido com <strong>ponto final</strong>. Ex.: “Fala curto. Não use emoji.”
+            Termine cada pedido com <strong>ponto final</strong>. Exceção: “Não use emoji pra ninguém, exceto a
+            esposa 5511970198779 — pra ela pode emoji.”
           </li>
           <li>Ao salvar, o texto é organizado um pedido por linha e a secretária atualiza na hora.</li>
           <li>Cada conexão (número) tem o próprio caderno.</li>
