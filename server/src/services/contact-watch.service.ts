@@ -354,7 +354,8 @@ export async function notifyContactWatches(input: {
       } else if (watch.mode === 'once') {
         claimed = await claimOnceWatch(input.tenantId, watch.id);
       } else {
-        claimed = await touchAlwaysWatch(input.tenantId, watch.id);
+        // Só evita eco do mesmo webhook (retry). Cada mensagem nova avisa de novo.
+        claimed = await touchAlwaysWatch(input.tenantId, watch.id, 8);
       }
       if (!claimed) continue;
 
@@ -365,9 +366,11 @@ export async function notifyContactWatches(input: {
         ? '\n\n(aviso de qualquer pessoa — continuo. Manda _"para de me avisar de todo mundo"_ pra parar.)'
         : watch.mode === 'once'
           ? '\n\n(aviso único — já tirei da lista)'
-          : '\n\n(continuo te avisando. Manda _"para de me avisar do ' +
-            input.clientName +
-            '"_ pra parar.)';
+          : watch.last_notified_at
+            ? ''
+            : '\n\n(continuo te avisando. Manda _"para de me avisar do ' +
+              input.clientName +
+              '"_ pra parar.)';
 
       await wa.sendText(watch.owner_phone, `${body}${footer}`);
       logger.info(

@@ -181,7 +181,7 @@ export async function stampWatchNotified(tenantId: string, id: string): Promise<
 export async function touchAlwaysWatch(
   tenantId: string,
   id: string,
-  debounceSeconds = 120,
+  debounceSeconds = 8,
 ): Promise<boolean> {
   assertTenantMatchesScope(tenantId);
   const row = await queryOne<{ id: string }>(
