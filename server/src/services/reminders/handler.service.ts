@@ -36,6 +36,13 @@ import {
   sendOwnerRelay,
   type RelayCandidate,
 } from '../owner-relay.service';
+import {
+  cancelWatchForContact,
+  createWatchForContact,
+  formatWatchList,
+  parseWatchIntent,
+  resolveWatchContact,
+} from '../contact-watch.service';
 
 /**
  * Assistente pessoal do dono. O mesmo número que atende clientes aceita comandos
@@ -75,6 +82,12 @@ interface OwnerState {
   /** Escolha de contato quando há vários "Wender". */
   pendingRelay?: {
     body: string;
+    candidates: RelayCandidate[];
+  };
+  /** Escolha de contato para aviso ("me avisa quando o X mandar"). */
+  pendingWatch?: {
+    action: 'create' | 'cancel';
+    mode: 'once' | 'always';
     candidates: RelayCandidate[];
   };
   lastList?: string[];
@@ -224,11 +237,13 @@ const HELP_TEXT = [
   '',
   'Com o *Agente* ligado: pergunta livre, texto, pesquisa — eu respondo rápido no zap.',
   'Pra mandar msg a contato: _"mande um boa noite para o Wender agora"_',
+  'Pra te avisar quando alguém falar: _"me avisa quando o Wender mandar mensagem"_',
   'Pode mandar vários lembretes de uma vez — eu confirmo antes de salvar.',
 ].join('\n');
 
 const HELP_AGENT_ONLY = [
   'Modo *Agente* ligado — manda pergunta, texto ou "pesquisa X".',
+  'Pra te avisar quando alguém falar: _"me avisa quando o Wender mandar mensagem"_.',
   'Pra anotar compromisso, ligue a *Secretária* no painel (Lembretes).',
 ].join('\n');
 
@@ -653,6 +668,56 @@ async function handleOwnerMessageInner(
     }
   }
 
+  if (owner.pendingWatch && listed) {
+    const pick = normalized.match(/^(\d{1,2})$/);
+    if (pick) {
+      const idx = Number(pick[1]) - 1;
+      const cand = owner.pendingWatch.candidates[idx];
+      if (!cand) {
+        await reply(tenantId, phone, 'Número inválido. Manda o da lista.');
+        return true;
+      }
+      const pending = owner.pendingWatch;
+      setState(tenantId, phone, { pendingWatch: undefined });
+      if (pending.action === 'cancel') {
+        const done = await cancelWatchForContact({
+          tenantId,
+          ownerPhone: phone,
+          clientId: cand.id,
+          connectionId,
+        });
+        await reply(
+          tenantId,
+          phone,
+          done.ok
+            ? `OK — parei de te avisar quando *${done.name}* mandar mensagem.`
+            : `Não tinha aviso ativo para *${done.name}*.`,
+        );
+        return true;
+      }
+      const created = await createWatchForContact({
+        tenantId,
+        ownerPhone: phone,
+        clientId: cand.id,
+        mode: pending.mode,
+        connectionId,
+      });
+      await reply(
+        tenantId,
+        phone,
+        created.mode === 'always'
+          ? `OK — te aviso sempre que *${created.name}* mandar mensagem.`
+          : `OK — te aviso quando *${created.name}* mandar a próxima mensagem.`,
+      );
+      return true;
+    }
+    if (isNegative(text)) {
+      setState(tenantId, phone, { pendingWatch: undefined });
+      await reply(tenantId, phone, 'Beleza, cancelei o aviso.');
+      return true;
+    }
+  }
+
   // 1. Confirmação pendente tem prioridade sobre tudo.
   if (owner.pending) {
     const { items, source } = owner.pending;
@@ -829,6 +894,63 @@ async function handleOwnerMessageInner(
       flags.secretary ? HELP_TEXT : flags.agent ? HELP_AGENT_ONLY : HELP_BOTH_OFF,
     );
     return true;
+  }
+
+  // 3.7. Aviso quando um contato mandar mensagem.
+  // "me avisa quando o Wender mandar mensagem" / "para de me avisar do Wender"
+  if (listed) {
+    const watch = parseWatchIntent(text);
+    if (watch) {
+      if (watch.action === 'list') {
+        await reply(tenantId, phone, await formatWatchList(tenantId, phone, connectionId));
+        return true;
+      }
+      const resolved = await resolveWatchContact(tenantId, watch.contactQuery, connectionId);
+      if (!resolved.ok) {
+        if (resolved.candidates?.length) {
+          setState(tenantId, phone, {
+            pendingWatch: {
+              action: watch.action,
+              mode: watch.action === 'create' ? watch.mode : 'once',
+              candidates: resolved.candidates,
+            },
+          });
+        }
+        await reply(tenantId, phone, resolved.text);
+        return true;
+      }
+      if (watch.action === 'cancel') {
+        const done = await cancelWatchForContact({
+          tenantId,
+          ownerPhone: phone,
+          clientId: resolved.id,
+          connectionId,
+        });
+        await reply(
+          tenantId,
+          phone,
+          done.ok
+            ? `OK — parei de te avisar quando *${done.name}* mandar mensagem.`
+            : `Não tinha aviso ativo para *${done.name}*.`,
+        );
+        return true;
+      }
+      const created = await createWatchForContact({
+        tenantId,
+        ownerPhone: phone,
+        clientId: resolved.id,
+        mode: watch.mode,
+        connectionId,
+      });
+      await reply(
+        tenantId,
+        phone,
+        created.mode === 'always'
+          ? `OK — te aviso sempre que *${created.name}* mandar mensagem neste WhatsApp.`
+          : `OK — te aviso quando *${created.name}* mandar a próxima mensagem. Depois o aviso sai sozinho.`,
+      );
+      return true;
+    }
   }
 
   // 3.8. Mandar mensagem a contato da lista (secretária).

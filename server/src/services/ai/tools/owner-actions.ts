@@ -20,6 +20,12 @@ import {
 } from '../../owner-relay.service';
 import { recordOwnerEvent } from '../../owner-memory.service';
 import { DEFAULT_TZ, formatForOwner, parseLocalIso } from '../../reminders/time';
+import {
+  assertListedOwner,
+  cancelWatchForContact,
+  createWatchForContact,
+  formatWatchList,
+} from '../../contact-watch.service';
 import type { Tool, ToolExecutor, ToolRegistry } from './types';
 
 export interface OwnerToolContext {
@@ -122,6 +128,28 @@ const lerConversaTool: Tool = {
       limite: {
         type: 'number',
         description: 'Quantas mensagens recentes (padrão 25, máx. 40).',
+      },
+    },
+    additionalProperties: false,
+  },
+};
+
+const avisarContatoTool: Tool = {
+  name: 'avisar_quando_contato_falar',
+  description:
+    'Cadastra um aviso: quando o contato mandar mensagem neste WhatsApp, o secretário avisa o DONO. Use quando pedir "me avisa quando o X mandar mensagem". acao=criar (padrão), cancelar ou listar. modo=once (próxima msg) ou always (sempre).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      acao: {
+        type: 'string',
+        description: 'criar | cancelar | listar',
+      },
+      nome: { type: 'string', description: 'Nome do contato (se não tiver client_id).' },
+      client_id: { type: 'string', description: 'UUID do contato, se já conhecido.' },
+      modo: {
+        type: 'string',
+        description: 'once = só a próxima mensagem; always = toda vez. Padrão once.',
       },
     },
     additionalProperties: false,
@@ -396,6 +424,48 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
     );
   };
 
+  const avisar: ToolExecutor = async (input) => {
+    const listed = await assertListedOwner(ctx.tenantId, ctx.ownerPhone, ctx.connectionId);
+    if (!listed) {
+      return 'Só números cadastrados na lista de Lembretes podem pedir aviso de contato.';
+    }
+
+    const o = asRecord(input);
+    const acao = str(o.acao).toLowerCase() || 'criar';
+
+    if (acao === 'listar') {
+      return formatWatchList(ctx.tenantId, ctx.ownerPhone, ctx.connectionId);
+    }
+
+    const resolved = await resolveOneContact(ctx, str(o.nome), str(o.client_id));
+    if (!resolved.ok) return resolved.text;
+
+    if (acao === 'cancelar') {
+      const done = await cancelWatchForContact({
+        tenantId: ctx.tenantId,
+        ownerPhone: ctx.ownerPhone,
+        clientId: resolved.id,
+        connectionId: ctx.connectionId,
+      });
+      return done.ok
+        ? `OK — parei de te avisar quando *${done.name}* mandar mensagem.`
+        : `Não tinha aviso ativo para *${done.name}*.`;
+    }
+
+    const modoRaw = str(o.modo).toLowerCase();
+    const mode = modoRaw === 'always' || modoRaw === 'sempre' ? 'always' : 'once';
+    const created = await createWatchForContact({
+      tenantId: ctx.tenantId,
+      ownerPhone: ctx.ownerPhone,
+      clientId: resolved.id,
+      mode,
+      connectionId: ctx.connectionId,
+    });
+    return mode === 'always'
+      ? `OK — te aviso sempre que *${created.name}* mandar mensagem neste WhatsApp.`
+      : `OK — te aviso quando *${created.name}* mandar a próxima mensagem. Depois o aviso sai sozinho.`;
+  };
+
   return {
     buscar_contato: { tool: buscarContatoTool, execute: buscar },
     listar_produtos: { tool: listarProdutosTool, execute: listar },
@@ -403,5 +473,6 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
     orientar_atendimento_contato: { tool: orientarAtendimentoTool, execute: orientar },
     enviar_mensagem_contato: { tool: enviarMensagemTool, execute: enviar },
     agendar_mensagem_contato: { tool: agendarMensagemTool, execute: agendar },
+    avisar_quando_contato_falar: { tool: avisarContatoTool, execute: avisar },
   };
 }

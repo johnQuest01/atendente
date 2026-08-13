@@ -34,6 +34,7 @@ import {
 import { isPhoneBlocked } from '../db/queries/blocked';
 import { isReminderOwner } from '../db/queries/reminders';
 import { handleOwnerMessage } from '../services/reminders/handler.service';
+import { notifyContactWatches } from '../services/contact-watch.service';
 import { isTenantBlocked } from '../middleware/tenantAccess.middleware';
 import { emitNewMessage, emitNewConversation, emitConversationUpdated } from '../socket';
 import { matchIntent, getTriggerPhrases } from '../services/matcher.service';
@@ -507,6 +508,16 @@ async function processInbound(
     origin: 'client',
   });
   emitNewMessage(tenantId, conversation.id, inboundMsg);
+
+  void notifyContactWatches({
+    tenantId,
+    clientId: client.id,
+    clientName: (client.name && client.name.trim()) || inbound.senderName || client.phone,
+    clientPhone: client.phone,
+    connectionId,
+    preview: inboundMsg.content,
+    inboundType: inbound.type,
+  }).catch((err) => logger.warn('Falha ao avisar dono sobre mensagem de contato', err));
 
   // Volta para "Abertas" se estava em Aguardando (você tinha respondido no celular).
   const reopened = await reopenConversationOnInbound(tenantId, conversation.id);
