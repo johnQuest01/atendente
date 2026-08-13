@@ -239,14 +239,14 @@ const HELP_TEXT = [
   '',
   'Com o *Agente* ligado: pergunta livre, texto, pesquisa — eu respondo rápido no zap.',
   'Pra mandar msg a contato: _"mande um boa noite para o Wender agora"_',
-  'Pra te avisar quando alguém falar: _"me avisa quando o Wender mandar mensagem"_',
+  'Pra te avisar quando alguém falar: _"me avisa quando o Wender mandar mensagem"_ ou _"quando o Wender chamar"_',
   'Pra te avisar de todo mundo: _"me avisa quando qualquer pessoa mandar mensagem"_',
   'Pode mandar vários lembretes de uma vez — eu confirmo antes de salvar.',
 ].join('\n');
 
 const HELP_AGENT_ONLY = [
   'Modo *Agente* ligado — manda pergunta, texto ou "pesquisa X".',
-  'Pra te avisar quando alguém falar: _"me avisa quando o Wender mandar mensagem"_.',
+  'Pra te avisar quando alguém falar: _"quando o Wender chamar"_ ou _"me avisa quando a Maria mandar mensagem"_.',
   'De todo mundo: _"me avisa quando qualquer pessoa mandar mensagem"_.',
   'Pra anotar compromisso, ligue a *Secretária* no painel (Lembretes).',
 ].join('\n');

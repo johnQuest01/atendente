@@ -27,6 +27,7 @@ import {
   createWatchForAnyone,
   createWatchForContact,
   formatWatchList,
+  looksLikeAnyone,
 } from '../../contact-watch.service';
 import type { Tool, ToolExecutor, ToolRegistry } from './types';
 
@@ -139,7 +140,7 @@ const lerConversaTool: Tool = {
 const avisarContatoTool: Tool = {
   name: 'avisar_quando_contato_falar',
   description:
-    'Cadastra um aviso: quando o contato (ou QUALQUER pessoa) mandar mensagem, o secretário avisa o DONO. Use todos=true para "me avisa quando qualquer um mandar mensagem" (um toque por pessoa, sem limite). acao=criar|cancelar|listar. modo=once|always (em todos, always).',
+    'Cadastra aviso para o DONO quando um contato (ou qualquer pessoa) mandar mensagem / chamar / falar neste WhatsApp. Entenda QUALQUER formulação: "quando o Wender chamar", "se a Maria falar me avisa", "me chama quando o João mandar zap". Se houver NOME específico, NÃO use todos. todos=true só para qualquer pessoa/todo mundo sem nome. acao=criar|cancelar|listar. modo=once (próxima) ou always (sempre).',
   inputSchema: {
     type: 'object',
     properties: {
@@ -443,7 +444,11 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
       return formatWatchList(ctx.tenantId, ctx.ownerPhone, ctx.connectionId);
     }
 
-    const todos = o.todos === true || /^(todos|qualquer|alguem|anyone)$/i.test(str(o.nome));
+    const nome = str(o.nome);
+    const anyoneName = looksLikeAnyone(nome);
+    // Nome específico ganha: nunca vira "qualquer pessoa" se citou um contato.
+    const todos =
+      (o.todos === true || anyoneName) && !str(o.client_id) && (!nome || anyoneName);
     if (todos) {
       if (acao === 'cancelar') {
         const ok = await cancelWatchForAnyone({

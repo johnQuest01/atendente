@@ -23,10 +23,13 @@ export type WatchIntent =
   | { action: 'cancel'; scope: 'one'; contactQuery: string }
   | { action: 'list' };
 
+const CONTACT_VERB =
+  '(?:mandar|enviar|falar|responder|chamar|ligar|aparecer|escrever|chegar|entrar\\s+em\\s+contato|mandar\\s+(?:mensagem|msg|zap)|dar\\s+(?:um\\s+)?oi)';
+
 const ANYONE_PHRASE =
   /qualquer\s+(?:pessoa|um|uma|contato|gente)|algu[eé]m|todo\s+mundo|todas?\s+(?:as\s+)?pessoas|ningu[eé]m|me\s+avisa\s+de\s+todos/i;
 
-function looksLikeAnyone(s: string): boolean {
+export function looksLikeAnyone(s: string): boolean {
   const t = s
     .trim()
     .toLowerCase()
@@ -42,10 +45,58 @@ function cleanWatchName(raw: string): string {
   return raw
     .trim()
     .replace(/^(o|a|os|as)\s+/i, '')
-    .replace(/\s+(?:mandar|enviar|falar|responder|me\s+avisar).*$/i, '')
-    .replace(/\s+(?:mensagem|msg|zap|whatsapp|no\s+zap).*$/i, '')
+    .replace(
+      new RegExp(
+        `\\s+(?:${CONTACT_VERB}|me\\s+avisar|mensagem|msg|zap|whatsapp|no\\s+zap).*$`,
+        'i',
+      ),
+      '',
+    )
     .replace(/[.!?]+$/g, '')
     .trim();
+}
+
+function extractSpecificName(raw: string): { name: string; always: boolean } | null {
+  const always = /\bsempre\s+que\b/i.test(raw);
+  const verb = CONTACT_VERB;
+  const patterns = [
+    new RegExp(
+      `(?:me\\s+)?avis[ae]\\w*\\s+(?:quando|assim\\s+que|se|caso)\\s+(?:o\\s+|a\\s+)?(.+?)\\s+${verb}\\b`,
+      'i',
+    ),
+    new RegExp(
+      `(?:quando|assim\\s+que|se|caso)\\s+(?:o\\s+|a\\s+)?(.+?)\\s+${verb}\\b[\\s\\S]{0,80}\\bavis`,
+      'i',
+    ),
+    new RegExp(
+      `quero\\s+que\\s+(?:voc[eê]|vc|tu)?\\s*(?:me\\s+)?avis\\w*\\s+quando\\s+(?:o\\s+|a\\s+)?(.+?)\\s+${verb}\\b`,
+      'i',
+    ),
+    new RegExp(
+      `me\\s+(?:chama|toca|notifica)\\s+quando\\s+(?:o\\s+|a\\s+)?(.+?)\\s+${verb}\\b`,
+      'i',
+    ),
+    new RegExp(`sempre\\s+que\\s+(?:o\\s+|a\\s+)?(.+?)\\s+${verb}\\b`, 'i'),
+  ];
+  for (const re of patterns) {
+    const m = raw.match(re);
+    const name = cleanWatchName(m?.[1] ?? '');
+    if (name.length >= 2 && !looksLikeAnyone(name)) return { name, always };
+  }
+
+  // Frase curta: "quando o Wender chamar" / "se a Maria falar"
+  if (raw.length <= 100 && !ANYONE_PHRASE.test(raw)) {
+    const short = raw.match(
+      new RegExp(
+        `^(?:me\\s+)?(?:avis[ae]\\s+)?(?:quando|assim\\s+que|se)\\s+(?:o\\s+|a\\s+)?(.+?)\\s+${verb}\\b`,
+        'i',
+      ),
+    );
+    const name = cleanWatchName(short?.[1] ?? '');
+    if (name.length >= 2 && !looksLikeAnyone(name)) return { name, always };
+  }
+
+  return null;
 }
 
 /** Pedido do dono para ser avisado quando um contato (ou qualquer um) mandar mensagem. */
@@ -62,44 +113,29 @@ export function parseWatchIntent(text: string): WatchIntent | null {
   }
 
   const cancel = raw.match(
-    /^(?:pode\s+)?(?:parar|para|pare|cancela|cancelar|desliga|desligar)(?:\s+de)?(?:\s+me)?\s+avisar\s+(?:do\s+|da\s+|de\s+|o\s+|a\s+)?(.+)$/i,
+    /^(?:pode\s+)?(?:parar|para|pare|cancela|cancelar|desliga|desligar|n[aã]o\s+(?:precisa|quero)\s+mais)(?:\s+de)?(?:\s+me)?\s+avisar\s+(?:do\s+|da\s+|de\s+|o\s+|a\s+)?(.+)$/i,
   );
   if (cancel) {
     const contactQuery = cleanWatchName(cancel[1] ?? '');
-    if (looksLikeAnyone(contactQuery) || looksLikeAnyone(raw)) {
+    if (looksLikeAnyone(contactQuery) || (ANYONE_PHRASE.test(raw) && !extractSpecificName(raw))) {
       return { action: 'cancel', scope: 'all' };
     }
     if (contactQuery.length >= 2) return { action: 'cancel', scope: 'one', contactQuery };
   }
 
-  if (ANYONE_PHRASE.test(raw) && /avis/i.test(raw)) {
+  // Contato específico SEMPRE ganha do "qualquer pessoa".
+  const specific = extractSpecificName(raw);
+  if (specific) {
+    return {
+      action: 'create',
+      scope: 'one',
+      contactQuery: specific.name,
+      mode: specific.always ? 'always' : 'once',
+    };
+  }
+
+  if (ANYONE_PHRASE.test(raw) && /avis|notific|me\s+chama|me\s+toca/i.test(raw)) {
     return { action: 'create', scope: 'all', mode: 'always' };
-  }
-
-  const always = raw.match(
-    /sempre\s+que\s+(?:o\s+|a\s+)?(.+?)\s+(?:mandar|enviar|falar|responder)\b/i,
-  );
-  if (always) {
-    const contactQuery = cleanWatchName(always[1] ?? '');
-    if (looksLikeAnyone(contactQuery)) return { action: 'create', scope: 'all', mode: 'always' };
-    if (contactQuery.length >= 2) {
-      return { action: 'create', scope: 'one', contactQuery, mode: 'always' };
-    }
-  }
-
-  const create =
-    raw.match(
-      /(?:me\s+)?avis[ae](?:\s+quando|\s+assim\s+que)\s+(?:o\s+|a\s+)?(.+?)\s+(?:mandar|enviar|falar|responder)\b/i,
-    ) ||
-    raw.match(
-      /quando\s+(?:o\s+|a\s+)?(.+?)\s+(?:mandar|enviar|falar|responder)\b.+\bavis/i,
-    );
-  if (create) {
-    const contactQuery = cleanWatchName(create[1] ?? '');
-    if (looksLikeAnyone(contactQuery)) return { action: 'create', scope: 'all', mode: 'always' };
-    if (contactQuery.length >= 2) {
-      return { action: 'create', scope: 'one', contactQuery, mode: 'once' };
-    }
   }
 
   return null;
