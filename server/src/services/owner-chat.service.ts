@@ -21,16 +21,14 @@ import {
 
 /**
  * Modo Agente do dono: chat livre no WhatsApp.
- * Histórico no Postgres (tempo real) + caderno de eventos + debounce.
+ * Histórico no Postgres (tempo real) + caderno de eventos + fila por turno.
  */
 
 /** Modo rápido: poucas tokens, resposta curta no WhatsApp. */
 const FAST_MAX_TOKENS = 280;
-const TOOLS_MAX_TOKENS = 600;
+const TOOLS_MAX_TOKENS = 900;
 const VISION_MAX_TOKENS = 500;
 const FAST_TEMPERATURE = 0.2;
-/** Espera msgs extras do dono antes de chamar a IA (anti-perda). */
-const BATCH_DEBOUNCE_MS = 1600;
 const HISTORY_LIMIT = 80;
 
 const OWNER_VISION_HINT =
@@ -45,19 +43,24 @@ export interface FreeChatOptions {
   images?: ChatImage[];
 }
 
-/** `merged` = outra mensagem do lote já gerou a resposta; não envie de novo. */
-export type FreeChatResult =
-  | { status: 'reply'; text: string | null }
-  | { status: 'merged' };
+export type FreeChatResult = {
+  status: 'reply';
+  text: string | null;
+  /** Já gravado no histórico pela fila (não persistir de novo no handler). */
+  alreadyPersisted?: boolean;
+};
 
-interface BatchState {
-  timer: NodeJS.Timeout;
+interface QueueJob {
   opts: FreeChatOptions;
-  waiters: Array<(r: FreeChatResult) => void>;
+  resolve: (r: FreeChatResult) => void;
 }
 
-const batches = new Map<string, BatchState>();
-const processing = new Set<string>();
+interface OwnerQueue {
+  jobs: QueueJob[];
+  running: boolean;
+}
+
+const queues = new Map<string, OwnerQueue>();
 
 function batchKey(tenantId: string, phone: string, connectionId?: string | null): string {
   return `${tenantId}:${phone}:${connectionId ?? ''}`;
@@ -77,7 +80,10 @@ function buildFastSystem(
     'Nunca diga que é IA/bot. Não invente compromissos: agenda real está abaixo.',
     'Leitura completa: use o histórico + a memória interpretada (eventos, histórias, acontecimentos, problemas).',
     'Interprete o sentido do que o dono diz — não dependa de palavras-chave; entenda contexto e continuidade.',
-    'Se o dono mandou várias mensagens seguidas sem sua resposta, trate como UM pedido contínuo — leia todas, interprete o conjunto e responda uma vez sem se perder.',
+    'Cada mensagem do dono é UM turno. Execute o pedido DESTA última mensagem (a mais recente no histórico).',
+    'Se o histórico mostra vários pedidos seus ainda sem confirmação, foque no último — os anteriores já foram (ou serão) tratados em outros turnos.',
+    'Se nesta mensagem houver VÁRIOS pedidos distintos (ex.: "manda oi pro João e pesquisa o dólar"), faça TODOS em sequência com as tools, um a um, e confirme cada um em 1 linha.',
+    'Nunca ignore um pedido desta mensagem. Nunca misture com um pedido antigo já respondido.',
     'Se pedirem para anotar/lembrar algo com data (só pra ele), diga pra mandar tipo "me lembra amanhã às 9h de…".',
     contactToolsOn
       ? [
@@ -241,53 +247,39 @@ async function runFreeChatOnce(
   return result.text.trim().slice(0, 4000);
 }
 
-async function flushBatch(tenantId: string, phone: string, k: string): Promise<void> {
-  const batch = batches.get(k);
-  if (!batch) return;
-  batches.delete(k);
+async function drainQueue(tenantId: string, phone: string, k: string): Promise<void> {
+  const q = queues.get(k);
+  if (!q || q.running) return;
+  q.running = true;
 
-  if (processing.has(k)) {
-    // Ainda gerando resposta anterior: reencaixa waiters e espera um pouco.
-    const again = batches.get(k) ?? {
-      timer: setTimeout(() => void flushBatch(tenantId, phone, k), 400),
-      opts: batch.opts,
-      waiters: [] as Array<(r: FreeChatResult) => void>,
-    };
-    clearTimeout(again.timer);
-    again.waiters.push(...batch.waiters);
-    again.opts = batch.opts;
-    again.timer = setTimeout(() => void flushBatch(tenantId, phone, k), 400);
-    batches.set(k, again);
-    return;
+  while (q.jobs.length) {
+    const job = q.jobs.shift()!;
+    let text: string | null = null;
+    try {
+      text = await runFreeChatOnce(tenantId, phone, job.opts);
+    } catch (err) {
+      logger.warn('Agente: falha ao gerar resposta', err);
+      text = null;
+    }
+    // Grava a resposta no histórico ANTES do próximo job — senão o turno
+    // seguinte vê dois pedidos do dono sem a confirmação do anterior.
+    if (text) {
+      await persistOwnerAssistantReply(tenantId, phone, text, job.opts.connectionId);
+    }
+    job.resolve({ status: 'reply', text, alreadyPersisted: Boolean(text) });
   }
 
-  processing.add(k);
-  let text: string | null = null;
-  try {
-    text = await runFreeChatOnce(tenantId, phone, batch.opts);
-  } catch (err) {
-    logger.warn('Agente: falha ao gerar resposta', err);
-    text = null;
-  } finally {
-    processing.delete(k);
-  }
-
-  batch.waiters[0]?.({ status: 'reply', text });
-  for (let i = 1; i < batch.waiters.length; i++) {
-    batch.waiters[i]!({ status: 'merged' });
-  }
-
-  // Mensagens que chegaram durante o processamento
-  if (batches.has(k)) {
-    const pending = batches.get(k)!;
-    clearTimeout(pending.timer);
-    pending.timer = setTimeout(() => void flushBatch(tenantId, phone, k), 300);
+  q.running = false;
+  if (q.jobs.length) {
+    void drainQueue(tenantId, phone, k);
+  } else {
+    queues.delete(k);
   }
 }
 
 /**
- * Persiste a mensagem do dono (tempo real) e agenda resposta com debounce.
- * Várias msgs rápidas → um único reply coerente; waiters extras recebem `merged`.
+ * Cada mensagem do dono vira um turno na fila (um de cada vez, na ordem).
+ * Pedidos novos enquanto ela trabalha esperam — não são fundidos nem descartados.
  */
 export async function freeChatOwner(
   tenantId: string,
@@ -298,30 +290,13 @@ export async function freeChatOwner(
   const trimmed = message.trim();
   if (!trimmed && !opts.images?.length) return { status: 'reply', text: null };
 
-  // Mensagem do dono já deve estar em owner_chat_messages (handler).
   const k = batchKey(tenantId, phone, opts.connectionId);
-  // Com imagem: responde mais rápido (sem esperar lote longo).
-  const waitMs = opts.images?.length ? 400 : BATCH_DEBOUNCE_MS;
 
   return new Promise<FreeChatResult>((resolve) => {
-    const existing = batches.get(k);
-    if (existing) {
-      clearTimeout(existing.timer);
-      existing.waiters.push(resolve);
-      existing.opts = {
-        ...opts,
-        images: [...(existing.opts.images ?? []), ...(opts.images ?? [])],
-        webSearchEnabled: opts.webSearchEnabled ?? existing.opts.webSearchEnabled,
-        connectionId: opts.connectionId ?? existing.opts.connectionId,
-      };
-      existing.timer = setTimeout(() => void flushBatch(tenantId, phone, k), waitMs);
-      return;
-    }
-    batches.set(k, {
-      opts,
-      waiters: [resolve],
-      timer: setTimeout(() => void flushBatch(tenantId, phone, k), waitMs),
-    });
+    const q = queues.get(k) ?? { jobs: [], running: false };
+    q.jobs.push({ opts, resolve });
+    queues.set(k, q);
+    void drainQueue(tenantId, phone, k);
   });
 }
 

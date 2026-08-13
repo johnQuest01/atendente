@@ -93,7 +93,7 @@ const envSchema = z.object({
   TAVILY_API_KEY: z.string().optional(),
   BRAVE_API_KEY: z.string().optional(),
   /** Teto de iterações do loop tool-use por chamada complete(). */
-  MAX_TOOL_ITERATIONS: z.coerce.number().int().positive().default(5),
+  MAX_TOOL_ITERATIONS: z.coerce.number().int().positive().default(12),
 
   // Compat legado (modo Agente pré-tool): ainda lido como fallback de chave/provider.
   WEB_SEARCH_PROVIDER: z.enum(['none', 'tavily', 'duckduckgo']).default('duckduckgo'),

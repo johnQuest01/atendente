@@ -125,12 +125,14 @@ function setState(tenantId: string, phone: string, patch: Partial<OwnerState>): 
 /** Conexão WhatsApp ativa durante o tratamento da mensagem do dono. */
 const ownerReplyConnection = new Map<string, string>();
 
-async function reply(tenantId: string, phone: string, text: string): Promise<void> {
+async function reply(tenantId: string, phone: string, text: string, skipPersist = false): Promise<void> {
   const connectionId = ownerReplyConnection.get(stateKey(tenantId, phone));
   const wa = connectionId
     ? await getWhatsappByConnection(tenantId, connectionId)
     : await getTenantWhatsapp(tenantId);
-  await persistOwnerAssistantReply(tenantId, phone, text, connectionId);
+  if (!skipPersist) {
+    await persistOwnerAssistantReply(tenantId, phone, text, connectionId);
+  }
   await wa.sendText(phone, text).catch((err) => logger.warn('Lembretes: falha ao responder o dono', err));
 }
 
@@ -586,11 +588,11 @@ async function handleOwnerMessageInner(
       webSearchEnabled: flags.webSearch,
       images: visionImages,
     });
-    if (result.status === 'merged') return true;
     await reply(
       tenantId,
       phone,
       result.text ?? 'Recebi a foto, mas não consegui analisar agora. Manda de novo?',
+      result.alreadyPersisted,
     );
     return true;
   }
@@ -895,18 +897,17 @@ async function handleOwnerMessageInner(
     return true;
   }
 
-  // 5. Agente: chat livre + busca (rápido), quando não for agenda.
-  // Debounce: várias msgs rápidas viram um único reply; extras = merged.
+  // 5. Agente: chat livre. Cada msg entra na fila e é respondida na ordem.
   if (flags.agent) {
     const result = await freeChatOwner(tenantId, phone, text, {
       connectionId,
       webSearchEnabled: flags.webSearch,
     });
-    if (result.status === 'merged') return true;
     await reply(
       tenantId,
       phone,
       result.text ?? 'Não rolou agora. Manda de novo em uma frase?',
+      result.alreadyPersisted,
     );
     return true;
   }
