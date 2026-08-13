@@ -31,6 +31,7 @@ import {
   formatWatchList,
   looksLikeAnyone,
 } from '../../contact-watch.service';
+import { resolveMuteContact, setContactAutoReply } from '../../contact-reply.service';
 import type { Tool, ToolExecutor, ToolRegistry } from './types';
 
 export interface OwnerToolContext {
@@ -188,6 +189,21 @@ const orientarAtendimentoTool: Tool = {
       },
     },
     required: ['instrucao'],
+    additionalProperties: false,
+  },
+};
+
+const responderContatoTool: Tool = {
+  name: 'responder_contato',
+  description:
+    'Liga ou desliga a secretária/IA RESPONDER um contato. Use quando o dono pedir "para de responder a esposa", "não fala mais com ela", "não responde o Jurandir". acao=parar deixa de responder (o AVISO ao dono continua). acao=voltar retoma. NÃO use para cancelar aviso — isso é avisar_quando_contato_falar.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      acao: { type: 'string', description: 'parar | voltar' },
+      nome: { type: 'string', description: 'Nome do contato.' },
+      client_id: { type: 'string', description: 'UUID do contato, se já conhecido.' },
+    },
     additionalProperties: false,
   },
 };
@@ -541,6 +557,49 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
       : `OK — te aviso quando *${created.name}* mandar a próxima mensagem. Depois o aviso sai sozinho.`;
   };
 
+  const responderContato: ToolExecutor = async (input) => {
+    const listed = await assertListedOwner(ctx.tenantId, ctx.ownerPhone, ctx.connectionId);
+    if (!listed) {
+      return 'Só números cadastrados na lista de Lembretes podem ligar/desligar resposta a contato.';
+    }
+
+    const o = asRecord(input);
+    const acao = str(o.acao).toLowerCase();
+    if (!acao || !['parar', 'voltar', 'desligar', 'ligar'].includes(acao)) {
+      return 'acao deve ser parar ou voltar.';
+    }
+    const enabled = acao === 'voltar' || acao === 'ligar';
+
+    const clientId = str(o.client_id);
+    const nome = str(o.nome);
+    let id: string;
+    if (clientId) {
+      const resolved = await resolveOneContact(ctx, nome, clientId);
+      if (!resolved.ok) return resolved.text;
+      id = resolved.id;
+    } else {
+      const resolved = await resolveMuteContact(
+        ctx.tenantId,
+        nome || 'ela',
+        ctx.ownerPhone,
+        ctx.connectionId,
+      );
+      if (!resolved.ok) return resolved.text;
+      id = resolved.id;
+    }
+
+    const done = await setContactAutoReply({
+      tenantId: ctx.tenantId,
+      clientId: id,
+      enabled,
+      ownerPhone: ctx.ownerPhone,
+      connectionId: ctx.connectionId,
+    });
+    return done.enabled
+      ? `OK — voltei a responder *${done.name}*.`
+      : `OK — parei de responder *${done.name}*. O aviso ao dono continua, se estiver ativo.`;
+  };
+
   return {
     buscar_contato: { tool: buscarContatoTool, execute: buscar },
     listar_produtos: { tool: listarProdutosTool, execute: listar },
@@ -549,5 +608,6 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
     enviar_mensagem_contato: { tool: enviarMensagemTool, execute: enviar },
     agendar_mensagem_contato: { tool: agendarMensagemTool, execute: agendar },
     avisar_quando_contato_falar: { tool: avisarContatoTool, execute: avisar },
+    responder_contato: { tool: responderContatoTool, execute: responderContato },
   };
 }

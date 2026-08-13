@@ -34,10 +34,8 @@ import {
 import { isPhoneBlocked } from '../db/queries/blocked';
 import { isReminderOwner } from '../db/queries/reminders';
 import { handleOwnerMessage } from '../services/reminders/handler.service';
-import {
-  notifyContactWatches,
-  notifyContactWatchesForInbound,
-} from '../services/contact-watch.service';
+import { notifyContactWatches, notifyContactWatchesForInbound } from '../services/contact-watch.service';
+import { isContactAutoReplyOff } from '../services/contact-reply.service';
 import { isTenantBlocked } from '../middleware/tenantAccess.middleware';
 import { emitNewMessage, emitNewConversation, emitConversationUpdated } from '../socket';
 import { matchIntent, getTriggerPhrases } from '../services/matcher.service';
@@ -418,6 +416,12 @@ async function processInbound(
         preview: enriched.preview,
         inboundType: inbound.type,
       }).catch((err) => logger.warn('Falha ao avisar dono sobre mensagem de contato', err));
+      if (await isContactAutoReplyOff(tenantId, inbound.phone, inbound.lid)) {
+        logger.info(
+          `Dono pediu pra não responder ${inbound.phone} — registro/aviso ok, secretária calada.`,
+        );
+        return;
+      }
     }
     const handled = await handleOwnerMessage(tenantId, inbound, connectionId);
     if (handled) return;

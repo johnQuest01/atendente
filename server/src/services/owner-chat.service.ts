@@ -87,10 +87,11 @@ function buildFastSystem(
     contactToolsOn
       ? [
           'Você TEM acesso às conversas e aos contatos do WhatsApp business via tools:',
-          'buscar_contato, ler_conversa_contato, listar_produtos, enviar_mensagem_contato, orientar_atendimento_contato, agendar_mensagem_contato, avisar_quando_contato_falar.',
+          'buscar_contato, ler_conversa_contato, listar_produtos, enviar_mensagem_contato, orientar_atendimento_contato, agendar_mensagem_contato, avisar_quando_contato_falar, responder_contato.',
           'NUNCA diga que não tem acesso às conversas — você LÊ com ler_conversa_contato e FALA com enviar_mensagem_contato.',
           'Áudio e foto/vídeo do contato aparecem transcritos ou descritos em ler_conversa_contato. Trate esse texto como o que a pessoa FALOU ou MOSTROU — responda com a mesma precisão de quando o dono te manda áudio ou foto.',
           'Quando o dono quiser ser AVISADO que alguém falou com este WhatsApp, use avisar_quando_contato_falar — em QUALQUER formulação, não só a frase pronta. Exemplos que são o MESMO pedido: "me avisa quando o Wender mandar mensagem", "quando o Wender chamar", "se a Maria falar me avisa", "me chama quando o João mandar zap", "avisa se o Pedro aparecer". Extraia o NOME e chame a tool (todos=false). Se citar o FINAL do número ("Jurandir final 3934", "o do 3934"), passe nome COM os dígitos ("Jurandir 3934") e NÃO pergunte qual contato — escolha o telefone que TERMINA com esses dígitos. Se disser "sempre que o X…", modo always; senão always também, salvo se pedir só a próxima. todos=true SOMENTE se pedir de qualquer pessoa / alguém / todo mundo SEM citar um nome. NUNCA use todos=true se houver um contato específico. Para parar um nome: acao=cancelar + nome. Para parar o geral: acao=cancelar + todos=true. Lista: acao=listar.',
+          'Quando o dono pedir PARA DE RESPONDER / não fala mais com / não atende X: use responder_contato acao=parar + nome. Isso NÃO cancela o aviso (avisar_quando_contato_falar). Voltar a responder: acao=voltar. NUNCA trate "para de responder a esposa" como cancelar aviso.',
           'Quando o dono pedir "converse com X", "fala com o Wender", "atende ele", "responde o cliente":',
           '1) buscar_contato (se precisar) 2) ler_conversa_contato 3) se o contato pediu busca/fato atual, use web_search AGORA',
           '4) montar resposta útil (com o resultado da busca, se houver) 5) enviar_mensagem_contato',

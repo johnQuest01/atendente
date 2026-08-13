@@ -47,6 +47,11 @@ import {
   parseWatchIntent,
   resolveWatchContact,
 } from '../contact-watch.service';
+import {
+  parseReplyMuteIntent,
+  resolveMuteContact,
+  setContactAutoReply,
+} from '../contact-reply.service';
 
 /**
  * Assistente pessoal do dono. O mesmo número que atende clientes aceita comandos
@@ -92,6 +97,11 @@ interface OwnerState {
   pendingWatch?: {
     action: 'create' | 'cancel';
     mode: 'once' | 'always';
+    candidates: RelayCandidate[];
+  };
+  /** Escolha de contato para parar/voltar a responder. */
+  pendingMute?: {
+    enabled: boolean;
     candidates: RelayCandidate[];
   };
   lastList?: string[];
@@ -163,7 +173,7 @@ function coalesceKey(tenantId: string, phone: string, connectionId?: string | nu
 function isHardImmediateOwnerTurn(text: string, owner: OwnerState): boolean {
   const n = normalize(text);
   const cmd = normalizeCommand(text);
-  if (owner.pendingRelay || owner.pendingWatch) {
+  if (owner.pendingRelay || owner.pendingWatch || owner.pendingMute) {
     if (/^\d{1,2}$/.test(n) || isAffirmative(text) || isNegative(text)) return true;
     if (extractPhoneHint(text)) return true;
   }
@@ -180,6 +190,7 @@ function isLikelyBrokenOwnerTurn(text: string): boolean {
   const t = text.trim();
   const words = t.split(/\s+/).filter(Boolean).length;
   if (parseWatchIntent(t) && words >= 6) return false;
+  if (parseReplyMuteIntent(t) && words >= 5) return false;
   if (parseRelayIntent(t)) return false;
   if (words <= 10) return true;
   if (
@@ -840,6 +851,38 @@ async function handleOwnerMessageInner(
     }
   }
 
+  if (owner.pendingMute && listed) {
+    const cand = pickRelayCandidate(owner.pendingMute.candidates, text);
+    if (cand) {
+      const enabled = owner.pendingMute.enabled;
+      setState(tenantId, phone, { pendingMute: undefined });
+      const done = await setContactAutoReply({
+        tenantId,
+        clientId: cand.id,
+        enabled,
+        ownerPhone: phone,
+        connectionId,
+      });
+      await reply(
+        tenantId,
+        phone,
+        enabled
+          ? `OK — voltei a responder *${done.name}*.`
+          : `OK — parei de responder *${done.name}*. Continuo te avisando se ela mandar mensagem. Manda _"volta a responder ${done.name}"_ pra eu falar de novo.`,
+      );
+      return true;
+    }
+    if (/^\d{1,2}$/.test(normalized) || extractPhoneHint(text)) {
+      await reply(tenantId, phone, 'Não achei esse na lista. Manda o número da lista.');
+      return true;
+    }
+    if (isNegative(text)) {
+      setState(tenantId, phone, { pendingMute: undefined });
+      await reply(tenantId, phone, 'Beleza, cancelei.');
+      return true;
+    }
+  }
+
   // 1. Confirmação pendente tem prioridade sobre tudo.
   if (owner.pending) {
     const { items, source } = owner.pending;
@@ -1094,6 +1137,41 @@ async function handleOwnerMessageInner(
         created.mode === 'always'
           ? `OK — te aviso sempre que *${created.name}* mandar mensagem neste WhatsApp.`
           : `OK — te aviso quando *${created.name}* mandar a próxima mensagem. Depois o aviso sai sozinho.`,
+      );
+      return true;
+    }
+  }
+
+  // 3.7b. Parar/voltar a responder um contato (aviso continua).
+  if (listed) {
+    const mute = parseReplyMuteIntent(text);
+    if (mute) {
+      const resolved = await resolveMuteContact(tenantId, mute.contactQuery, phone, connectionId);
+      if (!resolved.ok) {
+        if (resolved.candidates?.length) {
+          setState(tenantId, phone, {
+            pendingMute: {
+              enabled: mute.action === 'unmute',
+              candidates: resolved.candidates,
+            },
+          });
+        }
+        await reply(tenantId, phone, resolved.text);
+        return true;
+      }
+      const done = await setContactAutoReply({
+        tenantId,
+        clientId: resolved.id,
+        enabled: mute.action === 'unmute',
+        ownerPhone: phone,
+        connectionId,
+      });
+      await reply(
+        tenantId,
+        phone,
+        done.enabled
+          ? `OK — voltei a responder *${done.name}*.`
+          : `OK — parei de responder *${done.name}*. Continuo te avisando se mandar mensagem. Manda _"volta a responder ${done.name}"_ pra eu falar de novo.`,
       );
       return true;
     }
