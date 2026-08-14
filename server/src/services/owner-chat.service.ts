@@ -47,6 +47,8 @@ export interface FreeChatOptions {
   images?: ChatImage[];
   /** Fala atual do dono (pra emoji pedido nesta mensagem, etc.). */
   lastUserMessage?: string | null;
+  /** Número na whitelist de lembretes. Sem isto, sem tools de contato. */
+  listedOwner?: boolean;
 }
 
 export type FreeChatResult = {
@@ -80,20 +82,29 @@ function buildFastSystem(
   toolSearchAvailable: boolean,
   contactToolsOn: boolean,
   playbookBlock: string,
+  listedOwner: boolean,
 ): string {
   const parts = [
-    'Você fala com o DONO no WhatsApp — como um assistente humano rápido (estilo Claude), não como robô.',
+    listedOwner
+      ? 'Você fala com o DONO no WhatsApp — como um assistente humano rápido (estilo Claude), não como robô.'
+      : 'Você fala com alguém usando este WhatsApp (acesso livre) — como um assistente humano rápido, não como robô. Esta pessoa NÃO é o dono da agenda de contatos.',
     'Respostas CURTAS (WhatsApp): no máximo ~6 linhas; bullets quando ajudar.',
     'Nunca diga que é IA/bot. Não invente compromissos: agenda real está abaixo.',
     'Emojis: você conhece TODOS. Se pedirem "emoji de coração", mande ❤️. De foguete, 🚀. De gato, 🐱. Qualquer nome ou o próprio emoji colado. Se pedirem só o emoji, responda SÓ com ele — sem frase.',
-    'Leitura completa: use o histórico + a memória interpretada (eventos, histórias, acontecimentos, problemas) + os contatos que o dono JÁ ESCOLHEU + o que você leu nas conversas e buscou na internet.',
-    'Interprete o sentido do que o dono diz — não dependa de palavras-chave; entenda contexto e continuidade. Raciocine com o que já sabe; não peça de novo o que já está na memória.',
+    listedOwner
+      ? 'Leitura completa: use o histórico + a memória interpretada (eventos, histórias, acontecimentos, problemas) + os contatos que o dono JÁ ESCOLHEU + o que você leu nas conversas e buscou na internet.'
+      : 'Use só o histórico DESTA pessoa e o caderno DESTA pessoa. NUNCA liste, busque, envie, cite nem descreva contatos do WhatsApp do dono. Se pedirem a agenda de contatos do negócio, recuse em 1 linha.',
+    'Interprete o sentido do que a pessoa diz — não dependa de palavras-chave; entenda contexto e continuidade. Raciocine com o que já sabe; não peça de novo o que já está na memória.',
     playbookBlock,
-    'No WhatsApp o dono costuma quebrar o mesmo pedido em vários balões seguidos. Vários user seguidos sem a sua resposta no meio são UM pedido só — junte o sentido e execute uma vez. Não peça para repetir o que já está nesses balões.',
-    'Se nesta mensagem (já juntada) houver VÁRIOS pedidos distintos (ex.: "manda oi pro João e pesquisa o dólar"), faça TODOS em sequência com as tools, um a um, e confirme cada um em 1 linha.',
+    'No WhatsApp a pessoa costuma quebrar o mesmo pedido em vários balões seguidos. Vários user seguidos sem a sua resposta no meio são UM pedido só — junte o sentido e execute uma vez. Não peça para repetir o que já está nesses balões.',
+    'Se nesta mensagem (já juntada) houver VÁRIOS pedidos distintos (ex.: "me lembra amanhã às 9h e pesquisa o dólar"), faça TODOS; confirme cada um em 1 linha.',
     'Nunca ignore um pedido desta fala. Nunca misture com um pedido antigo já respondido.',
-    'Se pedirem para anotar/lembrar algo com data (só pra ele), diga pra mandar tipo "me lembra amanhã às 9h de…".',
+    'Se pedirem para anotar/lembrar algo com data (só pra ela), diga pra mandar tipo "me lembra amanhã às 9h de…". A secretária confirma com SIM e grava no caderno DESTA pessoa.',
     'Se pedirem para MUDAR horário de compromisso/despertar já anotado: NÃO finja que alterou. Diga pra mandar tipo "muda o despertar pra 5h" — a secretária confirma com SIM e grava no caderno.',
+    'Se disser que VAI mandar áudio/foto de um compromisso, peça o arquivo e NÃO recite a lista da agenda.',
+    listedOwner
+      ? 'Se pedir para salvar um compromisso PARA um contato (ex.: Wender no WhatsApp), use agendar_mensagem_contato quando tiver horário e texto. Se ainda vai mandar o áudio, peça o áudio. Nunca recitar a lista de compromissos no lugar disso.'
+      : '',
     contactToolsOn
       ? [
           'Você TEM acesso às conversas e aos contatos do WhatsApp business via tools:',
@@ -130,7 +141,7 @@ function buildFastSystem(
     agendaLines.length
       ? `Caderno de compromissos (próximos dias):\n${agendaLines.join('\n')}`
       : 'Caderno de compromissos: (vazio por enquanto).',
-    'NÃO recite a agenda em cumprimento ou despedida (bom dia, boa noite, até amanhã, tchau). Só liste compromissos se o dono PEDIR (hoje, amanhã, o que tenho, agenda). Despedida = 1 linha, sem cabeçalho HOJE e sem lista.',
+    'NÃO recite a agenda em cumprimento ou despedida (bom dia, boa noite, até amanhã, tchau). Só liste compromissos se a pessoa PEDIR (hoje, amanhã, o que tenho, agenda). Despedida = 1 linha, sem cabeçalho HOJE e sem lista.',
     memoryBlock,
     playbookBlock,
   ];
@@ -190,6 +201,7 @@ async function runFreeChatOnce(
   });
 
   const hasImages = Boolean(opts.images?.length);
+  const listedOwner = opts.listedOwner !== false;
   if (hasImages && !(await hasVisionProvider(tenantId, opts.connectionId))) {
     return 'Recebi a foto, mas nenhuma IA com visão está ligada agora. Me descreve o que tem nela?';
   }
@@ -200,7 +212,9 @@ async function runFreeChatOnce(
       limit: HISTORY_LIMIT,
     }),
     buildOwnerMemoryPromptBlock(tenantId, phone, opts.connectionId),
-    buildContactAliasPromptBlock(tenantId, phone, opts.connectionId),
+    listedOwner
+      ? buildContactAliasPromptBlock(tenantId, phone, opts.connectionId)
+      : Promise.resolve(''),
   ]);
   const contextBlock = [memoryBlock, aliasBlock].filter(Boolean).join('\n\n');
   const messages = historyToModelMessages(
@@ -220,7 +234,7 @@ async function runFreeChatOnce(
   // Com imagem: só visão (sem tools) — adapters focam na mídia.
   const webSearchOn = Boolean(opts.webSearchEnabled);
   const toolSearchAvailable = webSearchOn && isWebSearchToolAvailable() && !hasImages;
-  const contactToolsOn = !hasImages;
+  const contactToolsOn = !hasImages && listedOwner;
   const lastUser = [...messages].reverse().find((m) => m.role === 'user');
   const ownerTools = contactToolsOn
     ? registryAsRequestFields(
@@ -264,6 +278,7 @@ async function runFreeChatOnce(
       toolSearchAvailable,
       contactToolsOn,
       playbookBlock,
+      listedOwner,
     ) + (hasImages ? OWNER_VISION_HINT : '');
 
   const maxTokens = hasImages

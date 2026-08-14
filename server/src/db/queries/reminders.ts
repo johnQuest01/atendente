@@ -442,3 +442,17 @@ export async function cancelReminder(
   );
   return (rowCount ?? 0) > 0;
 }
+
+/** Cancela todos os pendentes deste número — param de tocar e saem da lista. */
+export async function cancelAllPendingReminders(
+  tenantId: string,
+  ownerPhone: string,
+): Promise<number> {
+  assertTenantMatchesScope(tenantId);
+  const { rowCount } = await query(
+    `UPDATE reminders SET status = 'cancelado'
+      WHERE tenant_id = $1 AND owner_phone = $2 AND status = 'pendente'`,
+    [tenantId, ownerPhone],
+  );
+  return rowCount ?? 0;
+}

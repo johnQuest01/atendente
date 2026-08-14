@@ -1,5 +1,6 @@
 import { logger } from '../../config/logger';
 import {
+  cancelAllPendingReminders,
   cancelReminder,
   completeReminder,
   createRemindersBulk,
@@ -112,6 +113,8 @@ interface OwnerState {
     contactQuery: string;
     candidates: RelayCandidate[];
   };
+  /** "Cancelar todos" aguardando SIM. */
+  pendingCancelAll?: boolean;
   lastList?: string[];
 }
 
@@ -191,6 +194,8 @@ function isHardImmediateOwnerTurn(text: string, owner: OwnerState): boolean {
   if (/^(concluir|conclui|feito|ok|cancelar|cancela|remover|apagar)\s+\d{1,2}$/.test(n)) {
     return true;
   }
+  if (detectCancelAll(n)) return true;
+  if (owner.pendingCancelAll && (isAffirmative(text) || isNegative(text))) return true;
   if (detectQuery(n) && cmd.split(/\s+/).length <= 8) return true;
   return false;
 }
@@ -354,6 +359,7 @@ function isAffirmative(text: string): boolean {
 function isNegative(text: string): boolean {
   const n = normalizeCommand(text);
   if (!n) return false;
+  if (detectCancelAll(n)) return false;
   if (NEGATIVE.has(n) || NEGATIVE_PHRASES.has(n)) return true;
   return n.split(/\s+/).length <= 3 && /^(nao|cancela|cancelar|esquece)\b/.test(n);
 }
@@ -367,7 +373,7 @@ const HELP_TEXT = [
   '',
   'Pra ver o que tem: _"o que temos pra hoje?"_ · _"compromissos da semana"_',
   'Ou: *HOJE* · *AMANHÃ* · *SEMANA* · *MÊS* · *ROTINA* · *IMPORTANTES* · *TODOS*',
-  'Pra fechar: *CONCLUIR 2* · Pra tirar: *CANCELAR 2*',
+  'Pra fechar: *CONCLUIR 2* · Pra tirar: *CANCELAR 2* · *CANCELAR TODOS*',
   '',
   'Com o *Agente* ligado: pergunta livre, texto, pesquisa — eu respondo rápido no zap.',
   'Pra mandar msg a contato: _"mande um boa noite para o Wender agora"_',
@@ -519,8 +525,29 @@ function looksLikeWebOrFactTask(normalized: string): boolean {
   return WEB_OR_FACT_TASK.test(normalized);
 }
 
+/** Pedido de ação — não é "me mostra a agenda". */
+const AGENDA_ACTION =
+  /\b(salva|salvar|anota|anotar|cancela|cancelar|apaga|apagar|remove|remover|exclui|excluir|manda|mandar|envia|enviar|edita|editar|altera|mudar|muda)\b/;
+const SAVE_FOR_CONTACT =
+  /\b(para|pra|pro|ao|a)\s+(o\s+|a\s+)?(meu\s+|minha\s+)?contato\b|\bcontato\s+(o\s+|a\s+)?\w+/;
+const INCOMING_MEDIA_COMMITMENT =
+  /\b(vou\s+te\s+mandar|te\s+mando|manda(r)?\s+(um\s+|uma\s+)?(audio|áudio|foto|imagem|video|vídeo))\b/;
+
+function detectCancelAll(normalized: string): boolean {
+  const n = normalizeCommand(normalized);
+  if (!n) return false;
+  if (/^(cancela|cancelar|apaga|apagar|remove|remover|exclui|excluir)\s+(todos|todas|tudo)$/.test(n)) {
+    return true;
+  }
+  return (
+    /\b(cancela|cancelar|apaga|apagar|remove|remover|exclui|excluir)\w*.{0,40}\b(todos|todas|tudo)\b/.test(n) &&
+    /\b(compromissos?|lembretes?|agendamentos?|alarmes?|despert|agenda)\b/.test(n)
+  );
+}
+
 function detectQuery(normalized: string): string | null {
   if (isFarewellTurn(normalized)) return null;
+  if (detectCancelAll(normalized)) return null;
 
   // 1) Palavra solta, como sempre funcionou.
   const exact = QUERY_WORDS[normalized];
@@ -529,8 +556,12 @@ function detectQuery(normalized: string): string | null {
   // "qual a cotação do dólar hoje" / "busca na internet..." → Agente, não agenda.
   if (looksLikeWebOrFactTask(normalized)) return null;
 
+  // "salva este compromisso para o Wender?" / "vou te mandar um áudio" NÃO é lista.
+  if (AGENDA_ACTION.test(normalized) || SAVE_FOR_CONTACT.test(normalized) || INCOMING_MEDIA_COMMITMENT.test(normalized)) {
+    return null;
+  }
+
   const asks = ASK_OPENERS.test(normalized);
-  const isQuestion = normalized.trim().endsWith('?');
   const mentionsAgenda = AGENDA_NOUNS.test(normalized);
   const words = normalized.split(/\s+/).filter(Boolean).length;
   const scope = SCOPE_WORDS.find(([re]) => re.test(normalized))?.[1] ?? null;
@@ -540,15 +571,12 @@ function detectQuery(normalized: string): string | null {
   if (STRONG_CREATE.test(normalized) && !asks) return null;
   if (EDIT_TRIGGERS.test(normalized)) return null;
 
-  // Pergunta de agenda precisa citar agenda/compromisso, OU ser bem curta só com
-  // o escopo ("o que temos hoje?"). "qual ... hoje" sem substantivo de agenda
-  // não conta — evita roubar perguntas factuais do Agente.
+  // Pergunta de agenda precisa pedir pra VER a lista — não basta ter a palavra
+  // "compromisso" e um "?".
   const looksLikeQuery =
     (asks && mentionsAgenda) ||
     (asks && scope !== null && words <= 5 && mentionsAgenda) ||
-    (isQuestion && mentionsAgenda) ||
     (mentionsAgenda && words <= 3) ||
-    // "o que temos para hoje?" / "o que tem hoje?" — sem a palavra compromisso
     (asks && scope !== null && words <= 6 && /\b(temos|tem|rola|vai ter|tenho)\b/.test(normalized));
   if (!looksLikeQuery) return null;
 
@@ -804,6 +832,7 @@ async function handleOwnerMessageInner(
       connectionId,
       webSearchEnabled: flags.webSearch,
       images: visionImages,
+      listedOwner: listed,
     });
     await reply(
       tenantId,
@@ -991,6 +1020,29 @@ async function handleOwnerMessageInner(
   }
 
   // 1. Confirmação pendente tem prioridade sobre tudo.
+  if (owner.pendingCancelAll) {
+    if (isAffirmative(text)) {
+      const n = await cancelAllPendingReminders(tenantId, phone);
+      setState(tenantId, phone, { pendingCancelAll: undefined, lastList: undefined });
+      await reply(
+        tenantId,
+        phone,
+        n === 0
+          ? 'Não tinha nenhum pendente.'
+          : n === 1
+            ? 'Pronto, cancelei o compromisso. Não toca mais.'
+            : `Pronto, cancelei os ${n}. Saíram da lista e não tocam mais.`,
+      );
+      return true;
+    }
+    if (isNegative(text)) {
+      setState(tenantId, phone, { pendingCancelAll: undefined });
+      await reply(tenantId, phone, 'Beleza, não cancelei nada.');
+      return true;
+    }
+    setState(tenantId, phone, { pendingCancelAll: undefined });
+  }
+
   if (owner.pending) {
     const { items, source } = owner.pending;
 
@@ -1092,6 +1144,23 @@ async function handleOwnerMessageInner(
   // 2. Consulta — palavra solta ou pergunta em linguagem natural. Sem IA.
   // Só com Secretária ligada (agenda).
   if (flags.secretary) {
+  if (detectCancelAll(normalized)) {
+    const pending = await listReminders(tenantId, phone, { statuses: ['pendente'], limit: 200 });
+    if (pending.length === 0) {
+      await reply(tenantId, phone, 'Não tem nenhum pendente pra cancelar.');
+      return true;
+    }
+    setState(tenantId, phone, { pendingCancelAll: true, lastList: pending.map((r) => r.id) });
+    await reply(
+      tenantId,
+      phone,
+      pending.length === 1
+        ? 'Vou cancelar o compromisso pendente — ele sai da lista e para de tocar. Fecha? (*sim*)'
+        : `Vou cancelar os ${pending.length} pendentes — saem da lista e param de tocar. Fecha? (*sim*)`,
+    );
+    return true;
+  }
+
   const queryKey = detectQuery(normalized);
   if (queryKey) {
     const filter = rangeFor(queryKey, tz);
@@ -1419,6 +1488,7 @@ async function handleOwnerMessageInner(
     const result = await freeChatOwner(tenantId, phone, text, {
       connectionId,
       webSearchEnabled: flags.webSearch,
+      listedOwner: listed,
     });
     await reply(
       tenantId,

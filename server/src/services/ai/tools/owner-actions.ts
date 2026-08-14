@@ -274,9 +274,16 @@ async function resolveOneContact(
   return { ok: true, id: only.id, name: displayName(only), phone: only.phone };
 }
 
+async function denyUnlessListed(ctx: OwnerToolContext): Promise<string | null> {
+  if (await assertListedOwner(ctx.tenantId, ctx.ownerPhone, ctx.connectionId)) return null;
+  return 'Sem acesso aos contatos deste WhatsApp.';
+}
+
 /** Registry de tools do dono (sempre disponível no chat do agente). */
 export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
   const buscar: ToolExecutor = async (input) => {
+    const denied = await denyUnlessListed(ctx);
+    if (denied) return denied;
     const nome = str(asRecord(input).nome);
     if (!nome) return 'Informe o nome do contato.';
     const hint = extractPhoneHint(nome) ?? extractPhoneHint(ctx.lastUserMessage ?? '');
@@ -314,6 +321,8 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
   };
 
   const enviar: ToolExecutor = async (input) => {
+    const denied = await denyUnlessListed(ctx);
+    if (denied) return denied;
     const o = asRecord(input);
     const mensagem = str(o.mensagem);
     if (!mensagem || mensagem.length < 2) return 'Informe a mensagem a enviar.';
@@ -345,6 +354,8 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
   };
 
   const lerConversa: ToolExecutor = async (input) => {
+    const denied = await denyUnlessListed(ctx);
+    if (denied) return denied;
     const o = asRecord(input);
     const resolved = await resolveOneContact(ctx, str(o.nome), str(o.client_id));
     if (!resolved.ok) return resolved.text;
@@ -417,6 +428,8 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
   };
 
   const orientar: ToolExecutor = async (input) => {
+    const denied = await denyUnlessListed(ctx);
+    if (denied) return denied;
     const o = asRecord(input);
     const instrucao = str(o.instrucao);
     if (!instrucao || instrucao.length < 3) {
@@ -459,6 +472,8 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
   };
 
   const agendar: ToolExecutor = async (input) => {
+    const denied = await denyUnlessListed(ctx);
+    if (denied) return denied;
     const o = asRecord(input);
     const mensagem = str(o.mensagem);
     const quando = str(o.quando);
