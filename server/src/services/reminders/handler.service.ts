@@ -68,9 +68,9 @@ import { applySecretaryPlaybookToText } from '../secretary-playbook.service';
  */
 
 const OWNER_STT_PROMPT =
-  'O dono do negócio está ditando um lembrete pessoal em português do Brasil. ' +
-  'Pode conter datas e horários (hoje, amanhã, segunda, dia 20, às 15h), e termos como ' +
-  'pagar, boleto, fornecedor, cliente, reunião, ligar, cobrar, vencimento, entrega.';
+  'Transcreva o áudio em português do Brasil, fiel ao que a pessoa falou. ' +
+  'Pode ser recado, pergunta, compromisso (hoje, amanhã, às 15h), ou pedido para transcrever. ' +
+  'Não resuma; escreva as palavras ditas.';
 
 /** Um lembrete já interpretado, aguardando confirmação. */
 interface PendingItem {
@@ -545,6 +545,36 @@ function detectCancelAll(normalized: string): boolean {
   );
 }
 
+function wantsTranscript(normalized: string): boolean {
+  return /\b(transcrev|transcrever|passa\s+(pra|para|pro)\s+texto|escreve\s+o\s+(audio|áudio)|o\s+que\s+eu\s+(falei|disse)|ditado)\b/.test(
+    normalized,
+  );
+}
+
+/**
+ * Com o Agente ligado, frase longa/vários pedidos vão pra IA (ela grava o
+ * caderno com tools e segue o resto). Comando curto (HOJE, CANCELAR TODOS)
+ * continua na automação.
+ */
+function shouldDeferToAgent(text: string, normalized: string): boolean {
+  if (
+    wantsTranscript(normalized) ||
+    INCOMING_MEDIA_COMMITMENT.test(normalized) ||
+    SAVE_FOR_CONTACT.test(normalized)
+  ) {
+    return true;
+  }
+  if (
+    /\b(e tambem|e também|alem disso|além disso|e pesquisa|e busca|e manda|e envia|e transcrev)\b/.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+  const words = normalizeCommand(text).split(/\s+/).filter(Boolean).length;
+  return words >= 10;
+}
+
 function detectQuery(normalized: string): string | null {
   if (isFarewellTurn(normalized)) return null;
   if (detectCancelAll(normalized)) return null;
@@ -798,9 +828,11 @@ async function handleOwnerMessageInner(
   if (!text || !text.trim()) return true;
 
   const persistText =
-    visionImages.length > 0
-      ? `[${inbound.type === 'video' ? 'vídeo' : 'imagem'}] ${text}`
-      : text;
+    inbound.type === 'audio'
+      ? `[áudio] ${text}`
+      : visionImages.length > 0
+        ? `[${inbound.type === 'video' ? 'vídeo' : 'imagem'}] ${text}`
+        : text;
 
   if (!opts?.skipPersist) {
     await persistOwnerUserMessage({
@@ -1139,6 +1171,24 @@ async function handleOwnerMessageInner(
     setState(tenantId, phone, { pending: undefined });
     const corrected = `${source}\nCorreção: ${text}`;
     return handleCreate(tenantId, phone, corrected, tz, text);
+  }
+
+  // Frase longa / vários pedidos: a IA executa o caderno (tools) e o resto no
+  // mesmo turno. Comando curto (HOJE, SIM, CANCELAR TODOS) segue na automação.
+  if (flags.agent && (shouldDeferToAgent(text, normalized) || inbound.type === 'audio')) {
+    const forAgent = inbound.type === 'audio' ? `[áudio] ${text}` : text;
+    const result = await freeChatOwner(tenantId, phone, forAgent, {
+      connectionId,
+      webSearchEnabled: flags.webSearch,
+      listedOwner: listed,
+    });
+    await reply(
+      tenantId,
+      phone,
+      result.text ?? 'Não rolou agora. Manda de novo em uma frase?',
+      result.alreadyPersisted,
+    );
+    return true;
   }
 
   // 2. Consulta — palavra solta ou pergunta em linguagem natural. Sem IA.

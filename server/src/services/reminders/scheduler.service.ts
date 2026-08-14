@@ -16,6 +16,7 @@ import { tickBroadcasts } from '../broadcast.service';
 import { purgeExpiredMemories } from '../../db/queries/client_memories';
 import { tickWhatsappOnboarding } from '../whatsapp-onboarding.service';
 import { sendOwnerRelay } from '../owner-relay.service';
+import { appendOwnerChatMessage } from '../../db/queries/owner_chat_messages';
 
 /**
  * Agendador dos lembretes: a cada minuto varre os vencidos e dispara no
@@ -39,6 +40,16 @@ async function whatsappForReminder(reminder: Reminder) {
     return getWhatsappByConnection(reminder.tenant_id, reminder.connection_id);
   }
   return getTenantWhatsapp(reminder.tenant_id);
+}
+
+async function rememberFiredChat(reminder: Reminder, text: string): Promise<void> {
+  await appendOwnerChatMessage({
+    tenantId: reminder.tenant_id,
+    ownerPhone: reminder.owner_phone,
+    role: 'assistant',
+    content: text,
+    connectionId: reminder.connection_id,
+  }).catch((err) => logger.warn(`Lembrete ${reminder.id}: falha ao gravar disparo no fio`, err));
 }
 
 async function fire(reminder: Reminder): Promise<void> {
@@ -70,15 +81,16 @@ async function fire(reminder: Reminder): Promise<void> {
         throw new Error(sent.error);
       }
       const preview = relayBody.length > 120 ? `${relayBody.slice(0, 117)}…` : relayBody;
-      await wa.sendText(
-        reminder.owner_phone,
-        `Enviei pra *${sent.name}*: "${preview}"`,
-      );
+      const ownerText = `Enviei pra *${sent.name}*: "${preview}"`;
+      await wa.sendText(reminder.owner_phone, ownerText);
+      await rememberFiredChat(reminder, ownerText);
       logger.info(
         `Lembrete relay (${reminder.id}) → contato ${sent.phone}; dono ${reminder.owner_phone} avisado.`,
       );
     } else {
-      await wa.sendText(reminder.owner_phone, reminderText(reminder));
+      const body = reminderText(reminder);
+      await wa.sendText(reminder.owner_phone, body);
+      await rememberFiredChat(reminder, body);
       logger.info(
         `Lembrete enviado (${reminder.id}) para ${reminder.owner_phone}` +
           (reminder.connection_id ? ` via ${reminder.connection_id}` : ' (1ª conexão).'),
@@ -125,6 +137,7 @@ async function fireLead(reminder: Reminder): Promise<void> {
   try {
     const wa = await whatsappForReminder(reminder);
     await wa.sendText(reminder.owner_phone, text);
+    await rememberFiredChat(reminder, text);
     logger.info(`Aviso antecipado enviado (${reminder.id}).`);
   } catch (err) {
     logger.warn(`Falha no aviso antecipado ${reminder.id}`, err);

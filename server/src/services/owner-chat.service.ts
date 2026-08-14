@@ -99,9 +99,11 @@ function buildFastSystem(
     'No WhatsApp a pessoa costuma quebrar o mesmo pedido em vários balões seguidos. Vários user seguidos sem a sua resposta no meio são UM pedido só — junte o sentido e execute uma vez. Não peça para repetir o que já está nesses balões.',
     'Se nesta mensagem (já juntada) houver VÁRIOS pedidos distintos (ex.: "me lembra amanhã às 9h e pesquisa o dólar"), faça TODOS; confirme cada um em 1 linha.',
     'Nunca ignore um pedido desta fala. Nunca misture com um pedido antigo já respondido.',
-    'Se pedirem para anotar/lembrar algo com data (só pra ela), diga pra mandar tipo "me lembra amanhã às 9h de…". A secretária confirma com SIM e grava no caderno DESTA pessoa.',
-    'Se pedirem para MUDAR horário de compromisso/despertar já anotado: NÃO finja que alterou. Diga pra mandar tipo "muda o despertar pra 5h" — a secretária confirma com SIM e grava no caderno.',
+    'Se pedirem para anotar/lembrar algo com data, USE anotar_compromisso (grava no caderno e dispara sozinho no horário). Não finja que anotou. No mesmo turno pode fazer OUTRA tarefa (transcrever, pesquisar, falar de contato) — nunca deixe um pedido de lado.',
+    'Se pedirem para MUDAR horário: use alterar_compromisso. Para cancelar: cancelar_compromissos (todos=true ou caderno_n). Não recite a lista no lugar de executar.',
     'Se disser que VAI mandar áudio/foto de um compromisso, peça o arquivo e NÃO recite a lista da agenda.',
+    'Áudio chega como "[áudio]" + transcrição já pronta. Se pediram para transcrever/escrever o áudio, MOSTRE o texto. Se o áudio é compromisso, anote com a tool E mostre a transcrição se pediram os dois.',
+    'O caderno abaixo é o que ESTÁ salvo para disparo automático. Quando um alarme dispara, isso entra no histórico como sua mensagem — você VÊ e pode conversar sobre aquele toque.',
     listedOwner
       ? 'Se pedir para salvar um compromisso PARA um contato (ex.: Wender no WhatsApp), use agendar_mensagem_contato quando tiver horário e texto. Se ainda vai mandar o áudio, peça o áudio. Nunca recitar a lista de compromissos no lugar disso.'
       : '',
@@ -119,7 +121,7 @@ function buildFastSystem(
           '6) orientar_atendimento_contato com o objetivo do dono para a IA do negócio CONTINUAR nas próximas msgs do contato.',
           'Se o contato pediu pesquisa na internet: NÃO ignore — pesquise com web_search e mande o resultado pra ele.',
           'Fluxo venda: listar_produtos → ler_conversa se já houver fio → texto humano → enviar + orientar.',
-          'Fluxo rotina: agendar_mensagem_contato com quando=YYYY-MM-DDTHH:mm e recorrencia se pedir.',
+          'Fluxo rotina: agendar_mensagem_contato com quando=YYYY-MM-DDTHH:mm e recorrencia se pedir. Compromisso da PRÓPRIA pessoa: anotar_compromisso.',
           'Se o nome JÁ ESTIVER em CONTATOS QUE O DONO JÁ ESCOLHEU, use esse client_id e NÃO pergunte qual é. Só mostre lista se o nome NÃO estiver na memória e não houver final de telefone. Se 1 contato claro OU o dono já deu o final do número, aja na hora.',
           'Confirme ao dono em 1–2 linhas o que leu/enviou. Nunca invente envio sem OK da tool.',
         ].join(' ')
@@ -230,22 +232,22 @@ async function runFreeChatOnce(
     attachImagesToLastUser(messages, opts.images);
   }
 
-  // Tools do dono (contatos/venda/agenda) + web_search opcional.
-  // Com imagem: só visão (sem tools) — adapters focam na mídia.
+  // Tools: caderno sempre (anotar/alterar/cancelar). Contatos só para número cadastrado, sem imagem.
   const webSearchOn = Boolean(opts.webSearchEnabled);
   const toolSearchAvailable = webSearchOn && isWebSearchToolAvailable() && !hasImages;
   const contactToolsOn = !hasImages && listedOwner;
   const lastUser = [...messages].reverse().find((m) => m.role === 'user');
-  const ownerTools = contactToolsOn
-    ? registryAsRequestFields(
-        buildOwnerToolRegistry({
-          tenantId,
-          ownerPhone: phone,
-          connectionId: opts.connectionId,
-          lastUserMessage: typeof lastUser?.content === 'string' ? lastUser.content : null,
-        }),
-      )
-    : { tools: [], toolExecutors: {} };
+  const ownerTools = registryAsRequestFields(
+    buildOwnerToolRegistry(
+      {
+        tenantId,
+        ownerPhone: phone,
+        connectionId: opts.connectionId,
+        lastUserMessage: typeof lastUser?.content === 'string' ? lastUser.content : null,
+      },
+      { contacts: contactToolsOn },
+    ),
+  );
 
   const toolExecutors = { ...ownerTools.toolExecutors };
   if (toolSearchAvailable) {
@@ -283,7 +285,7 @@ async function runFreeChatOnce(
 
   const maxTokens = hasImages
     ? VISION_MAX_TOKENS
-    : contactToolsOn
+    : ownerTools.tools.length || toolSearchAvailable
       ? TOOLS_MAX_TOKENS
       : FAST_MAX_TOKENS;
 

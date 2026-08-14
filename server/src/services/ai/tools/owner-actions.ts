@@ -11,19 +11,25 @@ import {
   getRecentMessagesForAI,
 } from '../../../db/queries/conversations';
 import { listProducts } from '../../../db/queries/products';
-import { createReminder } from '../../../db/queries/reminders';
+import {
+  cancelAllPendingReminders,
+  cancelReminder,
+  createReminder,
+  updateOwnerReminder,
+} from '../../../db/queries/reminders';
 import { formatBRL } from '../../../utils/text';
+import { DEFAULT_TZ, formatForOwner, isValidRecurrence, parseLocalIso } from '../../reminders/time';
 import {
   displayName,
   resolveRelayContacts,
   sendOwnerRelay,
 } from '../../owner-relay.service';
+import { bumpUntilFuture, loadOwnerAgenda } from '../../reminders/parse.service';
 import { rememberContactChoice } from '../../owner-contact-memory.service';
 import { extractPhoneHint } from '../../../utils/phone-hint';
 import { describeInboundVisual } from '../../inbound-understand.service';
 import { recordOwnerEvent } from '../../owner-memory.service';
 import { buildMemoryPromptBlock } from '../../memory.service';
-import { DEFAULT_TZ, formatForOwner, parseLocalIso } from '../../reminders/time';
 import {
   assertListedOwner,
   cancelWatchForAnyone,
@@ -42,6 +48,11 @@ export interface OwnerToolContext {
   connectionId?: string | null;
   /** Fala atual do dono — pra cruzar "final 3934" mesmo se a tool só mandar o nome. */
   lastUserMessage?: string | null;
+}
+
+export interface OwnerToolRegistryOpts {
+  /** Tools de contato/CRM. Sem isto, só caderno + catálogo. */
+  contacts?: boolean;
 }
 
 function asRecord(input: unknown): Record<string, unknown> {
@@ -210,6 +221,70 @@ const responderContatoTool: Tool = {
   },
 };
 
+const anotarCompromissoTool: Tool = {
+  name: 'anotar_compromisso',
+  description:
+    'Grava um compromisso no caderno para DISPARO AUTOMÁTICO no WhatsApp. Use sempre que pedirem para lembrar/anotar/salvar horário (inclusive áudio já transcrito). Se for PARA um contato receber a mensagem no horário, preencha para_contato + mensagem_contato.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      task: { type: 'string', description: 'O que fazer, curto, sem a palavra lembrete.' },
+      quando: {
+        type: 'string',
+        description: 'Horário de parede YYYY-MM-DDTHH:mm (America/Sao_Paulo).',
+      },
+      recorrencia: {
+        type: 'string',
+        description: 'daily | weekly:MON..SUN | monthly:1-31. Omita se for único.',
+      },
+      lead_minutes: {
+        type: 'number',
+        description: 'Aviso antecipado em minutos, só se pediram (60 = 1h antes).',
+      },
+      para_contato: {
+        type: 'string',
+        description: 'Nome do contato que deve receber no horário (só dono cadastrado).',
+      },
+      mensagem_contato: {
+        type: 'string',
+        description: 'Texto enviado AO CONTATO no horário (exige para_contato).',
+      },
+    },
+    required: ['task', 'quando'],
+    additionalProperties: false,
+  },
+};
+
+const alterarCompromissoTool: Tool = {
+  name: 'alterar_compromisso',
+  description:
+    'Muda o horário (e opcionalmente a tarefa) de um item JÁ no caderno. caderno_n é o número 1-based da lista do caderno.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      caderno_n: { type: 'number', description: 'Número do item no caderno (1, 2, 3…).' },
+      quando: { type: 'string', description: 'Novo horário YYYY-MM-DDTHH:mm.' },
+      task: { type: 'string', description: 'Nova tarefa, só se pediram para mudar o texto.' },
+    },
+    required: ['caderno_n', 'quando'],
+    additionalProperties: false,
+  },
+};
+
+const cancelarCompromissosTool: Tool = {
+  name: 'cancelar_compromissos',
+  description:
+    'Cancela no banco (param de tocar e saem da lista). todos=true cancela todos os pendentes. Ou caderno_n para um item.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      todos: { type: 'boolean', description: 'true = cancelar todos os pendentes desta pessoa.' },
+      caderno_n: { type: 'number', description: 'Número do item no caderno, se não for todos.' },
+    },
+    additionalProperties: false,
+  },
+};
+
 function normalizeRecurrence(raw: string): string | null {
   const t = raw.trim();
   if (!t) return null;
@@ -279,8 +354,12 @@ async function denyUnlessListed(ctx: OwnerToolContext): Promise<string | null> {
   return 'Sem acesso aos contatos deste WhatsApp.';
 }
 
-/** Registry de tools do dono (sempre disponível no chat do agente). */
-export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
+/** Registry de tools do dono (caderno sempre; contatos opcional). */
+export function buildOwnerToolRegistry(
+  ctx: OwnerToolContext,
+  opts: OwnerToolRegistryOpts = {},
+): ToolRegistry {
+  const contacts = opts.contacts !== false;
   const buscar: ToolExecutor = async (input) => {
     const denied = await denyUnlessListed(ctx);
     if (denied) return denied;
@@ -637,9 +716,126 @@ export function buildOwnerToolRegistry(ctx: OwnerToolContext): ToolRegistry {
       : `OK — parei de responder *${done.name}*. O aviso ao dono continua, se estiver ativo.`;
   };
 
-  return {
-    buscar_contato: { tool: buscarContatoTool, execute: buscar },
+  const anotar: ToolExecutor = async (input) => {
+    const o = asRecord(input);
+    const task = str(o.task);
+    const quando = str(o.quando);
+    if (!task) return 'Informe a tarefa.';
+    if (!quando) return 'Informe quando (YYYY-MM-DDTHH:mm).';
+    const tz = DEFAULT_TZ;
+    const parsed = parseLocalIso(quando, tz);
+    if (!parsed) return 'quando inválido. Use YYYY-MM-DDTHH:mm.';
+    let recurrence: string | null = null;
+    const recRaw = str(o.recorrencia);
+    if (recRaw) {
+      recurrence = normalizeRecurrence(recRaw);
+      if (!recurrence || !isValidRecurrence(recurrence)) {
+        return 'recorrencia inválida. Use daily, weekly:MON, monthly:15, ou omita.';
+      }
+    }
+    const nextFireAt = bumpUntilFuture(parsed, new Date(), tz, recurrence);
+    const leadRaw = o.lead_minutes;
+    const leadMinutes =
+      typeof leadRaw === 'number' && leadRaw > 0 ? Math.min(Math.floor(leadRaw), 7 * 24 * 60) : null;
+
+    const para = str(o.para_contato);
+    const msgContato = str(o.mensagem_contato);
+    let targetClientId: string | null = null;
+    let relayBody: string | null = null;
+    if (para) {
+      const denied = await denyUnlessListed(ctx);
+      if (denied) return denied;
+      const resolved = await resolveOneContact(ctx, para, '');
+      if (!resolved.ok) return resolved.text;
+      targetClientId = resolved.id;
+      relayBody = msgContato || task;
+    }
+
+    const reminder = await createReminder(ctx.tenantId, {
+      ownerPhone: ctx.ownerPhone,
+      task: para ? `Enviar p/ ${para}: ${task}` : task,
+      category: recurrence ? 'rotina' : 'data_especifica',
+      recurrence,
+      nextFireAt,
+      timezone: tz,
+      leadMinutes,
+      connectionId: ctx.connectionId,
+      targetClientId,
+      relayBody,
+    });
+
+    void recordOwnerEvent({
+      tenantId: ctx.tenantId,
+      ownerPhone: ctx.ownerPhone,
+      kind: 'evento',
+      summary: `Compromisso anotado: ${reminder.task} (${formatForOwner(nextFireAt, tz)})`,
+      connectionId: ctx.connectionId,
+      occurredAt: nextFireAt,
+      source: 'reminder',
+    });
+
+    return (
+      `OK — salvo no caderno para disparo automático em ${formatForOwner(nextFireAt, tz)}` +
+      (recurrence ? ` · repete ${recurrence}` : ' · único') +
+      (para ? ` · no horário mando pra ${para}` : '') +
+      ` · id=${reminder.id}.`
+    );
+  };
+
+  const alterar: ToolExecutor = async (input) => {
+    const o = asRecord(input);
+    const n = typeof o.caderno_n === 'number' ? o.caderno_n : Number(o.caderno_n);
+    if (!Number.isInteger(n) || n < 1) return 'caderno_n deve ser o número do item (1, 2, …).';
+    const quando = str(o.quando);
+    if (!quando) return 'Informe o novo horário (YYYY-MM-DDTHH:mm).';
+    const tz = DEFAULT_TZ;
+    const parsed = parseLocalIso(quando, tz);
+    if (!parsed) return 'quando inválido. Use YYYY-MM-DDTHH:mm.';
+    const agenda = await loadOwnerAgenda(ctx.tenantId, ctx.ownerPhone, tz);
+    const existing = agenda[n - 1];
+    if (!existing) return `Não achei o item ${n} no caderno. Manda HOJE pra eu listar.`;
+    const nextFireAt = bumpUntilFuture(parsed, new Date(), tz, existing.recurrence);
+    const task = str(o.task) || existing.task;
+    const updated = await updateOwnerReminder(ctx.tenantId, ctx.ownerPhone, existing.id, {
+      nextFireAt,
+      task,
+      recurrence: existing.recurrence,
+    });
+    if (!updated) return 'Não consegui alterar — talvez já tenha sido cancelado.';
+    return `OK — alterei: ${updated.task} · ${formatForOwner(nextFireAt, tz)}. Disparo automático atualizado.`;
+  };
+
+  const cancelar: ToolExecutor = async (input) => {
+    const o = asRecord(input);
+    if (o.todos === true) {
+      const count = await cancelAllPendingReminders(ctx.tenantId, ctx.ownerPhone);
+      return count === 0
+        ? 'Não tinha nenhum pendente.'
+        : `OK — cancelei ${count}. Saíram da lista e não tocam mais.`;
+    }
+    const n = typeof o.caderno_n === 'number' ? o.caderno_n : Number(o.caderno_n);
+    if (!Number.isInteger(n) || n < 1) return 'Informe todos=true ou caderno_n.';
+    const agenda = await loadOwnerAgenda(ctx.tenantId, ctx.ownerPhone, DEFAULT_TZ);
+    const existing = agenda[n - 1];
+    if (!existing) return `Não achei o item ${n} no caderno.`;
+    const ok = await cancelReminder(ctx.tenantId, ctx.ownerPhone, existing.id);
+    return ok
+      ? `OK — cancelei "${existing.task}". Não toca mais.`
+      : 'Esse já não estava pendente.';
+  };
+
+  const reminderRegistry: ToolRegistry = {
+    anotar_compromisso: { tool: anotarCompromissoTool, execute: anotar },
+    alterar_compromisso: { tool: alterarCompromissoTool, execute: alterar },
+    cancelar_compromissos: { tool: cancelarCompromissosTool, execute: cancelar },
     listar_produtos: { tool: listarProdutosTool, execute: listar },
+  };
+
+  if (!contacts) return reminderRegistry;
+
+  return {
+    ...reminderRegistry,
+    buscar_contato: { tool: buscarContatoTool, execute: buscar },
     ler_conversa_contato: { tool: lerConversaTool, execute: lerConversa },
     orientar_atendimento_contato: { tool: orientarAtendimentoTool, execute: orientar },
     enviar_mensagem_contato: { tool: enviarMensagemTool, execute: enviar },
