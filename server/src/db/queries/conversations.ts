@@ -214,7 +214,10 @@ export async function getRecentMessagesForAI(
   tenantId: string,
   conversationId: string,
   limit = 20,
+  offset = 0,
 ): Promise<AiHistoryMessage[]> {
+  const capped = Math.min(Math.max(limit, 1), 2000);
+  const skip = Math.max(offset, 0);
   const { rows } = await query<AiHistoryMessage>(
     `SELECT
         m.*,
@@ -226,10 +229,22 @@ export async function getRecentMessagesForAI(
       LEFT JOIN products p ON p.id = m.product_id
       WHERE m.tenant_id = $1 AND m.conversation_id = $2
       ORDER BY m.sent_at DESC
-      LIMIT $3`,
-    [tenantId, conversationId, limit],
+      LIMIT $3 OFFSET $4`,
+    [tenantId, conversationId, capped, skip],
   );
   return rows.reverse();
+}
+
+export async function countMessagesInConversation(
+  tenantId: string,
+  conversationId: string,
+): Promise<number> {
+  const row = await queryOne<{ n: string }>(
+    `SELECT COUNT(*)::text AS n FROM messages_log
+      WHERE tenant_id = $1 AND conversation_id = $2`,
+    [tenantId, conversationId],
+  );
+  return Number(row?.n ?? 0);
 }
 
 export async function updateConversationStatus(

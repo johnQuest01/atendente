@@ -7,9 +7,11 @@
 import { getClientById, updateClient } from '../../../db/queries/clients';
 import {
   clearHumanPause,
+  countMessagesInConversation,
   findOrCreateOpenConversation,
   getRecentMessagesForAI,
 } from '../../../db/queries/conversations';
+import { countOwnerChatMessages, listOwnerChatHistory } from '../../../db/queries/owner_chat_messages';
 import { listProducts } from '../../../db/queries/products';
 import {
   cancelAllPendingReminders,
@@ -140,7 +142,7 @@ const agendarMensagemTool: Tool = {
 const lerConversaTool: Tool = {
   name: 'ler_conversa_contato',
   description:
-    'Lê o histórico recente da conversa de um contato. Inclui o TEXTO de áudios transcritos e a DESCRIÇÃO de fotos/vídeos — use isso como o que a pessoa falou ou mostrou, com a mesma precisão de quando o dono manda áudio/foto pra você.',
+    'Lê o histórico da conversa de um contato no banco (TODAS as mensagens, não só as últimas). Padrão: 200 mais recentes. Se vier "há mais", chame de novo com offset maior até o fim. Inclui TEXTO de áudios transcritos e DESCRIÇÃO de fotos/vídeos.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -148,7 +150,31 @@ const lerConversaTool: Tool = {
       client_id: { type: 'string', description: 'UUID do contato, se já conhecido.' },
       limite: {
         type: 'number',
-        description: 'Quantas mensagens recentes (padrão 25, máx. 40).',
+        description: 'Quantas mensagens nesta página (padrão 200, máx. 500).',
+      },
+      offset: {
+        type: 'number',
+        description: 'Pular as N mais recentes para ler as mais antigas (0 = começo pelo recente).',
+      },
+    },
+    additionalProperties: false,
+  },
+};
+
+const lerHistoricoComigoTool: Tool = {
+  name: 'ler_historico_comigo',
+  description:
+    'Lê o histórico COMPLETO da conversa dono ↔ secretária no banco. Use quando precisar de mensagens mais antigas do que as já carregadas neste turno. offset pula as mais recentes.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      limite: {
+        type: 'number',
+        description: 'Quantas nesta página (padrão 200, máx. 500).',
+      },
+      offset: {
+        type: 'number',
+        description: 'Pular as N mais recentes (0 = as mais novas).',
       },
     },
     additionalProperties: false,
@@ -440,18 +466,25 @@ export function buildOwnerToolRegistry(
     if (!resolved.ok) return resolved.text;
 
     const limRaw = o.limite;
-    const lim = Math.min(40, Math.max(5, typeof limRaw === 'number' ? limRaw : 25));
+    const lim = Math.min(500, Math.max(20, typeof limRaw === 'number' ? limRaw : 200));
+    const offset = Math.max(0, typeof o.offset === 'number' ? o.offset : 0);
     const conversation = await findOrCreateOpenConversation(
       ctx.tenantId,
       resolved.id,
       ctx.connectionId ?? null,
     );
     await clearHumanPause(ctx.tenantId, conversation.id).catch(() => null);
-    const history = await getRecentMessagesForAI(ctx.tenantId, conversation.id, lim);
+    const [history, total] = await Promise.all([
+      getRecentMessagesForAI(ctx.tenantId, conversation.id, lim, offset),
+      countMessagesInConversation(ctx.tenantId, conversation.id),
+    ]);
     if (!history.length) {
       return (
-        `Contato ${resolved.name} (${resolved.phone}) — conversa aberta, ainda sem mensagens no painel. ` +
-        `Pode enviar a primeira mensagem com enviar_mensagem_contato.`
+        `Contato ${resolved.name} (${resolved.phone}) — ${
+          total === 0
+            ? 'conversa aberta, ainda sem mensagens no painel. Pode enviar a primeira com enviar_mensagem_contato.'
+            : `offset ${offset} passou do fim (${total} no banco).`
+        }`
       );
     }
 
@@ -498,12 +531,47 @@ export function buildOwnerToolRegistry(
     }
 
     const memory = await buildMemoryPromptBlock(ctx.tenantId, resolved.id).catch(() => '');
+    const loadedUntil = offset + history.length;
+    const more =
+      loadedUntil < total
+        ? `\nHá mais ${total - loadedUntil} mais antigas. Chame de novo com offset=${loadedUntil} para continuar até o começo.`
+        : '\nFim do fio — todas as mensagens desta página até o começo já cobertas com os offsets anteriores.';
     return (
-      `Conversa com ${resolved.name} (${resolved.phone}) · client_id=${resolved.id}\n` +
+      `Conversa com ${resolved.name} (${resolved.phone}) · client_id=${resolved.id} · ${total} msgs no banco · offset ${offset}\n` +
       (memory ? `${memory.trim()}\n` : '') +
-      `Últimas ${lines.length} msgs:\n` +
-      lines.join('\n')
+      `${lines.length} msgs (da mais antiga desta página à mais nova):\n` +
+      lines.join('\n') +
+      more
     );
+  };
+
+  const lerMeuHistorico: ToolExecutor = async (input) => {
+    const o = asRecord(input);
+    const lim = Math.min(500, Math.max(20, typeof o.limite === 'number' ? o.limite : 200));
+    const offset = Math.max(0, typeof o.offset === 'number' ? o.offset : 0);
+    const [rows, total] = await Promise.all([
+      listOwnerChatHistory(ctx.tenantId, ctx.ownerPhone, {
+        connectionId: ctx.connectionId,
+        limit: lim,
+        offset,
+      }),
+      countOwnerChatMessages(ctx.tenantId, ctx.ownerPhone, ctx.connectionId),
+    ]);
+    if (!rows.length) {
+      return total === 0
+        ? 'Ainda não há histórico comigo no banco.'
+        : `offset ${offset} passou do fim (${total} mensagens).`;
+    }
+    const lines = rows.map((m) => {
+      const who = m.role === 'user' ? 'DONO' : 'VOCÊ';
+      return `${who}: ${m.content.slice(0, 800)}`;
+    });
+    const loadedUntil = offset + rows.length;
+    const more =
+      loadedUntil < total
+        ? `\nHá mais ${total - loadedUntil} mais antigas. Chame de novo com offset=${loadedUntil}.`
+        : '\nFim do fio comigo.';
+    return `Histórico comigo · ${total} no banco · offset ${offset}\n${lines.join('\n')}${more}`;
   };
 
   const orientar: ToolExecutor = async (input) => {
@@ -828,6 +896,7 @@ export function buildOwnerToolRegistry(
     anotar_compromisso: { tool: anotarCompromissoTool, execute: anotar },
     alterar_compromisso: { tool: alterarCompromissoTool, execute: alterar },
     cancelar_compromissos: { tool: cancelarCompromissosTool, execute: cancelar },
+    ler_historico_comigo: { tool: lerHistoricoComigoTool, execute: lerMeuHistorico },
     listar_produtos: { tool: listarProdutosTool, execute: listar },
   };
 

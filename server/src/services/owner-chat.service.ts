@@ -17,6 +17,7 @@ import { getReminderPersona, getSecretaryPlaybook } from '../db/queries/settings
 import { getConnectionById } from '../db/queries/whatsapp_connections';
 import {
   appendOwnerChatMessage,
+  countOwnerChatMessages,
   listOwnerChatHistory,
 } from '../db/queries/owner_chat_messages';
 import { loadOwnerAgenda } from './reminders/parse.service';
@@ -33,7 +34,7 @@ const FAST_MAX_TOKENS = 280;
 const TOOLS_MAX_TOKENS = 900;
 const VISION_MAX_TOKENS = 500;
 const FAST_TEMPERATURE = 0.2;
-const HISTORY_LIMIT = 80;
+const HISTORY_LIMIT = 2000;
 
 const OWNER_VISION_HINT =
   '\n\nATENÇÃO — O DONO ENVIOU IMAGEM/VÍDEO. Analise o que aparece na mídia e responda com base nisso. ' +
@@ -104,14 +105,15 @@ function buildFastSystem(
     'Se disser que VAI mandar áudio/foto de um compromisso, peça o arquivo e NÃO recite a lista da agenda.',
     'Áudio chega como "[áudio]" + transcrição já pronta. Se pediram para transcrever/escrever o áudio, MOSTRE o texto. Se o áudio é compromisso, anote com a tool E mostre a transcrição se pediram os dois.',
     'O caderno abaixo é o que ESTÁ salvo para disparo automático. Quando um alarme dispara, isso entra no histórico como sua mensagem — você VÊ e pode conversar sobre aquele toque.',
+    'O histórico desta conversa está no banco ao vivo. Abaixo vão as mensagens carregadas agora. Se o dono pedir algo ANTIGO ou o fio for maior, use ler_historico_comigo (offset) até cobrir TUDO — nunca diga que só vê 80 mensagens.',
     listedOwner
       ? 'Se pedir para salvar um compromisso PARA um contato (ex.: Wender no WhatsApp), use agendar_mensagem_contato quando tiver horário e texto. Se ainda vai mandar o áudio, peça o áudio. Nunca recitar a lista de compromissos no lugar disso.'
       : '',
     contactToolsOn
       ? [
           'Você TEM acesso às conversas e aos contatos do WhatsApp business via tools:',
-          'buscar_contato, ler_conversa_contato, listar_produtos, enviar_mensagem_contato, orientar_atendimento_contato, agendar_mensagem_contato, avisar_quando_contato_falar, responder_contato.',
-          'NUNCA diga que não tem acesso às conversas — você LÊ com ler_conversa_contato e FALA com enviar_mensagem_contato.',
+          'buscar_contato, ler_conversa_contato, listar_produtos, enviar_mensagem_contato, orientar_atendimento_contato, agendar_mensagem_contato, avisar_quando_contato_falar, responder_contato, ler_historico_comigo.',
+          'NUNCA diga que não tem acesso às conversas — você LÊ com ler_conversa_contato (limite+offset até o FIM do fio, todas as mensagens) e FALA com enviar_mensagem_contato.',
           'Áudio e foto/vídeo do contato aparecem transcritos ou descritos em ler_conversa_contato. Trate esse texto como o que a pessoa FALOU ou MOSTROU — responda com a mesma precisão de quando o dono te manda áudio ou foto.',
           'Quando o dono quiser ser AVISADO que alguém falou com este WhatsApp, use avisar_quando_contato_falar — em QUALQUER formulação, não só a frase pronta. Exemplos que são o MESMO pedido: "me avisa quando o Wender mandar mensagem", "quando o Wender chamar", "se a Maria falar me avisa", "me chama quando o João mandar zap", "avisa se o Pedro aparecer". Extraia o NOME e chame a tool (todos=false). Se citar o FINAL do número ("Jurandir final 3934", "o do 3934"), passe nome COM os dígitos ("Jurandir 3934") e NÃO pergunte qual contato — escolha o telefone que TERMINA com esses dígitos. Se disser "sempre que o X…", modo always; senão always também, salvo se pedir só a próxima. todos=true SOMENTE se pedir de qualquer pessoa / alguém / todo mundo SEM citar um nome. NUNCA use todos=true se houver um contato específico. Para parar um nome: acao=cancelar + nome. Para parar o geral: acao=cancelar + todos=true. Lista: acao=listar.',
           'Quando o dono pedir PARA DE RESPONDER / não fala mais com / não atende X: use responder_contato acao=parar + nome. Isso NÃO cancela o aviso (avisar_quando_contato_falar). Voltar a responder: acao=voltar. NUNCA trate "para de responder a esposa" como cancelar aviso.',
@@ -165,9 +167,9 @@ function historyToModelMessages(
     }
     out.push({ role: row.role, content });
   }
-  // Modelo precisa terminar com user
+  // Não cortar o fio: o banco tem tudo; o modelo lê o que foi carregado.
   while (out.length && out[out.length - 1]!.role !== 'user') out.pop();
-  return out.slice(-48);
+  return out;
 }
 
 function attachImagesToLastUser(messages: ChatMessage[], images: ChatImage[]): void {
@@ -208,7 +210,7 @@ async function runFreeChatOnce(
     return 'Recebi a foto, mas nenhuma IA com visão está ligada agora. Me descreve o que tem nela?';
   }
 
-  const [dbRows, memoryBlock, aliasBlock] = await Promise.all([
+  const [dbRows, memoryBlock, aliasBlock, historyTotal] = await Promise.all([
     listOwnerChatHistory(tenantId, phone, {
       connectionId: opts.connectionId,
       limit: HISTORY_LIMIT,
@@ -217,8 +219,13 @@ async function runFreeChatOnce(
     listedOwner
       ? buildContactAliasPromptBlock(tenantId, phone, opts.connectionId)
       : Promise.resolve(''),
+    countOwnerChatMessages(tenantId, phone, opts.connectionId),
   ]);
-  const contextBlock = [memoryBlock, aliasBlock].filter(Boolean).join('\n\n');
+  const historyNote =
+    historyTotal > dbRows.length
+      ? `Histórico comigo no banco: ${historyTotal} mensagens. Carregadas neste turno: as ${dbRows.length} mais recentes. Use ler_historico_comigo com offset=${dbRows.length} para as mais antigas até o começo — o dono pediu acesso a TODAS.`
+      : `Histórico comigo no banco: ${historyTotal} mensagens (todas neste turno).`;
+  const contextBlock = [historyNote, memoryBlock, aliasBlock].filter(Boolean).join('\n\n');
   const messages = historyToModelMessages(
     dbRows.map((r) => ({ role: r.role, content: r.content })),
   );

@@ -633,7 +633,7 @@ async function processInbound(
   }
 
   // Fallback: a IA precisa do histórico + catálogo de produtos disponíveis.
-  const history = await getRecentMessagesForAI(tenantId, conversation.id, 20);
+  const history = await getRecentMessagesForAI(tenantId, conversation.id, 200);
   const waConnectionId = conversation.connection_id ?? null;
 
   // Coleta de dados do cliente em segundo plano (não bloqueia a resposta).
@@ -722,7 +722,7 @@ async function replyToVisualMedia(
     return;
   }
 
-  const history = await getRecentMessagesForAI(tenantId, ctx.conversation.id, 20);
+  const history = await getRecentMessagesForAI(tenantId, ctx.conversation.id, 200);
   const [products, scripts] = await Promise.all([
     listProducts(tenantId, true),
     listScripts(tenantId, true),

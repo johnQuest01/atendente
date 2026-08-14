@@ -54,14 +54,15 @@ export async function appendOwnerChatMessage(input: {
   );
 }
 
-/** Últimas N mensagens do fio (ordem cronológica crescente). */
+/** Últimas N mensagens do fio (ordem cronológica crescente). `offset` pula as mais novas. */
 export async function listOwnerChatHistory(
   tenantId: string,
   ownerPhone: string,
-  opts?: { connectionId?: string | null; limit?: number },
+  opts?: { connectionId?: string | null; limit?: number; offset?: number },
 ): Promise<OwnerChatMessage[]> {
   assertTenantMatchesScope(tenantId);
-  const limit = Math.min(Math.max(opts?.limit ?? 40, 1), 100);
+  const limit = Math.min(Math.max(opts?.limit ?? 40, 1), 2000);
+  const offset = Math.max(opts?.offset ?? 0, 0);
   const connectionId = opts?.connectionId ?? null;
 
   if (connectionId) {
@@ -71,10 +72,10 @@ export async function listOwnerChatHistory(
           WHERE tenant_id = $1 AND owner_phone = $2
             AND (connection_id IS NULL OR connection_id = $3)
           ORDER BY created_at DESC
-          LIMIT $4
+          LIMIT $4 OFFSET $5
        ) t
        ORDER BY created_at ASC`,
-      [tenantId, ownerPhone, connectionId, limit],
+      [tenantId, ownerPhone, connectionId, limit, offset],
     );
     return rows;
   }
@@ -84,10 +85,33 @@ export async function listOwnerChatHistory(
        SELECT * FROM owner_chat_messages
         WHERE tenant_id = $1 AND owner_phone = $2
         ORDER BY created_at DESC
-        LIMIT $3
+        LIMIT $3 OFFSET $4
      ) t
      ORDER BY created_at ASC`,
-    [tenantId, ownerPhone, limit],
+    [tenantId, ownerPhone, limit, offset],
   );
   return rows;
+}
+
+export async function countOwnerChatMessages(
+  tenantId: string,
+  ownerPhone: string,
+  connectionId?: string | null,
+): Promise<number> {
+  assertTenantMatchesScope(tenantId);
+  if (connectionId) {
+    const row = await queryOne<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM owner_chat_messages
+        WHERE tenant_id = $1 AND owner_phone = $2
+          AND (connection_id IS NULL OR connection_id = $3)`,
+      [tenantId, ownerPhone, connectionId],
+    );
+    return Number(row?.n ?? 0);
+  }
+  const row = await queryOne<{ n: string }>(
+    `SELECT COUNT(*)::text AS n FROM owner_chat_messages
+      WHERE tenant_id = $1 AND owner_phone = $2`,
+    [tenantId, ownerPhone],
+  );
+  return Number(row?.n ?? 0);
 }
