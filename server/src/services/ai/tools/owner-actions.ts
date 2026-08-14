@@ -17,10 +17,12 @@ import {
   cancelAllPendingReminders,
   cancelReminder,
   createReminder,
+  listReminders,
+  listRemindersAboutContact,
   updateOwnerReminder,
 } from '../../../db/queries/reminders';
 import { formatBRL } from '../../../utils/text';
-import { DEFAULT_TZ, formatForOwner, isValidRecurrence, parseLocalIso } from '../../reminders/time';
+import { DEFAULT_TZ, formatForOwner, fromWallClock, isValidRecurrence, parseLocalIso, toWallClock } from '../../reminders/time';
 import {
   displayName,
   resolveRelayContacts,
@@ -242,6 +244,26 @@ const responderContatoTool: Tool = {
       acao: { type: 'string', description: 'parar | voltar' },
       nome: { type: 'string', description: 'Nome do contato.' },
       client_id: { type: 'string', description: 'UUID do contato, se já conhecido.' },
+    },
+    additionalProperties: false,
+  },
+};
+
+const listarCompromissosTool: Tool = {
+  name: 'listar_compromissos',
+  description:
+    'Lista compromissos REAIS do caderno (pendentes). Use quando perguntarem o que tem na agenda, inclusive "tem algum compromisso para o X". Não invente. contato = nome (Ender/Wender vale). periodo: hoje|amanha|semana|mes|todos.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      periodo: {
+        type: 'string',
+        description: 'hoje | amanha | semana | mes | todos. Padrão: todos.',
+      },
+      contato: {
+        type: 'string',
+        description: 'Nome do contato se a pergunta for sobre alguém específico.',
+      },
     },
     additionalProperties: false,
   },
@@ -850,6 +872,61 @@ export function buildOwnerToolRegistry(
     );
   };
 
+  const listarCaderno: ToolExecutor = async (input) => {
+    const o = asRecord(input);
+    const periodo = (str(o.periodo) || 'todos').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const tz = DEFAULT_TZ;
+    const wc = toWallClock(new Date(), tz);
+    const startOfToday = fromWallClock({ ...wc, hour: 0, minute: 0 }, tz);
+    const endOfToday = fromWallClock({ ...wc, day: wc.day + 1, hour: 0, minute: 0 }, tz);
+    const filter: { from?: Date; until?: Date; statuses: ['pendente']; limit: number } = {
+      statuses: ['pendente'],
+      limit: 40,
+    };
+    if (periodo === 'hoje') {
+      filter.from = startOfToday;
+      filter.until = endOfToday;
+    } else if (periodo === 'amanha') {
+      filter.from = endOfToday;
+      filter.until = fromWallClock({ ...wc, day: wc.day + 2, hour: 0, minute: 0 }, tz);
+    } else if (periodo === 'semana') {
+      filter.from = startOfToday;
+      filter.until = fromWallClock({ ...wc, day: wc.day + 7, hour: 0, minute: 0 }, tz);
+    } else if (periodo === 'mes') {
+      filter.from = startOfToday;
+      filter.until = fromWallClock({ ...wc, day: wc.day + 30, hour: 0, minute: 0 }, tz);
+    }
+
+    const contato = str(o.contato);
+    let rows;
+    if (contato) {
+      const matches = await resolveRelayContacts(
+        ctx.tenantId,
+        contato,
+        ctx.connectionId,
+        ctx.ownerPhone,
+      );
+      const nameHints = [contato, ...matches.map((m) => m.name).filter((n): n is string => Boolean(n))];
+      rows = await listRemindersAboutContact(ctx.tenantId, ctx.ownerPhone, {
+        clientIds: matches.map((m) => m.id),
+        contactPhones: matches.map((m) => m.phone),
+        nameHints,
+        filter,
+      });
+    } else {
+      rows = await listReminders(ctx.tenantId, ctx.ownerPhone, filter);
+    }
+
+    if (!rows.length) {
+      return contato
+        ? `Nada anotado para "${contato}"${periodo === 'todos' ? '' : ` (${periodo})`}.`
+        : `Caderno vazio${periodo === 'todos' ? '' : ` (${periodo})`}.`;
+    }
+    return rows
+      .map((r, i) => `${i + 1}. ${r.task} — ${formatForOwner(new Date(r.next_fire_at), r.timezone || tz)}`)
+      .join('\n');
+  };
+
   const alterar: ToolExecutor = async (input) => {
     const o = asRecord(input);
     const n = typeof o.caderno_n === 'number' ? o.caderno_n : Number(o.caderno_n);
@@ -893,6 +970,7 @@ export function buildOwnerToolRegistry(
   };
 
   const reminderRegistry: ToolRegistry = {
+    listar_compromissos: { tool: listarCompromissosTool, execute: listarCaderno },
     anotar_compromisso: { tool: anotarCompromissoTool, execute: anotar },
     alterar_compromisso: { tool: alterarCompromissoTool, execute: alterar },
     cancelar_compromissos: { tool: cancelarCompromissosTool, execute: cancelar },

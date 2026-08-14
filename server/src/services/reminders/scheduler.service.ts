@@ -6,9 +6,11 @@ import {
   getDueReminders,
   markReminderFired,
   rescheduleReminder,
+  releaseLeadReminder,
 } from '../../db/queries/reminders';
 import { isTenantBlocked } from '../../middleware/tenantAccess.middleware';
 import { getTenantWhatsapp, getWhatsappByConnection } from '../whatsapp.service';
+import { isTransientNetworkError } from '../zapi.service';
 import type { Reminder } from '../../types';
 import { describeLead, describeRecurrence } from './parse.service';
 import { formatForOwner, nextOccurrence } from './time';
@@ -42,6 +44,34 @@ async function whatsappForReminder(reminder: Reminder) {
   return getTenantWhatsapp(reminder.tenant_id);
 }
 
+const TRANSIENT_BACKOFF_MS = [5_000, 15_000, 45_000];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** fetch failed: tenta de novo no mesmo minuto (5s → 15s → 45s). Só depois cai nos 10min. */
+async function withTransientRetry(reminderId: string, send: () => Promise<void>): Promise<void> {
+  const maxTries = TRANSIENT_BACKOFF_MS.length + 1;
+  let lastErr: unknown;
+  for (let i = 0; i < maxTries; i++) {
+    try {
+      await send();
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientNetworkError(err) || i === maxTries - 1) throw err;
+      const wait = TRANSIENT_BACKOFF_MS[i]!;
+      logger.warn(
+        `Lembrete ${reminderId}: falha de rede, retry em ${wait / 1000}s (tentativa ${i + 1}/${maxTries})`,
+        err,
+      );
+      await sleep(wait);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
 async function rememberFiredChat(reminder: Reminder, text: string): Promise<void> {
   await appendOwnerChatMessage({
     tenantId: reminder.tenant_id,
@@ -65,29 +95,31 @@ async function fire(reminder: Reminder): Promise<void> {
   }
 
   try {
-    const wa = await whatsappForReminder(reminder);
-    const targetId = reminder.target_client_id;
-    const relayBody = reminder.relay_body?.trim();
+    await withTransientRetry(reminder.id, async () => {
+      const wa = await whatsappForReminder(reminder);
+      const targetId = reminder.target_client_id;
+      const relayBody = reminder.relay_body?.trim();
 
-    // Relay: envia ao CONTATO e avisa o dono.
-    if (targetId && relayBody) {
-      const sent = await sendOwnerRelay({
-        tenantId: reminder.tenant_id,
-        connectionId: reminder.connection_id,
-        clientId: targetId,
-        body: relayBody,
-      });
-      if (!sent.ok) {
-        throw new Error(sent.error);
+      if (targetId && relayBody) {
+        const sent = await sendOwnerRelay({
+          tenantId: reminder.tenant_id,
+          connectionId: reminder.connection_id,
+          clientId: targetId,
+          body: relayBody,
+        });
+        if (!sent.ok) {
+          throw new Error(sent.error);
+        }
+        const preview = relayBody.length > 120 ? `${relayBody.slice(0, 117)}…` : relayBody;
+        const ownerText = `Enviei pra *${sent.name}*: "${preview}"`;
+        await wa.sendText(reminder.owner_phone, ownerText);
+        await rememberFiredChat(reminder, ownerText);
+        logger.info(
+          `Lembrete relay (${reminder.id}) → contato ${sent.phone}; dono ${reminder.owner_phone} avisado.`,
+        );
+        return;
       }
-      const preview = relayBody.length > 120 ? `${relayBody.slice(0, 117)}…` : relayBody;
-      const ownerText = `Enviei pra *${sent.name}*: "${preview}"`;
-      await wa.sendText(reminder.owner_phone, ownerText);
-      await rememberFiredChat(reminder, ownerText);
-      logger.info(
-        `Lembrete relay (${reminder.id}) → contato ${sent.phone}; dono ${reminder.owner_phone} avisado.`,
-      );
-    } else {
+
       const body = reminderText(reminder);
       await wa.sendText(reminder.owner_phone, body);
       await rememberFiredChat(reminder, body);
@@ -95,7 +127,7 @@ async function fire(reminder: Reminder): Promise<void> {
         `Lembrete enviado (${reminder.id}) para ${reminder.owner_phone}` +
           (reminder.connection_id ? ` via ${reminder.connection_id}` : ' (1ª conexão).'),
       );
-    }
+    });
   } catch (err) {
     logger.warn(`Falha ao enviar lembrete ${reminder.id} — será tentado de novo em 10min`, err);
     await rescheduleReminder(reminder.id, new Date(Date.now() + 10 * 60_000));
@@ -141,6 +173,7 @@ async function fireLead(reminder: Reminder): Promise<void> {
     logger.info(`Aviso antecipado enviado (${reminder.id}).`);
   } catch (err) {
     logger.warn(`Falha no aviso antecipado ${reminder.id}`, err);
+    await releaseLeadReminder(reminder.id);
   }
 }
 

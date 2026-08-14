@@ -115,3 +115,46 @@ export async function countOwnerChatMessages(
   );
   return Number(row?.n ?? 0);
 }
+
+/** Última fala da secretária neste WhatsApp — eco fromMe não pode pausar a IA comercial. */
+export async function findRecentOwnerAssistant(
+  tenantId: string,
+  ownerPhone: string,
+  withinMs: number,
+  connectionId?: string | null,
+): Promise<OwnerChatMessage | null> {
+  assertTenantMatchesScope(tenantId);
+  if (connectionId) {
+    return queryOne<OwnerChatMessage>(
+      `SELECT * FROM owner_chat_messages
+        WHERE tenant_id = $1 AND owner_phone = $2 AND role = 'assistant'
+          AND (connection_id IS NULL OR connection_id = $3)
+          AND created_at >= NOW() - ($4::text || ' milliseconds')::interval
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [tenantId, ownerPhone, connectionId, String(withinMs)],
+    );
+  }
+  return queryOne<OwnerChatMessage>(
+    `SELECT * FROM owner_chat_messages
+      WHERE tenant_id = $1 AND owner_phone = $2 AND role = 'assistant'
+        AND created_at >= NOW() - ($3::text || ' milliseconds')::interval
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [tenantId, ownerPhone, String(withinMs)],
+  );
+}
+
+export async function attachOwnerChatProviderId(
+  tenantId: string,
+  messageId: string,
+  providerMessageId: string,
+): Promise<void> {
+  assertTenantMatchesScope(tenantId);
+  await query(
+    `UPDATE owner_chat_messages
+        SET provider_message_id = COALESCE(provider_message_id, $3)
+      WHERE tenant_id = $1 AND id = $2`,
+    [tenantId, messageId, providerMessageId],
+  );
+}

@@ -33,6 +33,10 @@ import {
 } from '../db/queries/settings';
 import { isPhoneBlocked } from '../db/queries/blocked';
 import { isReminderOwner } from '../db/queries/reminders';
+import {
+  attachOwnerChatProviderId,
+  findRecentOwnerAssistant,
+} from '../db/queries/owner_chat_messages';
 import { handleOwnerMessage } from '../services/reminders/handler.service';
 import { notifyContactWatches, notifyContactWatchesForInbound } from '../services/contact-watch.service';
 import { isContactAutoReplyOff } from '../services/contact-reply.service';
@@ -321,6 +325,24 @@ async function processFromMe(
     }
     logger.info(
       `fromMe ignorado (outbound IA recente na conversa ${conversation.id}): ${inbound.providerMessageId ?? 'sem-id'}`,
+    );
+    return;
+  }
+
+  // Secretária/agente grava em owner_chat_messages, não em messages_log.
+  // Sem isto o eco fromMe pausa a IA comercial do contato (open access).
+  const ownerEcho = await findRecentOwnerAssistant(
+    tenantId,
+    inbound.phone,
+    120_000,
+    connectionId,
+  );
+  if (ownerEcho) {
+    if (inbound.providerMessageId) {
+      await attachOwnerChatProviderId(tenantId, ownerEcho.id, inbound.providerMessageId);
+    }
+    logger.info(
+      `fromMe ignorado (eco da secretária no fio ${inbound.phone}): ${inbound.providerMessageId ?? 'sem-id'}`,
     );
     return;
   }

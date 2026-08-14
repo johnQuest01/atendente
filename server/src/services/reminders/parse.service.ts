@@ -227,6 +227,9 @@ function buildSystemPrompt(
     '',
     'Regras de data, sempre a partir do agora informado acima:',
     '- "hoje" é a data de hoje; "amanhã" é o dia seguinte.',
+    '- "11h da noite" / "11 horas da noite" / "11 da noite" / "23h" = 23:00 (NUNCA 11:00). "12 da noite" = 00:00.',
+    '- "11h da manhã" = 11:00. "da tarde" em hora 1–11 = +12 (15h).',
+    '- Se a pessoa disse HOJE / AMANHÃ / um dia + um horário, due_at é OBRIGATÓRIO — nunca null.',
     '- Um dia da semana ("quinta") é a próxima ocorrência dele; se hoje é esse dia e o horário já passou, é o da semana seguinte.',
     '- "dia N" é o dia N deste mês, ou do próximo se já passou.',
     '- "daqui a X dias" é hoje + X dias.',
@@ -287,11 +290,123 @@ const MAX_BULK = 20;
  * recorrência e aviso prévio. Retorna null quando não dá para confiar (sem
  * due_at) — o item é simplesmente ignorado.
  */
+function foldPt(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '');
+}
+
+const MONTHS_PT: Record<string, number> = {
+  janeiro: 1,
+  fevereiro: 2,
+  marco: 3,
+  abril: 4,
+  maio: 5,
+  junho: 6,
+  julho: 7,
+  agosto: 8,
+  setembro: 9,
+  outubro: 10,
+  novembro: 11,
+  dezembro: 12,
+};
+
+/**
+ * Relógio de parede a partir da frase, quando a IA omite due_at ou troca
+ * "11h da noite" por 11:00. Sem chute: só casa horário explícito.
+ */
+export function inferDueAtFromText(text: string, now: Date, tz: string): Date | null {
+  const t = foldPt(text);
+  const wcNow = toWallClock(now, tz);
+
+  let hour: number | null = null;
+  let minute = 0;
+
+  const night = t.match(/\b(\d{1,2})\s*(?:h|:|horas?)?\s*(\d{2})?\s*(?:da|a)\s*noite\b/);
+  const morning = t.match(/\b(\d{1,2})\s*(?:h|:|horas?)?\s*(\d{2})?\s*(?:da|de)\s*manha\b/);
+  const afternoon = t.match(/\b(\d{1,2})\s*(?:h|:|horas?)?\s*(\d{2})?\s*(?:da|de)\s*tarde\b/);
+  const clock24 = t.match(/\b(\d{1,2})h(\d{2})?\b/);
+  const colon = t.match(/\b(\d{1,2}):(\d{2})\b/);
+
+  if (night) {
+    hour = Number(night[1]);
+    minute = night[2] && /^\d{2}$/.test(night[2]) ? Number(night[2]) : 0;
+    if (hour === 12) hour = 0;
+    else if (hour > 0 && hour < 12) hour += 12;
+  } else if (morning) {
+    hour = Number(morning[1]);
+    minute = morning[2] && /^\d{2}$/.test(morning[2]) ? Number(morning[2]) : 0;
+    if (hour === 12) hour = 0;
+  } else if (afternoon) {
+    hour = Number(afternoon[1]);
+    minute = afternoon[2] && /^\d{2}$/.test(afternoon[2]) ? Number(afternoon[2]) : 0;
+    if (hour > 0 && hour < 12) hour += 12;
+  } else if (clock24) {
+    hour = Number(clock24[1]);
+    minute = clock24[2] ? Number(clock24[2]) : 0;
+  } else if (colon) {
+    hour = Number(colon[1]);
+    minute = Number(colon[2]);
+  }
+
+  if (hour === null || hour > 23 || minute > 59) return null;
+
+  let year = wcNow.year;
+  let month = wcNow.month;
+  let day = wcNow.day;
+
+  const iso = t.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  const long = t.match(
+    /\b(?:dia\s+)?(\d{1,2})\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b/,
+  );
+  if (iso) {
+    year = Number(iso[1]);
+    month = Number(iso[2]);
+    day = Number(iso[3]);
+  } else if (long) {
+    day = Number(long[1]);
+    month = MONTHS_PT[long[2]!] ?? month;
+    if (long[3]) year = Number(long[3]);
+  } else if (/\bamanha\b/.test(t)) {
+    const tmr = fromWallClock(
+      { year: wcNow.year, month: wcNow.month, day: wcNow.day + 1, hour: 12, minute: 0 },
+      tz,
+    );
+    const w = toWallClock(tmr, tz);
+    year = w.year;
+    month = w.month;
+    day = w.day;
+  }
+
+  const date = fromWallClock({ year, month, day, hour, minute }, tz);
+  if (Number.isNaN(date.getTime())) return null;
+  return bumpUntilFuture(date, now, tz);
+}
+
+function applyInferredDue(
+  parsedDue: Date | null,
+  sourceText: string | undefined,
+  now: Date,
+  tz: string,
+): Date | null {
+  if (!sourceText?.trim()) return parsedDue;
+  const inferred = inferDueAtFromText(sourceText, now, tz);
+  if (!inferred) return parsedDue;
+  if (!parsedDue) return inferred;
+  const night = /\bnoite\b/.test(foldPt(sourceText));
+  const wcDue = toWallClock(parsedDue, tz);
+  const wcInf = toWallClock(inferred, tz);
+  if (night && wcDue.hour < 12 && wcInf.hour >= 12) return inferred;
+  return parsedDue;
+}
+
 function resolveParsed(
   data: z.infer<typeof parsedSchema>,
   now: Date,
   tz: string,
   agenda: Reminder[] = [],
+  sourceText?: string,
 ): ParsedReminder | null {
   const action = data.action ?? 'create';
   const task = stripReminderLabel(data.task);
@@ -309,14 +424,13 @@ function resolveParsed(
     };
   }
 
-  if (!data.due_at) {
-    logger.warn('Lembretes: IA não devolveu due_at.');
-    return null;
-  }
-
-  const parsedDue = parseLocalIso(data.due_at, tz);
-  if (!parsedDue) {
+  let parsedDue = data.due_at ? parseLocalIso(data.due_at, tz) : null;
+  if (data.due_at && !parsedDue) {
     logger.warn(`Lembretes: due_at inválido — "${data.due_at}"`);
+  }
+  parsedDue = applyInferredDue(parsedDue, sourceText, now, tz);
+  if (!parsedDue) {
+    logger.warn('Lembretes: IA não devolveu due_at.');
     return null;
   }
 
@@ -443,17 +557,17 @@ export async function parseReminder(
   const json = extractJson(result.text);
   if (!json) {
     logger.warn(`Lembretes: resposta da IA não era JSON — "${result.text.slice(0, 120)}"`);
-    return null;
+    return fallbackCreateFromText(message, now, tz, agenda)[0] ?? null;
   }
 
   const parsed = parsedSchema.safeParse(json);
   if (!parsed.success) {
     logger.warn(`Lembretes: JSON da IA fora do formato — ${parsed.error.issues[0]?.message}`);
-    return null;
+    return fallbackCreateFromText(message, now, tz, agenda)[0] ?? null;
   }
 
-  const resolved = resolveParsed(parsed.data, now, tz, agenda);
-  if (!resolved) return null;
+  const resolved = resolveParsed(parsed.data, now, tz, agenda, message);
+  if (!resolved) return fallbackCreateFromText(message, now, tz, agenda)[0] ?? null;
   return expandReminderUpdates([resolved], agenda, now, tz)[0] ?? null;
 }
 
@@ -494,13 +608,13 @@ export async function parseReminders(
   );
   if (!result) {
     logger.warn('Lembretes: nenhuma IA disponível para interpretar a mensagem.');
-    return [];
+    return fallbackCreateFromText(message, now, tz, agenda);
   }
 
   const rawItems = extractJsonArray(result.text);
   if (!rawItems) {
     logger.warn(`Lembretes: resposta da IA não era JSON — "${result.text.slice(0, 120)}"`);
-    return [];
+    return fallbackCreateFromText(message, now, tz, agenda);
   }
 
   if (rawItems.length > MAX_BULK) {
@@ -514,10 +628,57 @@ export async function parseReminders(
       logger.warn(`Lembretes: item fora do formato — ${parsed.error.issues[0]?.message}`);
       continue;
     }
-    const resolved = resolveParsed(parsed.data, now, tz, agenda);
+    const resolved = resolveParsed(parsed.data, now, tz, agenda, message);
     if (resolved) out.push(resolved);
   }
+  if (out.length === 0) {
+    return fallbackCreateFromText(message, now, tz, agenda);
+  }
   return expandReminderUpdates(out, agenda, now, tz);
+}
+
+function fallbackCreateFromText(
+  message: string,
+  now: Date,
+  tz: string,
+  agenda: Reminder[],
+): ParsedReminder[] {
+  const inferred = inferDueAtFromText(message, now, tz);
+  if (!inferred) return [];
+  const task = guessTaskFromText(message);
+  logger.info(`Lembretes: due_at inferido da frase (${formatForOwner(inferred, tz)}) — "${task}"`);
+  return expandReminderUpdates(
+    [
+      {
+        task,
+        category: 'data_especifica',
+        recurrence: null,
+        nextFireAt: inferred,
+        leadMinutes: null,
+        confirmationText: `Anotei: ${task} — ${formatForOwner(inferred, tz)}`,
+        action: 'create',
+      },
+    ],
+    agenda,
+    now,
+    tz,
+  );
+}
+
+function guessTaskFromText(text: string): string {
+  const cleaned = foldPt(text)
+    .replace(
+      /\b(opa|ok|oi|preciso que|quando for umas|me lembre|me lembra|lembr[ae]\w*|anota(?:r)?|agenda(?:r)?|hoje|amanha|da noite|da manha|da tarde|horas?)\b/g,
+      ' ',
+    )
+    .replace(/\b(?:as|a)?\s*\d{1,2}\s*(?:h|:)?\s*\d{0,2}\b/g, ' ')
+    .replace(/\b(?:dia\s+)?\d{1,2}\s+de\s+\w+(?:\s+de\s+\d{4})?\b/g, ' ')
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ')
+    .replace(/\b(para|pra|de|do|da|um|uma|o|a)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (cleaned.length < 3) return 'Compromisso';
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 }
 
 /**

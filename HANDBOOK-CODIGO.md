@@ -309,7 +309,7 @@ Detalhes críticos:
 - Idempotência: `inboundMessageExists` / `providerMessageExists`.
 - LID WhatsApp: `clients.whatsapp_lid` (migration 033) — eco `fromMe` da Z-API muitas vezes só traz LID.
 - Meta: baixa mídia por `mediaId`.
-- `fromMe` humano → `human_paused_until` = agora + `HUMAN_TAKEOVER_MINUTES`. Eco da IA **não** pausa.
+- `fromMe` humano → `human_paused_until` = agora + `HUMAN_TAKEOVER_MINUTES`. Eco da IA **não** pausa. Eco da **secretária** também não: `findRecentOwnerAssistant` em `owner_chat_messages` (a confirmação “Anotei…” é `fromMe` e não pode pausar a IA comercial / open access).
 - **Owner check ANTES de `findOrCreateClient` comercial.**
 
 Owner entra se:
@@ -353,19 +353,28 @@ Handler: `services/reminders/handler.service.ts` (~1600 linhas). Estado **em mem
 Camadas (ordem aproximada no handler):
 
 1. Dedup `providerMessageId`  
-2. STT se áudio (prefixo `[áudio]` no texto)  
+2. STT se áudio (prefixo `[áudio]` no texto). Whisper costuma transcrever “Wender” como **“Ender”** — buscas de contato usam `ILIKE %ender%` (casa Wender).  
 3. Confirmação pendente SIM/NÃO (grava/cancela)  
-4. Comandos estruturados: AJUDA, HOJE, agenda, cancelar, RECUPERAR/VARRER  
-5. Watch / mute / relay parsers  
-6. Parse NL de lembretes (`parse.service.ts`) — actions `create` | `update` | `acknowledge`  
-7. Se secretária/agente ligados: `freeChatOwner()` (tools)  
-8. Automações **não** devem “roubar” frases longas/áudio do agente: tools `anotar_compromisso`, `alterar_compromisso`, `cancelar_compromissos`
+4. **Cancelar por tarefa** (`detectCancelByTask`) — “cancela o compromisso comprar camiseta às 23h” cancela e confirma em 1 linha. **Não** relista a agenda. Vale `cancelReminderById` (o item pode ser do caderno do contato, não só do `owner_phone` do dono). `CANCELAR N` usa `lastList`.  
+5. Consulta de agenda **antes** do agente (texto **ou** áudio). Sem isto o áudio ia ao `freeChatOwner` e caía em “Não rolou agora. Manda de novo em uma frase?”.  
+6. Comandos-palavra: HOJE, AMANHÃ, TODOS, AJUDA, RECUPERAR/VARRER  
+7. Watch / mute / relay parsers  
+8. Parse NL de lembretes (`parse.service.ts`) — actions `create` | `update` | `acknowledge`  
+9. Se secretária/agente ligados: `freeChatOwner()` (tools)  
+10. Automações **não** devem “roubar” frases longas/áudio do agente **exceto** consulta/cancelamento de agenda.
+
+`detectQuery` (`handler.service.ts`):
+
+- Abre com pergunta real: `tem algum`, `tem algo`, `quais`, `o que`, etc. + substantivo de agenda (`compromisso`, `lembrete`, `agenda`…).  
+- “Tem algum compromisso para o Wender?” **é** consulta. “Salva este compromisso para o Wender” **não** é (`AGENDA_ACTION` / `SAVE_FOR_CONTACT`).  
+- Filtro de contato: `listRemindersAboutContact` — relay (`target_client_id`), tarefa/notas com o nome, e caderno do telefone daquele contato (acesso livre). Dedup por id + (task, horário).  
+- **Formato:** pergunta em linguagem natural → **uma** mensagem WhatsApp com cada item em detalhe (tarefa + horário; sem resumir, sem um balão por item). Palavra solta HOJE/AMANHÃ/TODOS → `sendReminderList` (um item por mensagem, comportamento antigo dos comandos).  
+- Cancelar **não** passa por `detectQuery`.
 
 Parse (`parse.service.ts`):
 
 - Schema JSON com `action`. `update` grava UPDATE no banco (SIM confirma).  
-- **Não** listar agenda só porque a frase menciona compromisso. `detectQuery` exige pergunta real sobre a agenda (`isQuestion && mentionsAgenda`). Frases tipo “salva este compromisso para o Wender” **não** disparam listagem.  
-- Horários vagos: madrugada ≈ 05:00, manhã ≈ 08:00.  
+- Horários vagos: madrugada ≈ 05:00, manhã ≈ 08:00. **“11h da noite” / “11 da noite” = 23:00** (nunca 11:00). `inferDueAtFromText` + `fallbackCreateFromText` se a IA omitir `due_at`.  
 - Caderno recente entra no prompt do parse para editar item certo.
 
 Flags por conexão (`whatsapp_connections`):
@@ -393,9 +402,10 @@ Arquivo: `services/ai/tools/owner-actions.ts`.
 
 **Sempre (caderno):**
 
+- `listar_compromissos` — lista real do banco (`periodo` + `contato` opcional). Fallback do agente; a consulta natural **não** depende disto (o handler lista).  
 - `anotar_compromisso` — INSERT + disparo automático; `para_contato` só se `listedOwner`  
 - `alterar_compromisso` — `caderno_n` 1-based  
-- `cancelar_compromissos` — `todos=true` ou `caderno_n`  
+- `cancelar_compromissos` — `todos=true` ou `caderno_n`. Pedido de cancelar **não** deve recitar a lista.  
 - `ler_historico_comigo`  
 - `listar_produtos`  
 
@@ -442,6 +452,8 @@ Persona comercial: `config/persona.ts` + placeholders `{NOME_DO_ATENDENTE}`, `{N
 5. `tickWhatsappOnboarding()` (QR expirado, devolve instância ao pool)  
 
 Tenant bloqueado: reagenda +6h, não perde o lembrete.
+
+Rede Z-API (`TypeError: fetch failed`): `withTransientRetry` no scheduler (backoff 5s → 15s → 45s, 4 tentativas no mesmo disparo) e só então +10 min. `zapi.service.ts`: timeout 20s + 1 retry imediato 500ms (`isTransientNetworkError`). Se o send falhar depois do aviso prévio: `releaseLeadReminder`.
 
 ### 5.12 SAFE_MODE
 
@@ -749,8 +761,8 @@ Caches em memória TTL 5s em `db/queries/settings.ts` (write-through).
 6. **SAFE_MODE on:** zero envio proativo a cliente. Broadcasts exigem SAFE off.  
 7. **Confirmação SIM** antes de gravar lembrete vindo do parser estruturado (pagamento/compromisso). Tools do agente podem gravar direto (`anotar_compromisso`) — comportamento atual intencional para áudio/frase longa.  
 8. **Cancelar todos** = `cancelAllPendingReminders` (status cancelado) → saem da lista e o scheduler não dispara.  
-9. **Não listar agenda** em texto livre que só pede para salvar compromisso.  
-10. **Human takeover:** só `fromMe` genuíno.  
+9. **Não listar agenda** em texto que pede para *salvar* compromisso. Pergunta real (“tem algum compromisso para o X?”) lista em **um** balão com detalhes. Cancelar pelo nome da tarefa **não** relista.  
+10. **Human takeover:** só `fromMe` genuíno. Eco da secretária (`owner_chat_messages`) e eco da IA (`messages_log`) **não** pausam.  
 11. **Idempotência:** webhook por `providerMessageId`; reminders por `claimReminder`.  
 12. **Cadeado de conversa** é só painel.  
 13. **Não** importar orquestrador ← webhook de forma circular.  
@@ -767,7 +779,7 @@ Caches em memória TTL 5s em `db/queries/settings.ts` (write-through).
 ### 10.1 Bug no WhatsApp do dono
 
 Ordem: `webhook.controller.ts` (owner branch) → `handler.service.ts` → `parse.service.ts` / `owner-chat.service.ts` / tools.  
-Não “consertar” listando agenda no `detectQuery`. Não misturar `messages_log` no fio do dono.
+Consulta de agenda (incl. áudio) trata no handler **antes** do agente. Não mandar um WhatsApp por item em pergunta NL. Não misturar `messages_log` no fio do dono. STT “Ender” = Wender.
 
 ### 10.2 Bug no atendimento ao cliente
 

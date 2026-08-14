@@ -265,6 +265,99 @@ export async function listReminders(
   return rows;
 }
 
+function likeSafe(fragment: string): string {
+  return fragment.replace(/[%_\\]/g, '').trim();
+}
+
+/**
+ * Compromissos "para o contato X": relay com target_client_id, tarefa/notas
+ * citando o nome, e o caderno próprio daquele telefone (acesso livre).
+ */
+export async function listRemindersAboutContact(
+  tenantId: string,
+  ownerPhone: string,
+  opts: {
+    clientId?: string | null;
+    contactPhone?: string | null;
+    clientIds?: string[];
+    contactPhones?: string[];
+    nameHints: string[];
+    filter?: ListRemindersFilter;
+  },
+): Promise<Reminder[]> {
+  assertTenantMatchesScope(tenantId);
+  const filter = opts.filter ?? {};
+  const clientIds = [
+    ...new Set(
+      [...(opts.clientIds ?? []), opts.clientId].filter((id): id is string => Boolean(id)),
+    ),
+  ];
+  const extraPhones = [
+    ...new Set(
+      [...(opts.contactPhones ?? []), opts.contactPhone].filter((p): p is string => Boolean(p)),
+    ),
+  ];
+  const phones = [...new Set([ownerPhone, ...extraPhones])];
+
+  const params: unknown[] = [tenantId, phones];
+  const where: string[] = ['tenant_id = $1', 'owner_phone = ANY($2::varchar[])'];
+
+  const statuses = filter.statuses ?? ['pendente'];
+  params.push(statuses);
+  where.push(`status = ANY($${params.length}::varchar[])`);
+
+  if (filter.from) {
+    params.push(filter.from.toISOString());
+    where.push(`next_fire_at >= $${params.length}`);
+  }
+  if (filter.until) {
+    params.push(filter.until.toISOString());
+    where.push(`next_fire_at <= $${params.length}`);
+  }
+  if (filter.category) {
+    params.push(filter.category);
+    where.push(`category = $${params.length}`);
+  }
+
+  const matchParts: string[] = [];
+  if (clientIds.length) {
+    params.push(clientIds);
+    matchParts.push(`target_client_id = ANY($${params.length}::uuid[])`);
+  }
+  if (extraPhones.length) {
+    params.push(extraPhones);
+    matchParts.push(`owner_phone = ANY($${params.length}::varchar[])`);
+  }
+  const seenHints = new Set<string>();
+  for (const raw of opts.nameHints) {
+    const hint = likeSafe(raw);
+    if (hint.length < 3) continue;
+    const key = hint.toLowerCase();
+    if (seenHints.has(key)) continue;
+    seenHints.add(key);
+    params.push(`%${hint}%`);
+    const i = params.length;
+    matchParts.push(
+      `(task ILIKE $${i} OR COALESCE(relay_body, '') ILIKE $${i} OR COALESCE(notes, '') ILIKE $${i})`,
+    );
+  }
+  if (matchParts.length) {
+    where.push(`(${matchParts.join(' OR ')})`);
+  } else {
+    where.push('FALSE');
+  }
+
+  params.push(filter.limit ?? 40);
+  const { rows } = await query<Reminder>(
+    `SELECT * FROM reminders
+      WHERE ${where.join(' AND ')}
+      ORDER BY next_fire_at ASC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return rows;
+}
+
 export async function getReminderById(tenantId: string, id: string): Promise<Reminder | null> {
   assertTenantMatchesScope(tenantId);
   return queryOne<Reminder>('SELECT * FROM reminders WHERE id = $1 AND tenant_id = $2', [
@@ -415,6 +508,11 @@ export async function claimLeadReminder(id: string): Promise<boolean> {
   return (rowCount ?? 0) > 0;
 }
 
+/** Falha no aviso prévio: libera para o próximo tick tentar de novo. */
+export async function releaseLeadReminder(id: string): Promise<void> {
+  await query(`UPDATE reminders SET lead_fired_at = NULL WHERE id = $1`, [id]);
+}
+
 export async function completeReminder(
   tenantId: string,
   ownerPhone: string,
@@ -439,6 +537,27 @@ export async function cancelReminder(
     `UPDATE reminders SET status = 'cancelado'
       WHERE id = $1 AND tenant_id = $2 AND owner_phone = $3`,
     [id, tenantId, ownerPhone],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+/** Cancela pelo id no tenant (lista do dono pode incluir caderno de contato). */
+export async function cancelReminderById(tenantId: string, id: string): Promise<boolean> {
+  assertTenantMatchesScope(tenantId);
+  const { rowCount } = await query(
+    `UPDATE reminders SET status = 'cancelado'
+      WHERE id = $1 AND tenant_id = $2 AND status = 'pendente'`,
+    [id, tenantId],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+export async function completeReminderById(tenantId: string, id: string): Promise<boolean> {
+  assertTenantMatchesScope(tenantId);
+  const { rowCount } = await query(
+    `UPDATE reminders SET status = 'concluido'
+      WHERE id = $1 AND tenant_id = $2 AND status = 'pendente'`,
+    [id, tenantId],
   );
   return (rowCount ?? 0) > 0;
 }

@@ -101,7 +101,7 @@ function buildFastSystem(
     'Se nesta mensagem (já juntada) houver VÁRIOS pedidos distintos (ex.: "me lembra amanhã às 9h e pesquisa o dólar"), faça TODOS; confirme cada um em 1 linha.',
     'Nunca ignore um pedido desta fala. Nunca misture com um pedido antigo já respondido.',
     'Se pedirem para anotar/lembrar algo com data, USE anotar_compromisso (grava no caderno e dispara sozinho no horário). Não finja que anotou. No mesmo turno pode fazer OUTRA tarefa (transcrever, pesquisar, falar de contato) — nunca deixe um pedido de lado.',
-    'Se pedirem para MUDAR horário: use alterar_compromisso. Para cancelar: cancelar_compromissos (todos=true ou caderno_n). Não recite a lista no lugar de executar.',
+    'Se pedirem para MUDAR horário: use alterar_compromisso. Para cancelar: cancelar_compromissos (todos=true ou caderno_n). Execute o cancelamento — NÃO recite a lista no lugar de cancelar.',
     'Se disser que VAI mandar áudio/foto de um compromisso, peça o arquivo e NÃO recite a lista da agenda.',
     'Áudio chega como "[áudio]" + transcrição já pronta. Se pediram para transcrever/escrever o áudio, MOSTRE o texto. Se o áudio é compromisso, anote com a tool E mostre a transcrição se pediram os dois.',
     'O caderno abaixo é o que ESTÁ salvo para disparo automático. Quando um alarme dispara, isso entra no histórico como sua mensagem — você VÊ e pode conversar sobre aquele toque.',

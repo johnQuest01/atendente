@@ -1,12 +1,14 @@
 import { logger } from '../../config/logger';
 import {
   cancelAllPendingReminders,
-  cancelReminder,
-  completeReminder,
+  cancelReminderById,
+  completeReminderById,
   createRemindersBulk,
+  getReminderById,
   getTodayReminders,
   isReminderOwner,
   listReminders,
+  listRemindersAboutContact,
   updateOwnerReminder,
   type CreateReminderInput,
   type ListRemindersFilter,
@@ -22,7 +24,7 @@ import type { NormalizedInbound } from '../whatsapp/types';
 import type { Reminder } from '../../types';
 import type { ChatImage } from '../ai/types';
 import { extractVideoFrames } from '../ai/video-frames';
-import { describeLead, describeRecurrence, expandReminderUpdates, loadOwnerAgenda, parseReminders, type ParsedReminder } from './parse.service';
+import { describeLead, describeRecurrence, expandReminderUpdates, foldReminderTask, loadOwnerAgenda, parseReminders, type ParsedReminder } from './parse.service';
 import { DEFAULT_TZ, formatForOwner, fromWallClock, toWallClock } from './time';
 import {
   freeChatOwner,
@@ -195,8 +197,9 @@ function isHardImmediateOwnerTurn(text: string, owner: OwnerState): boolean {
     return true;
   }
   if (detectCancelAll(n)) return true;
+  if (detectCancelByTask(n)) return true;
   if (owner.pendingCancelAll && (isAffirmative(text) || isNegative(text))) return true;
-  if (detectQuery(n) && cmd.split(/\s+/).length <= 8) return true;
+  if (detectQuery(n) && cmd.split(/\s+/).length <= 16) return true;
   return false;
 }
 
@@ -488,8 +491,38 @@ const QUERY_WORDS: Record<string, string> = {
  * "o que temos para hoje".
  */
 const ASK_OPENERS =
-  /\b(o ?que|oque|quais|qual|quantos|quantas|tem algo|tenho algo|tenho alguma|ha algo|me (mostra|mostre|lista|liste|diga|fala|fale|passa)|como (esta|ta|fica))\b/;
+  /\b(o ?que|oque|quais|qual|quantos|quantas|tem algum|tem alguma|tem algo|tenho algum|tenho alguma|tenho algo|ha algum|ha alguma|ha algo|existe algum|existe alguma|existe|me (mostra|mostre|lista|liste|diga|fala|fale|passa)|como (esta|ta|fica))\b/;
 const AGENDA_NOUNS = /\b(agenda|compromissos?|lembretes?|tarefas?|programacao|rolando|marcado)\b/;
+const AGENDA_ASK_VERB = /\b(tem|ha|existe|quais|qual|quantos|quantas)\b/;
+const AGENDA_CONTACT_STOP = new Set([
+  'hoje',
+  'amanha',
+  'agora',
+  'mim',
+  'voce',
+  'vc',
+  'ele',
+  'ela',
+  'nos',
+  'tarde',
+  'noite',
+  'manha',
+  'semana',
+  'mes',
+  'contato',
+  'cliente',
+  'alguem',
+  'todo',
+  'todos',
+  'tudo',
+  'compromisso',
+  'compromissos',
+  'lembrete',
+  'lembretes',
+  'agenda',
+  'tarefa',
+  'tarefas',
+]);
 const SCOPE_WORDS: Array<[RegExp, string]> = [
   [/\bhoje\b/, 'hoje'],
   [/\b(amanha|amanhã)\b/, 'amanha'],
@@ -545,6 +578,31 @@ function detectCancelAll(normalized: string): boolean {
   );
 }
 
+/** "cancela o compromisso comprar camiseta às 23h" — não é consulta nem CANCELAR TODOS. */
+function detectCancelByTask(normalized: string): string | null {
+  const n = normalizeCommand(normalized);
+  if (!n || detectCancelAll(n)) return null;
+  if (/^(cancela|cancelar|apaga|apagar|remove|remover|exclui|excluir)\s+\d{1,2}$/.test(n)) {
+    return null;
+  }
+  if (
+    !/\b(cancela|cancelar|apaga|apagar|remove|remover|exclui|excluir|tira|tirar)\b/.test(n)
+  ) {
+    return null;
+  }
+  let rest = n
+    .replace(/^(cancela|cancelar|apaga|apagar|remove|remover|exclui|excluir|tira|tirar)\b/, ' ')
+    .replace(/\b(o|a|os|as|esse|essa|este|esta|de|da|do|das|dos)\b/g, ' ')
+    .replace(/\b(compromisso|compromissos|lembrete|lembretes|alarme|alarmes)\b/g, ' ')
+    .replace(/\b\d{1,2}\s*h(?:oras?)?(?:\s+da\s+(manha|tarde|noite))?\b/g, ' ')
+    .replace(/\b(hoje|amanha|as|às)\b/g, ' ')
+    .replace(/\bcamiseta\b/g, 'camisa')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (rest.length < 3) return null;
+  return rest;
+}
+
 function wantsTranscript(normalized: string): boolean {
   return /\b(transcrev|transcrever|passa\s+(pra|para|pro)\s+texto|escreve\s+o\s+(audio|áudio)|o\s+que\s+eu\s+(falei|disse)|ditado)\b/.test(
     normalized,
@@ -578,6 +636,7 @@ function shouldDeferToAgent(text: string, normalized: string): boolean {
 function detectQuery(normalized: string): string | null {
   if (isFarewellTurn(normalized)) return null;
   if (detectCancelAll(normalized)) return null;
+  if (detectCancelByTask(normalized)) return null;
 
   // 1) Palavra solta, como sempre funcionou.
   const exact = QUERY_WORDS[normalized];
@@ -601,16 +660,36 @@ function detectQuery(normalized: string): string | null {
   if (STRONG_CREATE.test(normalized) && !asks) return null;
   if (EDIT_TRIGGERS.test(normalized)) return null;
 
+  // "tem algum compromisso para o Wender?" / "o Ender tem algo marcado?"
+  const asksAgenda = asks || (mentionsAgenda && AGENDA_ASK_VERB.test(normalized));
+
   // Pergunta de agenda precisa pedir pra VER a lista — não basta ter a palavra
   // "compromisso" e um "?".
   const looksLikeQuery =
-    (asks && mentionsAgenda) ||
+    (asksAgenda && mentionsAgenda) ||
     (asks && scope !== null && words <= 5 && mentionsAgenda) ||
     (mentionsAgenda && words <= 3) ||
-    (asks && scope !== null && words <= 6 && /\b(temos|tem|rola|vai ter|tenho)\b/.test(normalized));
+    (asksAgenda && scope !== null && words <= 8 && /\b(temos|tem|rola|vai ter|tenho)\b/.test(normalized));
   if (!looksLikeQuery) return null;
 
   return scope ?? 'todos';
+}
+
+/** "para o Wender" / "do Ender" / "o Wender tem" — STT costuma escrever Ender. */
+function extractAgendaContactHint(normalized: string): string | null {
+  const patterns = [
+    /\b(?:para|pra|pro|pelo|pela)\s+(?:o\s+|a\s+)?([a-z]{3,40})\b/,
+    /\b(?:do|da)\s+([a-z]{3,40})\b/,
+    /\b(?:o|a)\s+([a-z]{3,40})\s+tem\b/,
+  ];
+  for (const re of patterns) {
+    const m = normalized.match(re);
+    if (!m?.[1]) continue;
+    const name = m[1];
+    if (AGENDA_CONTACT_STOP.has(name)) continue;
+    return name;
+  }
+  return null;
 }
 
 const QUERY_TITLE: Record<string, string> = {
@@ -656,6 +735,136 @@ async function sendReminderList(
   if (total > LIST_SEND_CAP) {
     await reply(tenantId, phone, `…e mais ${total - LIST_SEND_CAP}. Mande TODOS para a lista completa.`);
   }
+}
+
+/**
+ * Caderno do dono, ou o recorte "para o contato X" (relay + caderno daquele
+ * telefone). STT "Ender" casa com Wender via ILIKE.
+ */
+async function loadAgendaQueryReminders(input: {
+  tenantId: string;
+  phone: string;
+  connectionId?: string | null;
+  listed: boolean;
+  normalized: string;
+  filter: ListRemindersFilter;
+}): Promise<{ reminders: Reminder[]; titleSuffix: string }> {
+  const hint = extractAgendaContactHint(input.normalized);
+  if (!hint || !input.listed) {
+    const reminders = await listReminders(input.tenantId, input.phone, input.filter);
+    return { reminders: dedupeReminders(reminders), titleSuffix: '' };
+  }
+
+  const matches = await resolveRelayContacts(
+    input.tenantId,
+    hint,
+    input.connectionId,
+    input.phone,
+  );
+  const picked = matches.length === 1 ? matches[0]! : null;
+  const nameHints = [hint, ...matches.map((m) => m.name).filter((n): n is string => Boolean(n))];
+
+  const reminders = await listRemindersAboutContact(input.tenantId, input.phone, {
+    clientIds: matches.map((m) => m.id),
+    contactPhones: matches.map((m) => m.phone),
+    nameHints,
+    filter: { ...input.filter, limit: input.filter.limit ?? 40 },
+  });
+  const label = picked ? displayName(picked) : hint;
+  return { reminders: dedupeReminders(reminders), titleSuffix: label };
+}
+
+function dedupeReminders(rows: Reminder[]): Reminder[] {
+  const seenId = new Set<string>();
+  const seenKey = new Set<string>();
+  const out: Reminder[] = [];
+  for (const r of rows) {
+    if (seenId.has(r.id)) continue;
+    seenId.add(r.id);
+    const when = new Date(r.next_fire_at).toISOString().slice(0, 16);
+    const key = `${foldReminderTask(r.task)}|${when}`;
+    if (seenKey.has(key)) continue;
+    seenKey.add(key);
+    out.push(r);
+  }
+  return out;
+}
+
+function formatReminderDetails(reminders: Reminder[], tz: string): string {
+  return reminders
+    .map((r, i) => {
+      const when = formatForOwner(new Date(r.next_fire_at), tz);
+      const repeat = r.recurrence ? `\nRepete: ${describeRecurrence(r.recurrence)}` : '';
+      const lead = r.lead_minutes ? `\nAviso: ${describeLead(r.lead_minutes)}` : '';
+      return `${i + 1}. ${r.task}\n${when}${repeat}${lead}`;
+    })
+    .join('\n\n');
+}
+
+function isExactAgendaKeyword(normalized: string): boolean {
+  return Boolean(QUERY_WORDS[normalized]);
+}
+
+function tokensForCancel(hint: string): string[] {
+  return foldReminderTask(hint)
+    .split(/\s+/)
+    .filter((t) => t.length >= 3 && !['para', 'pra', 'com', 'uma', 'uns'].includes(t));
+}
+
+function matchRemindersForCancel(hint: string, reminders: Reminder[]): Reminder[] {
+  const tokens = tokensForCancel(hint);
+  if (!tokens.length) return [];
+  const hits = reminders.filter((r) => {
+    const task = foldReminderTask(r.task).replace(/\bcamiseta\b/g, 'camisa');
+    return tokens.every((t) => task.includes(t));
+  });
+  return hits;
+}
+
+async function loadLastListReminders(tenantId: string, ids: string[] | undefined): Promise<Reminder[]> {
+  if (!ids?.length) return [];
+  const rows: Reminder[] = [];
+  for (const id of ids) {
+    const row = await getReminderById(tenantId, id);
+    if (row && row.status === 'pendente') rows.push(row);
+  }
+  return rows;
+}
+
+async function cancelByTaskPhrase(input: {
+  tenantId: string;
+  phone: string;
+  hint: string;
+  lastList?: string[];
+}): Promise<boolean> {
+  let pool = await loadLastListReminders(input.tenantId, input.lastList);
+  if (!pool.length) {
+    pool = await listReminders(input.tenantId, input.phone, { statuses: ['pendente'], limit: 80 });
+  }
+  const hits = matchRemindersForCancel(input.hint, pool);
+  if (hits.length === 1) {
+    const ok = await cancelReminderById(input.tenantId, hits[0]!.id);
+    await reply(
+      input.tenantId,
+      input.phone,
+      ok ? `Cancelei: ${hits[0]!.task}.` : 'Esse já não estava mais na lista.',
+    );
+    return true;
+  }
+  if (hits.length > 1) {
+    const lines = hits
+      .map((r, i) => `${i + 1}. ${r.task}\n${formatForOwner(new Date(r.next_fire_at), r.timezone || DEFAULT_TZ)}`)
+      .join('\n');
+    setState(input.tenantId, input.phone, { lastList: hits.map((r) => r.id) });
+    await reply(
+      input.tenantId,
+      input.phone,
+      `Achei ${hits.length}:\n${lines}\n\nManda *CANCELAR* e o número (ex.: CANCELAR 1).`,
+    );
+    return true;
+  }
+  await reply(input.tenantId, input.phone, 'Não achei esse compromisso na lista. Manda *CANCELAR* e o número.');
+  return true;
 }
 
 function pad2(n: number): string {
@@ -1174,21 +1383,37 @@ async function handleOwnerMessageInner(
   }
 
   // Frase longa / vários pedidos: a IA executa o caderno (tools) e o resto no
-  // mesmo turno. Comando curto (HOJE, SIM, CANCELAR TODOS) segue na automação.
-  if (flags.agent && (shouldDeferToAgent(text, normalized) || inbound.type === 'audio')) {
+  // mesmo turno. Consulta/cancelamento de agenda (texto ou áudio) não vai pra IA.
+  const cancelHint = flags.secretary ? detectCancelByTask(normalized) : null;
+  if (cancelHint) {
+    return cancelByTaskPhrase({
+      tenantId,
+      phone,
+      hint: cancelHint,
+      lastList: owner.lastList,
+    });
+  }
+  const agendaQueryKey = flags.secretary ? detectQuery(normalized) : null;
+  if (
+    flags.agent &&
+    !agendaQueryKey &&
+    (shouldDeferToAgent(text, normalized) || inbound.type === 'audio')
+  ) {
     const forAgent = inbound.type === 'audio' ? `[áudio] ${text}` : text;
     const result = await freeChatOwner(tenantId, phone, forAgent, {
       connectionId,
       webSearchEnabled: flags.webSearch,
       listedOwner: listed,
     });
-    await reply(
-      tenantId,
-      phone,
-      result.text ?? 'Não rolou agora. Manda de novo em uma frase?',
-      result.alreadyPersisted,
-    );
-    return true;
+    if (result.text || !flags.secretary || !detectQuery(normalized)) {
+      await reply(
+        tenantId,
+        phone,
+        result.text ?? 'Não rolou agora. Manda de novo em uma frase?',
+        result.alreadyPersisted,
+      );
+      return true;
+    }
   }
 
   // 2. Consulta — palavra solta ou pergunta em linguagem natural. Sem IA.
@@ -1215,9 +1440,30 @@ async function handleOwnerMessageInner(
   if (queryKey) {
     const filter = rangeFor(queryKey, tz);
     if (filter) {
-      const reminders = await listReminders(tenantId, phone, filter);
+      const { reminders, titleSuffix } = await loadAgendaQueryReminders({
+        tenantId,
+        phone,
+        connectionId,
+        listed,
+        normalized,
+        filter,
+      });
       setState(tenantId, phone, { lastList: reminders.map((r) => r.id) });
-      await sendReminderList(tenantId, phone, reminders, QUERY_TITLE[queryKey] ?? queryKey.toUpperCase(), tz);
+      if (isExactAgendaKeyword(normalized)) {
+        const base = QUERY_TITLE[queryKey] ?? queryKey.toUpperCase();
+        await sendReminderList(tenantId, phone, reminders, base, tz);
+      } else {
+        if (reminders.length === 0) {
+          await reply(
+            tenantId,
+            phone,
+            titleSuffix ? `Nada anotado para *${titleSuffix}*.` : 'Nada anotado.',
+          );
+        } else {
+          const head = titleSuffix ? `*${titleSuffix}*\n\n` : '';
+          await reply(tenantId, phone, `${head}${formatReminderDetails(reminders, tz)}`);
+        }
+      }
       return true;
     }
   }
@@ -1265,8 +1511,8 @@ async function handleOwnerMessageInner(
     }
     const isDone = /^(concluir|conclui|feito|ok)$/.test(manage[1]);
     const ok = isDone
-      ? await completeReminder(tenantId, phone, id)
-      : await cancelReminder(tenantId, phone, id);
+      ? await completeReminderById(tenantId, id)
+      : await cancelReminderById(tenantId, id);
     await reply(
       tenantId,
       phone,

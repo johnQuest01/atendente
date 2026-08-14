@@ -64,6 +64,25 @@ function headers(conn: ZapiConnection): Record<string, string> {
   return h;
 }
 
+/** Rede/DNS/timeout — vale retry curto. HTTP 4xx da Z-API não. */
+export function isTransientNetworkError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const name = (err as Error).name ?? '';
+  const msg = (err as Error).message ?? '';
+  const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+  const code = cause?.code ?? '';
+  const causeMsg = cause?.message ?? '';
+  const blob = `${name} ${msg} ${code} ${causeMsg}`;
+  if (name === 'AbortError' || name === 'TimeoutError') return true;
+  if (/fetch failed/i.test(blob)) return true;
+  if (/ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|UND_ERR|socket/i.test(blob)) return true;
+  return false;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 interface ZapiResponse {
   messageId?: string;
   id?: string;
@@ -81,22 +100,36 @@ async function post(
   }
 
   const url = `${baseUrl(conn)}/${endpoint}`;
+  try {
+    return await postOnce(conn, url, body, endpoint);
+  } catch (err) {
+    if (err instanceof AppError || !isTransientNetworkError(err)) throw err;
+    logger.warn(`Z-API ${endpoint} falhou (retry imediato 500ms)`, err);
+    await sleep(500);
+    return postOnce(conn, url, body, endpoint);
+  }
+}
+
+async function postOnce(
+  conn: ZapiConnection,
+  url: string,
+  body: Record<string, unknown>,
+  endpoint: string,
+): Promise<string | null> {
   const res = await fetch(url, {
     method: 'POST',
     headers: headers(conn),
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(20_000),
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    // Loga com detalhe (endpoint + corpo da resposta) para depurar em producao
-    // sem expor tokens (que ficam apenas na URL, nao logada).
     logger.error(`Z-API ${endpoint} retornou ${res.status}: ${text}`);
     throw new AppError(`Z-API retornou ${res.status}: ${text}`, 502, 'ZAPI_ERROR');
   }
 
   const data = (await res.json().catch(() => ({}))) as ZapiResponse;
-  // A Z-API as vezes responde 200 com um erro no corpo (ex.: numero invalido).
   if (data.error || data.message === 'error') {
     logger.warn(`Z-API ${endpoint} respondeu 200 com erro no corpo:`, data);
   }
