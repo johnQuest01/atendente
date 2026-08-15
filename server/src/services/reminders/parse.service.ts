@@ -10,9 +10,11 @@ import {
   DEFAULT_TZ,
   formatForOwner,
   fromWallClock,
+  inferIntervalRecurrence,
   isValidRecurrence,
   nextOccurrence,
   parseLocalIso,
+  snapPastYearToUpcoming,
   toWallClock,
   weekdayNamePt,
 } from './time';
@@ -30,7 +32,7 @@ import {
  */
 
 const parsedSchema = z.object({
-  task: z.string().trim().min(1).max(500),
+  task: z.string().trim().min(1).max(4000),
   type: z.enum(['unico', 'recorrente']),
   due_at: z.string().nullable().optional(),
   recurrence: z.string().nullable().optional(),
@@ -100,6 +102,46 @@ export function foldReminderTask(s: string): string {
     .trim();
 }
 
+/** Texto completo para mostrar ao dono: relay_body (mensagem que vai no zap) se a task foi cortada. */
+export function reminderDisplayText(r: Pick<Reminder, 'task' | 'relay_body'>): string {
+  const task = (r.task || '').trim();
+  const relay = (r.relay_body || '').trim();
+  if (!relay) return task;
+  const prefix = task.match(/^(Enviar p\/\s*[^:]+:)\s*/i);
+  const rest = prefix ? task.slice(prefix[0].length).trim() : task;
+  if (rest.includes(relay) || relay === rest) return task;
+  if (relay.startsWith(rest) && relay.length > rest.length) {
+    return prefix ? `${prefix[1].trim()}\n${relay}` : relay;
+  }
+  if (prefix) return `${prefix[1].trim()}\n${relay}`;
+  if (relay.length > rest.length) return `${task}\n${relay}`;
+  return task;
+}
+
+/** Linha do caderno com horário relativo e se já tocou. */
+export function formatCadernoItem(
+  r: Pick<
+    Reminder,
+    | 'task'
+    | 'relay_body'
+    | 'next_fire_at'
+    | 'timezone'
+    | 'status'
+    | 'last_fired_at'
+    | 'recurrence'
+    | 'fire_action'
+  >,
+  tz: string,
+): string {
+  const when = formatForOwner(new Date(r.next_fire_at), r.timezone || tz);
+  const repeat = r.recurrence ? ` · repete ${describeRecurrence(r.recurrence)}` : '';
+  const fired = r.last_fired_at
+    ? ` · tocou ${formatForOwner(new Date(r.last_fired_at), r.timezone || tz)}`
+    : '';
+  const kind = r.fire_action === 'search' ? ' · pesquisa na hora' : '';
+  return `${reminderDisplayText(r)} — ${when}${repeat}${kind} (${r.status}${fired})`;
+}
+
 export function matchRemindersByTask(task: string, agenda: Reminder[]): Reminder[] {
   const t = foldReminderTask(task);
   if (!t) return [];
@@ -124,12 +166,12 @@ function matchCaderno(
 
 /** Se o relógio de parede já passou hoje, empurra para o próximo ciclo. */
 export function bumpUntilFuture(d: Date, now: Date, tz: string, recurrence?: string | null): Date {
-  if (d.getTime() > now.getTime()) return d;
+  let cur = snapPastYearToUpcoming(d, now, tz);
+  if (cur.getTime() > now.getTime()) return cur;
   if (recurrence && isValidRecurrence(recurrence)) {
-    const next = nextOccurrence(recurrence, d, tz, now);
+    const next = nextOccurrence(recurrence, cur, tz, now);
     if (next && next.getTime() > now.getTime()) return next;
   }
-  let cur = d;
   let guard = 0;
   while (cur.getTime() <= now.getTime() && guard < 14) {
     const wc = toWallClock(cur, tz);
@@ -139,6 +181,14 @@ export function bumpUntilFuture(d: Date, now: Date, tz: string, recurrence?: str
     );
     guard += 1;
   }
+  if (cur.getTime() <= now.getTime()) {
+    const nw = toWallClock(now, tz);
+    const wc = toWallClock(d, tz);
+    cur = fromWallClock(
+      { year: nw.year, month: nw.month, day: nw.day + 1, hour: wc.hour, minute: wc.minute },
+      tz,
+    );
+  }
   return cur;
 }
 
@@ -146,18 +196,18 @@ function formatAgendaBlock(reminders: Reminder[], tz: string): string {
   if (reminders.length === 0) {
     return [
       '',
-      'CADERNO DO DONO (banco): (vazio — nada pendente nos próximos dias).',
-      'Se ele falar de "o compromisso de hoje" e o caderno estiver vazio, diga isso no confirmation_text e use action=acknowledge.',
+      'CADERNO DESTA PESSOA (banco, só este número): (vazio — nada pendente nos próximos dias).',
+      'Se ela falar de "o compromisso de hoje" e o caderno estiver vazio, diga isso no confirmation_text e use action=acknowledge.',
     ].join('\n');
   }
   const lines = reminders.map((r, i) => {
     const when = formatForOwner(new Date(r.next_fire_at), r.timezone || tz);
     const repeat = r.recurrence ? ` · repete ${describeRecurrence(r.recurrence)}` : '';
-    return `${i + 1}. ${r.task} — ${when}${repeat}`;
+    return `${i + 1}. ${reminderDisplayText(r)} — ${when}${repeat}`;
   });
   return [
     '',
-    'CADERNO DO DONO (já salvo no banco — use isto para frases abertas):',
+    'CADERNO DESTA PESSOA (já salvo no banco, só este número — use isto para frases abertas):',
     ...lines,
     '',
     'Se ele disser "o compromisso de hoje", "aquela reunião", "não esquece de me avisar do de hoje", etc.:',
@@ -207,7 +257,7 @@ function buildSystemPrompt(
     '  "task": "só a ação/assunto, curto (ex.: Ir dormir, Pagar fornecedor) — SEM a palavra lembrete",',
     '  "type": "unico" | "recorrente",',
     '  "due_at": "YYYY-MM-DDTHH:mm do PRIMEIRO disparo (sempre preencha em create/update; em acknowledge use o horário do caderno)",',
-    '  "recurrence": "daily | weekly:MON..SUN | monthly:N — apenas se recorrente, senão null",',
+    '  "recurrence": "daily | weekly:MON..SUN | monthly:N | every:2d — apenas se recorrente, senão null",',
     '  "remind_before_minutes": "minutos de aviso ANTECIPADO se o usuário pediu, senão null",',
     '  "category": "importante" | "rotina" | "data_especifica",',
     '  "confirmation_text": "1 frase humana (ex.: Anotei: ir dormir amanhã às 22h / Vou alterar o despertar para 05h)",',
@@ -237,10 +287,12 @@ function buildSystemPrompt(
     // seguinte — e é assim que qualquer pessoa testa o recurso pela primeira vez.
     '- "daqui a X minutos" / "daqui a X horas" / "em X min" é o horário de agora + X, no MESMO dia.',
     '- "toda segunda" = weekly:MON; "todo dia N" = monthly:N; "todo dia" = daily.',
+    '- "um dia sim, um dia não" / "dia sim dia não" / "12x36" / "12 por 36" / "a cada 2 dias" / "de dois em dois dias" = every:2d (type=recorrente). Plantão 19h–7h = dois itens (entrada 19:00 e saída 07:00).',
+    '- "7 da manhã" / "7h da manhã" / "às 7 da manhã" = 07:00.',
     '- Sem horário explícito, use 09:00 e diga isso no confirmation_text.',
     '- "madrugada" sem hora = 05:00. "de manhã" / "manhã" sem hora = 08:00.',
     '- Se due_at já passou hoje (ex.: despertar 05:00 às 23h), use o PRÓXIMO disparo (amanhã nesse horário) — não deixe vazio.',
-    '- NUNCA use fuso ou "Z" no due_at: escreva a hora como o usuário leria no relógio dele.',
+    '- NUNCA use ano anterior ao agora no due_at (treino antigo). Se a pessoa disse 15/08 e hoje é 2026, due_at é 2026-08-15 — não 2025.',
     '- Se a mensagem for ambígua, escolha a interpretação mais provável e explique-a no confirmation_text.',
     '',
     'Aviso antecipado (remind_before_minutes): só preencha se o usuário pedir explicitamente.',
@@ -323,13 +375,25 @@ export function inferDueAtFromText(text: string, now: Date, tz: string): Date | 
   let hour: number | null = null;
   let minute = 0;
 
+  const spokenShift = t.match(
+    /\b(\d{1,2})\s+e\s+(\d{1,2})\s*(?:da|de)\s*(tarde|noite|manha)\b/,
+  );
   const night = t.match(/\b(\d{1,2})\s*(?:h|:|horas?)?\s*(\d{2})?\s*(?:da|a)\s*noite\b/);
   const morning = t.match(/\b(\d{1,2})\s*(?:h|:|horas?)?\s*(\d{2})?\s*(?:da|de)\s*manha\b/);
   const afternoon = t.match(/\b(\d{1,2})\s*(?:h|:|horas?)?\s*(\d{2})?\s*(?:da|de)\s*tarde\b/);
   const clock24 = t.match(/\b(\d{1,2})h(\d{2})?\b/);
   const colon = t.match(/\b(\d{1,2}):(\d{2})\b/);
 
-  if (night) {
+  if (spokenShift) {
+    hour = Number(spokenShift[1]);
+    minute = Number(spokenShift[2]);
+    const period = spokenShift[3];
+    if (period === 'tarde' && hour > 0 && hour < 12) hour += 12;
+    else if (period === 'noite') {
+      if (hour === 12) hour = 0;
+      else if (hour > 0 && hour < 12) hour += 12;
+    } else if (period === 'manha' && hour === 12) hour = 0;
+  } else if (night) {
     hour = Number(night[1]);
     minute = night[2] && /^\d{2}$/.test(night[2]) ? Number(night[2]) : 0;
     if (hour === 12) hour = 0;
@@ -357,6 +421,7 @@ export function inferDueAtFromText(text: string, now: Date, tz: string): Date | 
   let day = wcNow.day;
 
   const iso = t.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  const slash = t.match(/\b(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\b/);
   const long = t.match(
     /\b(?:dia\s+)?(\d{1,2})\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)(?:\s+de\s+(\d{4}))?\b/,
   );
@@ -364,6 +429,12 @@ export function inferDueAtFromText(text: string, now: Date, tz: string): Date | 
     year = Number(iso[1]);
     month = Number(iso[2]);
     day = Number(iso[3]);
+  } else if (slash) {
+    day = Number(slash[1]);
+    month = Number(slash[2]);
+    if (slash[3]) {
+      year = slash[3].length === 2 ? 2000 + Number(slash[3]) : Number(slash[3]);
+    }
   } else if (long) {
     day = Number(long[1]);
     month = MONTHS_PT[long[2]!] ?? month;
@@ -442,6 +513,8 @@ function resolveParsed(
     if (isValidRecurrence(rule)) recurrence = rule;
     else logger.warn(`Lembretes: recorrência não reconhecida — "${data.recurrence}" (salvando como único).`);
   }
+  const inferredRec = sourceText ? inferIntervalRecurrence(sourceText) : null;
+  if (inferredRec) recurrence = inferredRec;
   if (action === 'update' && !recurrence && existing?.recurrence) {
     recurrence = existing.recurrence;
   }
@@ -755,5 +828,10 @@ export function describeRecurrence(rule: string): string {
   if (weekly) return WEEKDAY_PT[weekly[1].toUpperCase()] ?? rule;
   const monthly = r.match(/^monthly:(\d{1,2})$/);
   if (monthly) return `todo dia ${monthly[1]}`;
+  const every = r.match(/^every:(\d+)d$/);
+  if (every) {
+    const n = Number(every[1]);
+    return n === 2 ? 'um dia sim, um dia não' : `a cada ${n} dias`;
+  }
   return rule;
 }

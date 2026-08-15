@@ -140,6 +140,7 @@ export type ContentType = 'audio' | 'text' | 'product' | 'claude' | 'reminders_t
 /** Lembretes pessoais do dono (assistente por WhatsApp). */
 export type ReminderCategory = 'importante' | 'rotina' | 'data_especifica';
 export type ReminderStatus = 'pendente' | 'enviado' | 'concluido' | 'cancelado';
+export type ReminderFireAction = 'notify' | 'search';
 
 export interface Reminder {
   id: string;
@@ -164,6 +165,9 @@ export interface Reminder {
   target_client_id?: string | null;
   /** Texto enviado ao contato quando target_client_id está setado. */
   relay_body?: string | null;
+  /** notify = só avisa; search = pesquisa na web no horário. */
+  fire_action?: ReminderFireAction | null;
+  search_query?: string | null;
   created_at: string;
 }
 

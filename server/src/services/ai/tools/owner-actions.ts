@@ -10,29 +10,52 @@ import {
   countMessagesInConversation,
   findOrCreateOpenConversation,
   getRecentMessagesForAI,
+  searchConversationMessages,
 } from '../../../db/queries/conversations';
-import { countOwnerChatMessages, listOwnerChatHistory } from '../../../db/queries/owner_chat_messages';
+import { countOwnerChatMessages, listOwnerChatHistory, searchOwnerChatHistory } from '../../../db/queries/owner_chat_messages';
 import { listProducts } from '../../../db/queries/products';
 import {
   cancelAllPendingReminders,
   cancelReminder,
+  cancelReminderById,
   createReminder,
+  findSimilarPendingReminder,
   listReminders,
   listRemindersAboutContact,
   updateOwnerReminder,
 } from '../../../db/queries/reminders';
 import { formatBRL } from '../../../utils/text';
-import { DEFAULT_TZ, formatForOwner, fromWallClock, isValidRecurrence, parseLocalIso, toWallClock } from '../../reminders/time';
+import {
+  DEFAULT_TZ,
+  formatForOwner,
+  fromWallClock,
+  inferIntervalRecurrence,
+  isValidRecurrence,
+  parseLocalIso,
+  toWallClock,
+} from '../../reminders/time';
 import {
   displayName,
+  parseRelayIntent,
   resolveRelayContacts,
   sendOwnerRelay,
 } from '../../owner-relay.service';
-import { bumpUntilFuture, loadOwnerAgenda } from '../../reminders/parse.service';
+import {
+  bumpUntilFuture,
+  describeRecurrence,
+  formatCadernoItem,
+  loadOwnerAgenda,
+  reminderDisplayText,
+} from '../../reminders/parse.service';
 import { rememberContactChoice } from '../../owner-contact-memory.service';
 import { extractPhoneHint } from '../../../utils/phone-hint';
 import { describeInboundVisual } from '../../inbound-understand.service';
 import { recordOwnerEvent } from '../../owner-memory.service';
+import { getOwnerLastList, rememberOwnerLastList } from '../../reminders/owner-last-list';
+import {
+  extractSearchQuery,
+  inferFireAction,
+} from '../../reminders/reminder-actions';
 import { buildMemoryPromptBlock } from '../../memory.service';
 import {
   assertListedOwner,
@@ -44,6 +67,7 @@ import {
   looksLikeAnyone,
 } from '../../contact-watch.service';
 import { resolveMuteContact, setContactAutoReply } from '../../contact-reply.service';
+import type { ReminderStatus } from '../../../types';
 import type { Tool, ToolExecutor, ToolRegistry } from './types';
 
 export interface OwnerToolContext {
@@ -67,6 +91,24 @@ function asRecord(input: unknown): Record<string, unknown> {
 
 function str(v: unknown): string {
   return typeof v === 'string' ? v.trim() : '';
+}
+
+async function cadernoSnapshot(
+  tenantId: string,
+  phone: string,
+  tz: string,
+  highlightId?: string,
+): Promise<string> {
+  const ownBook = await listReminders(tenantId, phone, {
+    statuses: ['pendente'],
+    limit: 20,
+  }).catch(() => []);
+  if (!ownBook.length) return 'SEU CADERNO (só este número): (vazio)';
+  const lines = ownBook.map((r, i) => {
+    const mark = highlightId && r.id === highlightId ? ' ← este' : '';
+    return `${i + 1}. ${formatCadernoItem(r, r.timezone || tz)}${mark}`;
+  });
+  return `SEU CADERNO (só este número, não mistura com outros):\n${lines.join('\n')}`;
 }
 
 const buscarContatoTool: Tool = {
@@ -102,7 +144,7 @@ const listarProdutosTool: Tool = {
 const enviarMensagemTool: Tool = {
   name: 'enviar_mensagem_contato',
   description:
-    'Envia uma mensagem de WhatsApp AGORA para um contato do CRM. Use client_id se já souber; senão passe nome. Se houver vários matches, NÃO envia — devolve a lista para o dono escolher.',
+    'Envia uma mensagem de WhatsApp AGORA para um contato do CRM. Este número é Z-API (WhatsApp comum), NÃO Cloud API da Meta: NÃO existe janela de 24h nem bloqueio da Meta — sempre envie. Use client_id se já souber; senão passe nome. Se houver vários matches, NÃO envia — devolve a lista para o dono escolher.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -133,7 +175,7 @@ const agendarMensagemTool: Tool = {
       recorrencia: {
         type: 'string',
         description:
-          'Opcional: daily | weekly:SUN|MON|TUE|WED|THU|FRI|SAT | monthly:1-31. Omita para envio único.',
+          'Opcional: daily | weekly:SUN|MON|TUE|WED|THU|FRI|SAT | monthly:1-31 | every:2d (um dia sim, um dia não). Omita para envio único.',
       },
     },
     required: ['mensagem', 'quando'],
@@ -144,7 +186,7 @@ const agendarMensagemTool: Tool = {
 const lerConversaTool: Tool = {
   name: 'ler_conversa_contato',
   description:
-    'Lê o histórico da conversa de um contato no banco (TODAS as mensagens, não só as últimas). Padrão: 200 mais recentes. Se vier "há mais", chame de novo com offset maior até o fim. Inclui TEXTO de áudios transcritos e DESCRIÇÃO de fotos/vídeos.',
+    'Lê AGORA no banco a conversa com o contato (painel + fio de acesso livre/secretária deste número). Sempre chame de novo neste turno se pedirem a última mensagem — não recicle leitura antiga. A primeira linha do retorno é a ÚLTIMA inbound real. Áudio vem transcrito; foto/vídeo descritos. Se for lembrete/compromisso, execute anotar_compromisso neste turno.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -166,7 +208,7 @@ const lerConversaTool: Tool = {
 const lerHistoricoComigoTool: Tool = {
   name: 'ler_historico_comigo',
   description:
-    'Lê o histórico COMPLETO da conversa dono ↔ secretária no banco. Use quando precisar de mensagens mais antigas do que as já carregadas neste turno. offset pula as mais recentes.',
+    'Lê o histórico COMPLETO da conversa DESTA pessoa ↔ secretária no banco. Use quando precisar de mensagens mais antigas do que as já carregadas. Para achar um trecho (horário, nome, frase), prefira buscar_no_historico.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -179,6 +221,27 @@ const lerHistoricoComigoTool: Tool = {
         description: 'Pular as N mais recentes (0 = as mais novas).',
       },
     },
+    additionalProperties: false,
+  },
+};
+
+const buscarNoHistoricoTool: Tool = {
+  name: 'buscar_no_historico',
+  description:
+    'Busca no banco por trecho, horário ou nome nas conversas. OBRIGATÓRIO quando perguntarem se você lembrou/avisou/anotou/disparou, por que não chamou, o que combinaram, ou para achar fala antiga. Não chute — busque e cite. Sem contato = fio DESTA pessoa com você. Com contato = conversa desse contato (só dono cadastrado).',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      termo: {
+        type: 'string',
+        description: 'Trecho a achar: "19:40", "Kelly", "acordar", "halteres".',
+      },
+      contato: {
+        type: 'string',
+        description: 'Nome do contato (só dono). Omita para buscar a conversa de quem está falando com você.',
+      },
+    },
+    required: ['termo'],
     additionalProperties: false,
   },
 };
@@ -252,7 +315,7 @@ const responderContatoTool: Tool = {
 const listarCompromissosTool: Tool = {
   name: 'listar_compromissos',
   description:
-    'Lista compromissos REAIS do caderno (pendentes). Use quando perguntarem o que tem na agenda, inclusive "tem algum compromisso para o X". Não invente. contato = nome (Ender/Wender vale). periodo: hoje|amanha|semana|mes|todos.',
+    'Lista compromissos REAIS do caderno DESTA pessoa (o número que está falando). Sem contato = só o caderno dela, mesmo que outros números também criem lembretes. Use ao perguntarem a agenda OU o que acabou de anotar. incluir=todos quando for auditoria. contato = nome se a pergunta for sobre outra pessoa. periodo: hoje|amanha|semana|mes|todos.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -264,6 +327,11 @@ const listarCompromissosTool: Tool = {
         type: 'string',
         description: 'Nome do contato se a pergunta for sobre alguém específico.',
       },
+      incluir: {
+        type: 'string',
+        description:
+          'pendentes (padrão) | disparados (já tocaram) | todos (pendente+enviado+cancelado+concluido). Use todos se perguntarem se lembrou ou por que não avisou.',
+      },
     },
     additionalProperties: false,
   },
@@ -272,18 +340,28 @@ const listarCompromissosTool: Tool = {
 const anotarCompromissoTool: Tool = {
   name: 'anotar_compromisso',
   description:
-    'Grava um compromisso no caderno para DISPARO AUTOMÁTICO no WhatsApp. Use sempre que pedirem para lembrar/anotar/salvar horário (inclusive áudio já transcrito). Se for PARA um contato receber a mensagem no horário, preencha para_contato + mensagem_contato.',
+    'Grava um compromisso no caderno para DISPARO AUTOMÁTICO no WhatsApp. Use sempre que pedirem para lembrar/anotar/salvar horário (inclusive áudio já transcrito). Se pedirem para PESQUISAR/buscar cotação EM UM HORÁRIO, use acao=pesquisar — no horário o sistema busca de verdade e manda o resultado. Se for PARA um contato receber a mensagem no horário, preencha para_contato + mensagem_contato.',
   inputSchema: {
     type: 'object',
     properties: {
-      task: { type: 'string', description: 'O que fazer, curto, sem a palavra lembrete.' },
+      task: { type: 'string', description: 'O que fazer. Texto COMPLETO (listas, kg, cores) — nunca corte o final.' },
       quando: {
         type: 'string',
-        description: 'Horário de parede YYYY-MM-DDTHH:mm (America/Sao_Paulo).',
+        description: 'Horário de parede YYYY-MM-DDTHH:mm (America/Sao_Paulo). Ano = o atual (2026), nunca o ano anterior.',
+      },
+      acao: {
+        type: 'string',
+        description:
+          'lembrar (padrão, só avisa) | pesquisar (no horário busca na web e manda o resultado). Use pesquisar para cotação, preço, notícia agendada.',
+      },
+      consulta: {
+        type: 'string',
+        description: 'Texto da busca quando acao=pesquisar. Se omitir, usa a tarefa.',
       },
       recorrencia: {
         type: 'string',
-        description: 'daily | weekly:MON..SUN | monthly:1-31. Omita se for único.',
+        description:
+          'daily | weekly:MON..SUN | monthly:1-31 | every:2d (um dia sim, um dia não / a cada 2 dias). Omita se for único.',
       },
       lead_minutes: {
         type: 'number',
@@ -295,7 +373,7 @@ const anotarCompromissoTool: Tool = {
       },
       mensagem_contato: {
         type: 'string',
-        description: 'Texto enviado AO CONTATO no horário (exige para_contato).',
+        description: 'Texto COMPLETO enviado AO CONTATO no horário (listas inteiras, sem cortar). Exige para_contato.',
       },
     },
     required: ['task', 'quando'],
@@ -322,12 +400,16 @@ const alterarCompromissoTool: Tool = {
 const cancelarCompromissosTool: Tool = {
   name: 'cancelar_compromissos',
   description:
-    'Cancela no banco (param de tocar e saem da lista). todos=true cancela todos os pendentes. Ou caderno_n para um item.',
+    'Cancela no banco (param de tocar e saem da lista). estes=true cancela a última lista mostrada (use em "cancele estes / risque do caderno / não repetir mais"). todos=true LIMPA o caderno inteiro desta pessoa. Ou caderno_n para um item. NUNCA diga que riscou sem esta tool devolver OK — cancelei.',
   inputSchema: {
     type: 'object',
     properties: {
       todos: { type: 'boolean', description: 'true = cancelar todos os pendentes desta pessoa.' },
-      caderno_n: { type: 'number', description: 'Número do item no caderno, se não for todos.' },
+      estes: {
+        type: 'boolean',
+        description: 'true = cancelar os itens da última lista (estes / que se repetem).',
+      },
+      caderno_n: { type: 'number', description: 'Número do item no caderno, se não for todos/estes.' },
     },
     additionalProperties: false,
   },
@@ -344,7 +426,12 @@ function normalizeRecurrence(raw: string): string | null {
     const d = Number(monthly[1]);
     if (d >= 1 && d <= 31) return `monthly:${d}`;
   }
-  return null;
+  const every = t.match(/^every:(\d+)d$/i);
+  if (every) {
+    const n = Number(every[1]);
+    if (n >= 2 && n <= 30) return `every:${n}d`;
+  }
+  return inferIntervalRecurrence(t);
 }
 
 async function resolveOneContact(
@@ -451,13 +538,20 @@ export function buildOwnerToolRegistry(
     const denied = await denyUnlessListed(ctx);
     if (denied) return denied;
     const o = asRecord(input);
-    const mensagem = str(o.mensagem);
+    let mensagem = str(o.mensagem);
     if (!mensagem || mensagem.length < 2) return 'Informe a mensagem a enviar.';
     if (/^(mensagem|msg|texto)$/i.test(mensagem)) {
       return 'Mensagem genérica demais. Escreva o texto completo (ex.: Boa noite!).';
     }
 
-    const resolved = await resolveOneContact(ctx, str(o.nome), str(o.client_id));
+    let resolved = await resolveOneContact(ctx, str(o.nome), str(o.client_id));
+    if (!resolved.ok) {
+      const parsed = parseRelayIntent(ctx.lastUserMessage ?? '');
+      if (parsed) {
+        resolved = await resolveOneContact(ctx, parsed.contactQuery, '');
+        if (resolved.ok) mensagem = parsed.body || mensagem;
+      }
+    }
     if (!resolved.ok) return resolved.text;
 
     const sent = await sendOwnerRelay({
@@ -496,25 +590,36 @@ export function buildOwnerToolRegistry(
       ctx.connectionId ?? null,
     );
     await clearHumanPause(ctx.tenantId, conversation.id).catch(() => null);
-    const [history, total] = await Promise.all([
+    const clientRow = await getClientById(ctx.tenantId, resolved.id);
+    const threadPhones = [...new Set(
+      [resolved.phone, clientRow?.whatsapp_lid].filter((p): p is string => Boolean(p?.trim())),
+    )];
+    const [history, total, ...secretaryThreads] = await Promise.all([
       getRecentMessagesForAI(ctx.tenantId, conversation.id, lim, offset),
       countMessagesInConversation(ctx.tenantId, conversation.id),
+      ...threadPhones.map((p) =>
+        listOwnerChatHistory(ctx.tenantId, p, {
+          connectionId: ctx.connectionId,
+          limit: Math.min(lim, 80),
+          offset: 0,
+        }).catch(() => []),
+      ),
     ]);
-    if (!history.length) {
-      return (
-        `Contato ${resolved.name} (${resolved.phone}) — ${
-          total === 0
-            ? 'conversa aberta, ainda sem mensagens no painel. Pode enviar a primeira com enviar_mensagem_contato.'
-            : `offset ${offset} passou do fim (${total} no banco).`
-        }`
-      );
-    }
+    const seenOwner = new Set<string>();
+    const secretaryThread = secretaryThreads.flat().filter((row) => {
+      if (seenOwner.has(row.id)) return false;
+      seenOwner.add(row.id);
+      return true;
+    });
 
     let described = 0;
-    const lines: string[] = [];
+    const crmLines: string[] = [];
+    type InboundSnap = { at: number; text: string; kind: string; source: string };
+    const inbounds: InboundSnap[] = [];
+
     for (const m of history) {
       const who = m.direction === 'inbound' ? resolved.name : 'Loja';
-      let text = (m.content || m.transcription || '').trim();
+      let text = (m.content || m.transcription || m.audio_transcription || '').trim();
       if (
         !text &&
         described < 4 &&
@@ -549,22 +654,68 @@ export function buildOwnerToolRegistry(
       } else if (m.type === 'video') {
         text = `(vídeo) ${text}`;
       }
-      lines.push(`${who}: ${text.slice(0, 800)}`);
+      crmLines.push(`${who}: ${text.slice(0, 800)}`);
+      if (m.direction === 'inbound' && text) {
+        inbounds.push({
+          at: Date.parse(m.sent_at) || 0,
+          text,
+          kind: m.type,
+          source: 'conversa WhatsApp (painel)',
+        });
+      }
     }
+
+    const secretLines = secretaryThread.map((row) => {
+      const who = row.role === 'user' ? resolved.name : 'Secretária';
+      const text = row.content.trim();
+      if (row.role === 'user' && text) {
+        inbounds.push({
+          at: Date.parse(row.created_at) || 0,
+          text,
+          kind: text.startsWith('[áudio]') ? 'audio' : 'texto',
+          source: 'fio da secretária (acesso livre)',
+        });
+      }
+      return `${who}: ${text.slice(0, 800)}`;
+    });
+
+    if (!crmLines.length && !secretLines.length) {
+      return `Contato ${resolved.name} (${resolved.phone}) — nenhuma mensagem no painel nem no fio da secretária.`;
+    }
+
+    const lastInbound = inbounds.reduce<InboundSnap | null>(
+      (best, cur) => (!best || cur.at >= best.at ? cur : best),
+      null,
+    );
+    const ultima = lastInbound
+      ? [
+          'ÚLTIMA MENSAGEM DO CONTATO (lida AGORA no banco — não invente outra, não recicle "Oi"):',
+          `quando: ${formatForOwner(new Date(lastInbound.at), DEFAULT_TZ)}`,
+          `tipo: ${lastInbound.kind} · fonte: ${lastInbound.source}`,
+          `texto: ${lastInbound.text.slice(0, 1200)}`,
+          'Se for pedido de lembrar/acordar/compromisso: USE anotar_compromisso NESTE turno com o horário. Não peça o dono para repetir o que já está acima.',
+          '',
+        ].join('\n')
+      : 'ÚLTIMA MENSAGEM DO CONTATO: (não há inbound no banco)\n';
 
     const memory = await buildMemoryPromptBlock(ctx.tenantId, resolved.id).catch(() => '');
     const loadedUntil = offset + history.length;
     const more =
       loadedUntil < total
-        ? `\nHá mais ${total - loadedUntil} mais antigas. Chame de novo com offset=${loadedUntil} para continuar até o começo.`
-        : '\nFim do fio — todas as mensagens desta página até o começo já cobertas com os offsets anteriores.';
-    return (
-      `Conversa com ${resolved.name} (${resolved.phone}) · client_id=${resolved.id} · ${total} msgs no banco · offset ${offset}\n` +
-      (memory ? `${memory.trim()}\n` : '') +
-      `${lines.length} msgs (da mais antiga desta página à mais nova):\n` +
-      lines.join('\n') +
-      more
-    );
+        ? `\nHá mais ${total - loadedUntil} no painel. Chame de novo com offset=${loadedUntil}.`
+        : '';
+    const parts = [
+      ultima,
+      `Conversa com ${resolved.name} (${resolved.phone}) · client_id=${resolved.id}`,
+      memory?.trim() ?? '',
+      crmLines.length
+        ? `Painel (${total} msgs, offset ${offset}):\n${crmLines.join('\n')}${more}`
+        : 'Painel: (vazio)',
+      secretLines.length
+        ? `Fio secretária deste número (${secretLines.length}):\n${secretLines.join('\n')}`
+        : '',
+    ];
+    return parts.filter(Boolean).join('\n');
   };
 
   const lerMeuHistorico: ToolExecutor = async (input) => {
@@ -585,7 +736,7 @@ export function buildOwnerToolRegistry(
         : `offset ${offset} passou do fim (${total} mensagens).`;
     }
     const lines = rows.map((m) => {
-      const who = m.role === 'user' ? 'DONO' : 'VOCÊ';
+      const who = m.role === 'user' ? 'PESSOA' : 'VOCÊ';
       return `${who}: ${m.content.slice(0, 800)}`;
     });
     const loadedUntil = offset + rows.length;
@@ -594,6 +745,128 @@ export function buildOwnerToolRegistry(
         ? `\nHá mais ${total - loadedUntil} mais antigas. Chame de novo com offset=${loadedUntil}.`
         : '\nFim do fio comigo.';
     return `Histórico comigo · ${total} no banco · offset ${offset}\n${lines.join('\n')}${more}`;
+  };
+
+  const buscarHistorico: ToolExecutor = async (input) => {
+    const o = asRecord(input);
+    const termo = str(o.termo);
+    if (termo.length < 2) return 'Informe o termo (horário, nome ou trecho).';
+    const contato = str(o.contato);
+    const parts: string[] = [];
+
+    const fold = (s: string) =>
+      s
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase();
+    const needle = fold(termo);
+
+    if (contato) {
+      const denied = await denyUnlessListed(ctx);
+      if (denied) return denied;
+      const resolved = await resolveOneContact(ctx, contato, '');
+      if (!resolved.ok) return resolved.text;
+      const clientRow = await getClientById(ctx.tenantId, resolved.id);
+      const conversation = await findOrCreateOpenConversation(
+        ctx.tenantId,
+        resolved.id,
+        ctx.connectionId ?? null,
+      );
+      const phones = [...new Set(
+        [resolved.phone, clientRow?.whatsapp_lid].filter((p): p is string => Boolean(p?.trim())),
+      )];
+      const [crmHits, ...threads] = await Promise.all([
+        searchConversationMessages(ctx.tenantId, conversation.id, termo, 30),
+        ...phones.map((p) =>
+          searchOwnerChatHistory(ctx.tenantId, p, termo, {
+            connectionId: ctx.connectionId,
+            limit: 30,
+          }).catch(() => []),
+        ),
+      ]);
+      const threadHits = threads.flat();
+      if (crmHits.length) {
+        parts.push(
+          `Painel com ${resolved.name}:`,
+          ...crmHits.map((m) => {
+            const who = m.direction === 'inbound' ? resolved.name : 'Loja';
+            const text = (m.content || m.transcription || m.audio_transcription || '').trim();
+            const when = formatForOwner(new Date(m.sent_at), DEFAULT_TZ);
+            return `- ${when} ${who}: ${text.slice(0, 400)}`;
+          }),
+        );
+      }
+      if (threadHits.length) {
+        parts.push(
+          `Fio da secretária com ${resolved.name}:`,
+          ...threadHits.map((m) => {
+            const who = m.role === 'user' ? resolved.name : 'VOCÊ';
+            const when = formatForOwner(new Date(m.created_at), DEFAULT_TZ);
+            return `- ${when} ${who}: ${m.content.slice(0, 400)}`;
+          }),
+        );
+      }
+      const book = await listRemindersAboutContact(ctx.tenantId, ctx.ownerPhone, {
+        clientId: resolved.id,
+        contactPhone: resolved.phone,
+        nameHints: [resolved.name, contato],
+        filter: {
+          statuses: ['pendente', 'enviado', 'cancelado', 'concluido'],
+          limit: 20,
+        },
+      }).catch(() => []);
+      const bookHits = book.filter(
+        (r) => fold(reminderDisplayText(r)).includes(needle) || fold(r.task).includes(needle),
+      );
+      const bookShow = bookHits.length ? bookHits : book.slice(0, 8);
+      if (bookShow.length) {
+        parts.push(
+          `Caderno ligado a ${resolved.name}:`,
+          ...bookShow.map((r) => `- ${formatCadernoItem(r, r.timezone || DEFAULT_TZ)}`),
+        );
+      }
+      if (!parts.length) {
+        return `Não achei "${termo}" na conversa nem no caderno de ${resolved.name}.`;
+      }
+      return `Busca "${termo}" · ${resolved.name}\n${parts.join('\n')}`;
+    }
+
+    const [ownHits, book] = await Promise.all([
+      searchOwnerChatHistory(ctx.tenantId, ctx.ownerPhone, termo, {
+        connectionId: ctx.connectionId,
+        limit: 40,
+      }),
+      listReminders(ctx.tenantId, ctx.ownerPhone, {
+        statuses: ['pendente', 'enviado', 'cancelado', 'concluido'],
+        limit: 40,
+      }).catch(() => []),
+    ]);
+    if (ownHits.length) {
+      parts.push(
+        'Fio comigo:',
+        ...ownHits.map((m) => {
+          const who = m.role === 'user' ? 'PESSOA' : 'VOCÊ';
+          const when = formatForOwner(new Date(m.created_at), DEFAULT_TZ);
+          return `- ${when} ${who}: ${m.content.slice(0, 400)}`;
+        }),
+      );
+    }
+    const bookHits = book.filter(
+      (r) =>
+        fold(reminderDisplayText(r)).includes(needle) ||
+        fold(r.task).includes(needle) ||
+        formatForOwner(new Date(r.next_fire_at), r.timezone || DEFAULT_TZ).includes(termo),
+    );
+    if (bookHits.length) {
+      parts.push(
+        'Caderno desta pessoa:',
+        ...bookHits.map((r) => `- ${formatCadernoItem(r, r.timezone || DEFAULT_TZ)}`),
+      );
+    }
+    if (!parts.length) {
+      return `Não achei "${termo}" no fio comigo nem no caderno desta pessoa.`;
+    }
+    return `Busca "${termo}" (conversa comigo)\n${parts.join('\n')}`;
   };
 
   const orientar: ToolExecutor = async (input) => {
@@ -610,7 +883,7 @@ export function buildOwnerToolRegistry(
     const prompt =
       `ORIENTAÇÃO DO DONO (prioridade alta para este contato):\n${instrucao.slice(0, 1800)}\n\n` +
       'Continue a conversa de forma natural no WhatsApp, alinhada a essa orientação e ao catálogo. ' +
-      'Se o contato pedir busca na internet, cotação, notícia ou fato atual, use a ferramenta web_search e responda com o resultado — não ignore nem invente.';
+      'Se o contato pedir busca na internet, cotação, notícia ou fato atual, use web_search, julgue as fontes e busque de novo se estiver fraco — não ignore nem invente.';
 
     const updated = await updateClient(ctx.tenantId, resolved.id, {
       ai_enabled: true,
@@ -662,10 +935,10 @@ export function buildOwnerToolRegistry(
     const recRaw = str(o.recorrencia);
     const recurrence = recRaw ? normalizeRecurrence(recRaw) : null;
     if (recRaw && !recurrence) {
-      return 'recorrencia inválida. Use daily, weekly:MON, monthly:15, ou omita.';
+      return 'recorrencia inválida. Use daily, weekly:MON, monthly:15, every:2d, ou omita.';
     }
 
-    const task = `Enviar p/ ${resolved.name}: ${mensagem.slice(0, 120)}`;
+    const task = `Enviar p/ ${resolved.name}: ${mensagem.slice(0, 4000)}`;
     const reminder = await createReminder(ctx.tenantId, {
       ownerPhone: ctx.ownerPhone,
       task,
@@ -820,8 +1093,11 @@ export function buildOwnerToolRegistry(
     if (recRaw) {
       recurrence = normalizeRecurrence(recRaw);
       if (!recurrence || !isValidRecurrence(recurrence)) {
-        return 'recorrencia inválida. Use daily, weekly:MON, monthly:15, ou omita.';
+        return 'recorrencia inválida. Use daily, weekly:MON, monthly:15, every:2d, ou omita.';
       }
+    }
+    if (!recurrence && ctx.lastUserMessage) {
+      recurrence = inferIntervalRecurrence(ctx.lastUserMessage);
     }
     const nextFireAt = bumpUntilFuture(parsed, new Date(), tz, recurrence);
     const leadRaw = o.lead_minutes;
@@ -841,6 +1117,27 @@ export function buildOwnerToolRegistry(
       relayBody = msgContato || task;
     }
 
+    const savedTask = para ? `Enviar p/ ${para}: ${relayBody || task}` : task;
+    const dup = await findSimilarPendingReminder(ctx.tenantId, ctx.ownerPhone, savedTask, nextFireAt);
+    if (dup) {
+      if (dup.status === 'cancelado') {
+        return `Esse compromisso já tinha sido cancelado (${dup.task}). Não recriei.`;
+      }
+      if (dup.status === 'enviado') {
+        return `Esse já tocou (${dup.task}). Não recriei.`;
+      }
+      return `Já estava no caderno: ${dup.task} · ${formatForOwner(new Date(dup.next_fire_at), tz)} · id=${dup.id}. Não dupliquei.`;
+    }
+
+    const acao = str(o.acao).toLowerCase();
+    const consulta = str(o.consulta);
+    const fireAction =
+      acao === 'pesquisar' || acao === 'pesquisa' || inferFireAction(task, ctx.lastUserMessage) === 'search'
+        ? 'search'
+        : 'notify';
+    const searchQuery =
+      fireAction === 'search' ? consulta || extractSearchQuery(task || ctx.lastUserMessage || '') : null;
+
     const reminder = await createReminder(ctx.tenantId, {
       ownerPhone: ctx.ownerPhone,
       task: para ? `Enviar p/ ${para}: ${task}` : task,
@@ -852,6 +1149,8 @@ export function buildOwnerToolRegistry(
       connectionId: ctx.connectionId,
       targetClientId,
       relayBody,
+      fireAction,
+      searchQuery,
     });
 
     void recordOwnerEvent({
@@ -864,23 +1163,42 @@ export function buildOwnerToolRegistry(
       source: 'reminder',
     });
 
+    const book = await cadernoSnapshot(ctx.tenantId, ctx.ownerPhone, tz, reminder.id);
+    rememberOwnerLastList(
+      ctx.tenantId,
+      ctx.ownerPhone,
+      (await listReminders(ctx.tenantId, ctx.ownerPhone, { statuses: ['pendente'], limit: 20 }).catch(() => [])).map(
+        (r) => r.id,
+      ),
+    );
+
     return (
-      `OK — salvo no caderno para disparo automático em ${formatForOwner(nextFireAt, tz)}` +
-      (recurrence ? ` · repete ${recurrence}` : ' · único') +
+      `OK — salvo no SEU caderno (este número) para disparo automático em ${formatForOwner(nextFireAt, tz)}` +
+      (recurrence ? ` · repete ${describeRecurrence(recurrence)}` : ' · único') +
+      (fireAction === 'search' ? ' · no horário eu PESQUISO e mando o resultado' : '') +
       (para ? ` · no horário mando pra ${para}` : '') +
-      ` · id=${reminder.id}.`
+      ` · id=${reminder.id}.\n` +
+      `Criado: ${formatCadernoItem(reminder, tz)}\n` +
+      book
     );
   };
 
   const listarCaderno: ToolExecutor = async (input) => {
     const o = asRecord(input);
     const periodo = (str(o.periodo) || 'todos').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const incluir = (str(o.incluir) || 'pendentes').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
     const tz = DEFAULT_TZ;
     const wc = toWallClock(new Date(), tz);
     const startOfToday = fromWallClock({ ...wc, hour: 0, minute: 0 }, tz);
     const endOfToday = fromWallClock({ ...wc, day: wc.day + 1, hour: 0, minute: 0 }, tz);
-    const filter: { from?: Date; until?: Date; statuses: ['pendente']; limit: number } = {
-      statuses: ['pendente'],
+    let statuses: ReminderStatus[] = ['pendente'];
+    if (incluir === 'todos' || incluir === 'tudo') {
+      statuses = ['pendente', 'enviado', 'cancelado', 'concluido'];
+    } else if (incluir === 'disparados' || incluir === 'enviados' || incluir === 'tocados') {
+      statuses = ['enviado', 'concluido'];
+    }
+    const filter: { from?: Date; until?: Date; statuses: ReminderStatus[]; limit: number } = {
+      statuses,
       limit: 40,
     };
     if (periodo === 'hoje') {
@@ -897,7 +1215,9 @@ export function buildOwnerToolRegistry(
       filter.until = fromWallClock({ ...wc, day: wc.day + 30, hour: 0, minute: 0 }, tz);
     }
 
-    const contato = str(o.contato);
+    const contato = str(o.contato)
+      .replace(/^(o|a|os|as|meu|minha|meus|minhas|seu|sua)\s+/i, '')
+      .trim();
     let rows;
     if (contato) {
       const matches = await resolveRelayContacts(
@@ -918,13 +1238,40 @@ export function buildOwnerToolRegistry(
     }
 
     if (!rows.length) {
+      if (!contato && (periodo === 'hoje' || periodo === 'amanha')) {
+        const upcoming = await listReminders(ctx.tenantId, ctx.ownerPhone, {
+          statuses: ['pendente'],
+          limit: 8,
+        }).catch(() => []);
+        if (upcoming.length) {
+          rememberOwnerLastList(
+            ctx.tenantId,
+            ctx.ownerPhone,
+            upcoming.map((r) => r.id),
+          );
+          return (
+            `Nada para ${periodo}. Próximos no SEU caderno:\n` +
+            upcoming.map((r, i) => `${i + 1}. ${formatCadernoItem(r, r.timezone || tz)}`).join('\n')
+          );
+        }
+      }
       return contato
-        ? `Nada anotado para "${contato}"${periodo === 'todos' ? '' : ` (${periodo})`}.`
-        : `Caderno vazio${periodo === 'todos' ? '' : ` (${periodo})`}.`;
+        ? `Nada anotado para "${contato}"${periodo === 'todos' ? '' : ` (${periodo})`}${incluir === 'pendentes' ? '' : ` · ${incluir}`}.`
+        : `Seu caderno (só este número) está vazio${periodo === 'todos' ? '' : ` (${periodo})`}${incluir === 'pendentes' ? '' : ` · ${incluir}`}.`;
     }
-    return rows
-      .map((r, i) => `${i + 1}. ${r.task} — ${formatForOwner(new Date(r.next_fire_at), r.timezone || tz)}`)
-      .join('\n');
+    const header = contato
+      ? `Caderno sobre ${contato}:`
+      : 'SEU CADERNO (só este número, sem misturar outros):';
+    if (!contato) {
+      rememberOwnerLastList(
+        ctx.tenantId,
+        ctx.ownerPhone,
+        rows.filter((r) => r.status === 'pendente').map((r) => r.id),
+      );
+    }
+    return [header, ...rows.map((r, i) => `${i + 1}. ${formatCadernoItem(r, r.timezone || tz)}`)].join(
+      '\n',
+    );
   };
 
   const alterar: ToolExecutor = async (input) => {
@@ -941,32 +1288,68 @@ export function buildOwnerToolRegistry(
     if (!existing) return `Não achei o item ${n} no caderno. Manda HOJE pra eu listar.`;
     const nextFireAt = bumpUntilFuture(parsed, new Date(), tz, existing.recurrence);
     const task = str(o.task) || existing.task;
+    const fireAction = inferFireAction(task, ctx.lastUserMessage);
     const updated = await updateOwnerReminder(ctx.tenantId, ctx.ownerPhone, existing.id, {
       nextFireAt,
       task,
       recurrence: existing.recurrence,
+      fireAction,
+      searchQuery: fireAction === 'search' ? extractSearchQuery(task) : existing.search_query,
     });
     if (!updated) return 'Não consegui alterar — talvez já tenha sido cancelado.';
-    return `OK — alterei: ${updated.task} · ${formatForOwner(nextFireAt, tz)}. Disparo automático atualizado.`;
+    const book = await cadernoSnapshot(ctx.tenantId, ctx.ownerPhone, tz, updated.id);
+    return (
+      `OK — alterei: ${updated.task} · ${formatForOwner(nextFireAt, tz)}. Disparo automático atualizado.\n` +
+      `Alterado: ${formatCadernoItem(updated, tz)}\n` +
+      book
+    );
   };
 
   const cancelar: ToolExecutor = async (input) => {
     const o = asRecord(input);
+    const tz = DEFAULT_TZ;
     if (o.todos === true) {
       const count = await cancelAllPendingReminders(ctx.tenantId, ctx.ownerPhone);
+      rememberOwnerLastList(ctx.tenantId, ctx.ownerPhone, undefined);
+      const book = await cadernoSnapshot(ctx.tenantId, ctx.ownerPhone, tz);
       return count === 0
-        ? 'Não tinha nenhum pendente.'
-        : `OK — cancelei ${count}. Saíram da lista e não tocam mais.`;
+        ? `Não tinha nenhum pendente.\n${book}`
+        : `OK — cancelei ${count}. Saíram da lista e não tocam mais.\n${book}`;
+    }
+    if (o.estes === true) {
+      const ids = getOwnerLastList(ctx.tenantId, ctx.ownerPhone);
+      const own = await listReminders(ctx.tenantId, ctx.ownerPhone, {
+        statuses: ['pendente'],
+        limit: 80,
+      });
+      const fromList = own.filter((r) => ids.includes(r.id));
+      const repeating = own.filter((r) => Boolean(r.recurrence));
+      const targets = fromList.length ? fromList : repeating;
+      if (!targets.length) return 'Não achei a última lista. Informe caderno_n ou todos=true.';
+      let count = 0;
+      const cancelled: string[] = [];
+      for (const r of targets) {
+        if (await cancelReminderById(ctx.tenantId, r.id)) {
+          count += 1;
+          cancelled.push(r.task);
+        }
+      }
+      rememberOwnerLastList(ctx.tenantId, ctx.ownerPhone, undefined);
+      const book = await cadernoSnapshot(ctx.tenantId, ctx.ownerPhone, tz);
+      return count === 0
+        ? `Não tinha nenhum desses pendente.\n${book}`
+        : `OK — cancelei ${count}. Saíram da lista e não tocam mais.\nCancelados: ${cancelled.join('; ')}\n${book}`;
     }
     const n = typeof o.caderno_n === 'number' ? o.caderno_n : Number(o.caderno_n);
-    if (!Number.isInteger(n) || n < 1) return 'Informe todos=true ou caderno_n.';
+    if (!Number.isInteger(n) || n < 1) return 'Informe todos=true, estes=true ou caderno_n.';
     const agenda = await loadOwnerAgenda(ctx.tenantId, ctx.ownerPhone, DEFAULT_TZ);
     const existing = agenda[n - 1];
     if (!existing) return `Não achei o item ${n} no caderno.`;
     const ok = await cancelReminder(ctx.tenantId, ctx.ownerPhone, existing.id);
+    const book = await cadernoSnapshot(ctx.tenantId, ctx.ownerPhone, tz);
     return ok
-      ? `OK — cancelei "${existing.task}". Não toca mais.`
-      : 'Esse já não estava pendente.';
+      ? `OK — cancelei "${existing.task}". Não toca mais.\n${book}`
+      : `Esse já não estava pendente.\n${book}`;
   };
 
   const reminderRegistry: ToolRegistry = {
@@ -975,6 +1358,7 @@ export function buildOwnerToolRegistry(
     alterar_compromisso: { tool: alterarCompromissoTool, execute: alterar },
     cancelar_compromissos: { tool: cancelarCompromissosTool, execute: cancelar },
     ler_historico_comigo: { tool: lerHistoricoComigoTool, execute: lerMeuHistorico },
+    buscar_no_historico: { tool: buscarNoHistoricoTool, execute: buscarHistorico },
     listar_produtos: { tool: listarProdutosTool, execute: listar },
   };
 

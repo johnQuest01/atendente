@@ -12,13 +12,15 @@ import { isTenantBlocked } from '../../middleware/tenantAccess.middleware';
 import { getTenantWhatsapp, getWhatsappByConnection } from '../whatsapp.service';
 import { isTransientNetworkError } from '../zapi.service';
 import type { Reminder } from '../../types';
-import { describeLead, describeRecurrence } from './parse.service';
+import { bumpUntilFuture, describeLead, describeRecurrence } from './parse.service';
 import { formatForOwner, nextOccurrence } from './time';
 import { tickBroadcasts } from '../broadcast.service';
 import { purgeExpiredMemories } from '../../db/queries/client_memories';
 import { tickWhatsappOnboarding } from '../whatsapp-onboarding.service';
 import { sendOwnerRelay } from '../owner-relay.service';
 import { appendOwnerChatMessage } from '../../db/queries/owner_chat_messages';
+import { searchAndAnswer } from '../ai/search-summarize';
+import { extractSearchQuery, taskLooksLikeSearch } from './reminder-actions';
 
 /**
  * Agendador dos lembretes: a cada minuto varre os vencidos e dispara no
@@ -35,6 +37,23 @@ function reminderText(reminder: Reminder): string {
   // Só a tarefa — sem prefixo "Lembrete", para parecer um toque humano.
   const repeat = reminder.recurrence ? `\n(repete ${describeRecurrence(reminder.recurrence)})` : '';
   return `${reminder.task}${repeat}`;
+}
+
+function reminderWantsSearch(reminder: Reminder): boolean {
+  return reminder.fire_action === 'search' || taskLooksLikeSearch(reminder.task);
+}
+
+async function buildFiredBody(reminder: Reminder): Promise<string> {
+  if (!reminderWantsSearch(reminder)) return reminderText(reminder);
+
+  const query = (reminder.search_query || extractSearchQuery(reminder.task)).trim();
+  return searchAndAnswer({
+    query,
+    tenantId: reminder.tenant_id,
+    connectionId: reminder.connection_id,
+    ownerPhone: reminder.owner_phone,
+    wantLink: true,
+  });
 }
 
 async function whatsappForReminder(reminder: Reminder) {
@@ -87,6 +106,25 @@ async function fire(reminder: Reminder): Promise<void> {
   const claimed = await claimReminder(reminder.id);
   if (!claimed) return;
 
+  const overdueMs = Date.now() - new Date(reminder.next_fire_at).getTime();
+  if (overdueMs > 6 * 60 * 60_000) {
+    const snapped = bumpUntilFuture(
+      new Date(reminder.next_fire_at),
+      new Date(),
+      reminder.timezone,
+      reminder.recurrence,
+    );
+    if (snapped.getTime() > Date.now() + 60_000) {
+      logger.warn(
+        `Lembrete ${reminder.id}: horário velho (${reminder.next_fire_at}) — reagendado para ${snapped.toISOString()} sem disparar agora.`,
+      );
+      await rescheduleReminder(reminder.id, snapped);
+      return;
+    }
+    logger.warn(`Lembrete ${reminder.id}: horário velho demais, não disparo.`);
+    return;
+  }
+
   // Empresa com teste vencido/desativada não recebe disparo — mas o lembrete
   // não é perdido: volta para pendente e sai de novo quando ela reativar.
   if (await isTenantBlocked(reminder.tenant_id)) {
@@ -120,11 +158,12 @@ async function fire(reminder: Reminder): Promise<void> {
         return;
       }
 
-      const body = reminderText(reminder);
+      const body = await buildFiredBody(reminder);
       await wa.sendText(reminder.owner_phone, body);
       await rememberFiredChat(reminder, body);
       logger.info(
         `Lembrete enviado (${reminder.id}) para ${reminder.owner_phone}` +
+          (reminderWantsSearch(reminder) ? ' [pesquisa]' : '') +
           (reminder.connection_id ? ` via ${reminder.connection_id}` : ' (1ª conexão).'),
       );
     });

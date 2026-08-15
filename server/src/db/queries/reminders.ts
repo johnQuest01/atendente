@@ -243,6 +243,8 @@ export interface CreateReminderInput {
   targetClientId?: string | null;
   /** Texto enviado ao contato (opcional; exige targetClientId). */
   relayBody?: string | null;
+  fireAction?: 'notify' | 'search' | null;
+  searchQuery?: string | null;
 }
 
 export async function createReminder(
@@ -252,8 +254,8 @@ export async function createReminder(
   assertTenantMatchesScope(tenantId);
   const { rows } = await query<Reminder>(
     `INSERT INTO reminders
-       (tenant_id, owner_phone, task, category, recurrence, next_fire_at, timezone, notes, lead_minutes, connection_id, target_client_id, relay_body)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       (tenant_id, owner_phone, task, category, recurrence, next_fire_at, timezone, notes, lead_minutes, connection_id, target_client_id, relay_body, fire_action, search_query)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      RETURNING *`,
     [
       tenantId,
@@ -268,6 +270,8 @@ export async function createReminder(
       input.connectionId ?? null,
       input.targetClientId ?? null,
       input.relayBody ?? null,
+      input.fireAction === 'search' ? 'search' : 'notify',
+      input.searchQuery ?? null,
     ],
   );
   return rows[0];
@@ -289,8 +293,8 @@ export async function createRemindersBulk(
     for (const input of inputs) {
       const { rows } = await client.query<Reminder>(
         `INSERT INTO reminders
-           (tenant_id, owner_phone, task, category, recurrence, next_fire_at, timezone, notes, lead_minutes, connection_id, target_client_id, relay_body)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+           (tenant_id, owner_phone, task, category, recurrence, next_fire_at, timezone, notes, lead_minutes, connection_id, target_client_id, relay_body, fire_action, search_query)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
          RETURNING *`,
         [
           tenantId,
@@ -305,6 +309,8 @@ export async function createRemindersBulk(
           input.connectionId ?? null,
           input.targetClientId ?? null,
           input.relayBody ?? null,
+          input.fireAction === 'search' ? 'search' : 'notify',
+          input.searchQuery ?? null,
         ],
       );
       created.push(rows[0]);
@@ -406,8 +412,13 @@ export async function findSimilarPendingReminder(
           (status = 'pendente'
             AND next_fire_at BETWEEN ($3::timestamptz - ($4::int * interval '1 minute'))
                                  AND ($3::timestamptz + ($4::int * interval '1 minute')))
-          OR (status IN ('enviado', 'cancelado')
-            AND COALESCE(last_fired_at, created_at) > NOW() - interval '12 hours')
+          OR (status = 'enviado'
+            AND COALESCE(last_fired_at, created_at) > NOW() - interval '12 hours'
+            AND next_fire_at BETWEEN ($3::timestamptz - interval '4 minutes')
+                                 AND ($3::timestamptz + interval '4 minutes'))
+          OR (status = 'cancelado'
+            AND next_fire_at BETWEEN ($3::timestamptz - ($4::int * interval '1 minute'))
+                                 AND ($3::timestamptz + ($4::int * interval '1 minute')))
         )
       ORDER BY created_at DESC
       LIMIT 20`,
@@ -610,6 +621,8 @@ export async function updateOwnerReminder(
     recurrence?: string | null;
     task?: string;
     leadMinutes?: number | null;
+    fireAction?: 'notify' | 'search' | null;
+    searchQuery?: string | null;
   },
 ): Promise<Reminder | null> {
   assertTenantMatchesScope(tenantId);
@@ -619,7 +632,9 @@ export async function updateOwnerReminder(
             recurrence = COALESCE($5, recurrence),
             task = COALESCE($6, task),
             lead_minutes = COALESCE($7, lead_minutes),
-            lead_fired_at = NULL
+            lead_fired_at = NULL,
+            fire_action = COALESCE($8, fire_action),
+            search_query = COALESCE($9, search_query)
       WHERE id = $3 AND tenant_id = $1 AND owner_phone = $2 AND status = 'pendente'
       RETURNING *`,
     [
@@ -630,6 +645,8 @@ export async function updateOwnerReminder(
       patch.recurrence === undefined ? null : patch.recurrence,
       patch.task ?? null,
       patch.leadMinutes === undefined ? null : patch.leadMinutes,
+      patch.fireAction ?? null,
+      patch.searchQuery ?? null,
     ],
   );
 }

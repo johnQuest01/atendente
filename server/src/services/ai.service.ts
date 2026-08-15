@@ -256,10 +256,10 @@ const HUMAN_TURN_INSTRUCTION =
 
 /** Cliente pediu fato atual: use web_search; não invente nem ignore o pedido. */
 const WEB_SEARCH_INSTRUCTION =
-  '\n\nVocê TEM a ferramenta web_search. Use SOMENTE se o cliente pedir fato atual ' +
-  '(cotação, notícia, horário, pesquisa na internet, "busca pra mim"). ' +
-  'Pesquise de verdade, responda com o que a tool devolver e cite a fonte em 1 linha. ' +
-  'NÃO invente resultado. NÃO ignore o pedido de busca. ' +
+  '\n\nVocê TEM a ferramenta web_search. Se o cliente pedir fato atual ' +
+  '(cotação, notícia, horário, pesquisa na internet, "busca pra mim"), VOCÊ pesquisa, ' +
+  'julga as fontes e, se o resultado for fraco, busca de novo com query melhor. ' +
+  'Responda com a sua leitura + 1 URL real da tool. NÃO invente. NÃO ignore o pedido. ' +
   'NÃO use para catálogo, preço da loja ou conversa rotineira — isso vem do CATÁLOGO acima.';
 
 /** Anexa imagens ao último turno do cliente (cria um turno 'user' se necessário). */

@@ -4,6 +4,7 @@ import {
   cancelReminderById,
   completeReminderById,
   createRemindersBulk,
+  createReminder,
   getReminderById,
   getTodayReminders,
   isReminderOwner,
@@ -12,9 +13,12 @@ import {
   listRemindersAboutContact,
   listPendingRemindersMatchingTokens,
   updateOwnerReminder,
+  findSimilarPendingReminder,
   type CreateReminderInput,
   type ListRemindersFilter,
 } from '../../db/queries/reminders';
+import { getOwnerLastList, rememberOwnerLastList } from './owner-last-list';
+import { inferFireAction, userAskedScheduledSearch, userAskedSearchLink, userAskedSearchNow, userAskedTimedNotebook, userAskedTranscript, extractDictationText, parseClockFromText, extractSearchQuery, extractNotebookTask } from './reminder-actions';
 import { getActiveKeywords } from '../../db/queries/keywords';
 import { isMemoryScanEnabled } from '../../db/queries/settings';
 import { keywordMatches } from '../matcher.service';
@@ -26,19 +30,22 @@ import type { NormalizedInbound } from '../whatsapp/types';
 import type { Reminder } from '../../types';
 import type { ChatImage } from '../ai/types';
 import { extractVideoFrames } from '../ai/video-frames';
-import { describeLead, describeRecurrence, expandReminderUpdates, foldReminderTask, loadOwnerAgenda, parseReminders, reminderDisplayText, type ParsedReminder } from './parse.service';
+import { describeLead, describeRecurrence, expandReminderUpdates, foldReminderTask, inferDueAtFromText, loadOwnerAgenda, parseReminders, reminderDisplayText, type ParsedReminder } from './parse.service';
 import { DEFAULT_TZ, formatForOwner, fromWallClock, toWallClock } from './time';
 import {
   freeChatOwner,
   getOwnerModeFlags,
   persistOwnerAssistantReply,
   persistOwnerUserMessage,
+  sanitizeOwnerAssistantReply,
 } from '../owner-chat.service';
 import { recordOwnerEvent } from '../owner-memory.service';
 import { extractPhoneHint } from '../../utils/phone-hint';
 import { listOwnerChatHistory, ownerChatHasProviderId } from '../../db/queries/owner_chat_messages';
 import {
   displayName,
+  looksLikeSendToContact,
+  parseListChoice,
   parseRelayIntent,
   pickRelayCandidate,
   resolveRelayContacts,
@@ -169,6 +176,9 @@ function setState(tenantId: string, phone: string, patch: Partial<OwnerState>): 
   const key = stateKey(tenantId, phone);
   const current = getState(tenantId, phone);
   state.set(key, { ...current, ...patch, at: Date.now() });
+  if (Object.prototype.hasOwnProperty.call(patch, 'lastList')) {
+    rememberOwnerLastList(tenantId, phone, patch.lastList);
+  }
 }
 
 /** Conexão WhatsApp ativa durante o tratamento da mensagem do dono. */
@@ -197,7 +207,9 @@ function isHardImmediateOwnerTurn(text: string, owner: OwnerState): boolean {
   const cmd = normalizeCommand(text);
   if (isFarewellTurn(text)) return true;
   if (owner.pendingRelay || owner.pendingWatch || owner.pendingMute) {
-    if (/^\d{1,2}$/.test(n) || isAffirmative(text) || isNegative(text)) return true;
+    if (/^\d{1,2}$/.test(n) || parseListChoice(text) != null || isAffirmative(text) || isNegative(text)) {
+      return true;
+    }
     if (extractPhoneHint(text)) return true;
   }
   if (owner.pending && (isAffirmative(text) || isNegative(text))) return true;
@@ -207,6 +219,13 @@ function isHardImmediateOwnerTurn(text: string, owner: OwnerState): boolean {
     return true;
   }
   if (detectCancelAll(n)) return true;
+  if (detectCancelListed(n)) return true;
+  if (userAskedSearchLink(n) || userAskedSearchLink(text)) return true;
+  if (userAskedSearchNow(n) || userAskedSearchNow(text)) return true;
+  if (userAskedTranscript(n) || userAskedTranscript(text)) return true;
+  if (userAskedTimedNotebook(n) || userAskedTimedNotebook(text) || userAskedScheduledSearch(text)) {
+    return true;
+  }
   if (detectCancelByTask(n)) return true;
   if (owner.pendingCancelAll && (isAffirmative(text) || isNegative(text))) return true;
   if (detectQuery(n) && cmd.split(/\s+/).length <= 16) return true;
@@ -292,6 +311,7 @@ async function reply(tenantId: string, phone: string, text: string, skipPersist 
     toPhone: phone,
     text,
   });
+  text = sanitizeOwnerAssistantReply(text);
   const wa = connectionId
     ? await getWhatsappByConnection(tenantId, connectionId)
     : await getTenantWhatsapp(tenantId);
@@ -600,38 +620,127 @@ function detectCancelAll(normalized: string): boolean {
   );
 }
 
+/** Limpar o caderno de verdade e (opcional) criar de novo — qualquer pessoa neste WhatsApp. */
+function detectResetCaderno(normalized: string): boolean {
+  if (detectCancelAll(normalized)) return true;
+  const n = normalizeCommand(normalized);
+  if (
+    /\b(limpa|limpar|zera|zerar|zero)\w*.{0,50}\b(caderno|lista|compromissos?|lembretes?|agendamentos?|tudo|agenda)\b/.test(
+      n,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(comeca|comecar|criar|cria|refaz|refazer|grava|anota)\w*.{0,50}\b(de novo|denovo|novamente|limpo)\b/.test(n) &&
+    /\b(compromissos?|lembretes?|caderno|lista|agenda|tarefas?)\b/.test(n)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function resetHasNewTimes(normalized: string): boolean {
+  return /\b(\d{1,2}\s*h|\d{1,2}:\d{2}|toda|todo|dia sim|12\s*(x|por|\/)\s*36)\b/.test(normalized);
+}
+
+function isAgendaComplaint(normalized: string): boolean {
+  return (
+    /\b(errado|errou|bagunc|nao (e|eh) isso|ta errado|esta errado|ja esta errado)\b/.test(normalized) &&
+    /\b(compromissos?|lembretes?|agendamentos?|tarefas?|caderno|horario|ponto)\b/.test(normalized)
+  );
+}
+
 /** "cancela o compromisso comprar camiseta às 23h" / "pode cancelar" / "cancele". */
 const CANCEL_TASK_VERB =
   /\b(cancela|cancelar|cancele|apaga|apagar|apague|remove|remover|exclui|excluir|tira|tirar|risca|riscar|risque)\b/;
+const CANCEL_TASK_VERB_ALL = new RegExp(CANCEL_TASK_VERB.source, 'g');
+const LISTED_CANCEL_HINT = '__LISTED__';
+const GENERIC_CANCEL_TOKENS = new Set([
+  'estes',
+  'essas',
+  'esses',
+  'este',
+  'essa',
+  'esse',
+  'caderno',
+  'lista',
+  'repetir',
+  'repetem',
+  'risque',
+  'tocar',
+  'toquem',
+  'mais',
+]);
+
+/** "cancele estes / risque do caderno / não repetir mais" — a lista da última consulta. */
+function detectCancelListed(normalized: string): boolean {
+  const n = normalizeCommand(normalized);
+  if (!n || detectCancelAll(n)) return false;
+  const stopRepeat =
+    /\bnao\s+(quero\s+)?(mais\s+)?(que\s+)?(esses?|estas?|estes|essas|aqueles|aquelas)?\s*(compromissos?|lembretes?)?\s*(se\s+)?repet/.test(
+      n,
+    ) ||
+    /\bpara\s+de\s+(repet|tocar)/.test(n) ||
+    /\bnao\s+toquem?\s+mais/.test(n);
+  if (!CANCEL_TASK_VERB.test(n) && !stopRepeat) return false;
+  return (
+    stopRepeat ||
+    /\b(estes|essas|esses|aqueles|aquelas|esta lista|essa lista|da lista|do caderno|na lista)\b/.test(n) ||
+    /\brisque\b/.test(n) ||
+    /\brepet/.test(n)
+  );
+}
+
+function looksLikeCancelConfirmAsk(text: string): boolean {
+  const n = normalizeCommand(text);
+  return (
+    /\b(risco|riscar|risque|cancelo|cancelar|cancelei|apago|apagar)\b/.test(n) &&
+    /\b(sim|confirma|confirmar|responda|responde)\b/.test(n)
+  );
+}
 
 function detectCancelByTask(normalized: string): string | null {
   const n = normalizeCommand(normalized);
-  if (!n || detectCancelAll(n)) return null;
+  if (!n || detectCancelAll(n) || detectCancelListed(n)) return null;
   if (/^(cancela|cancelar|apaga|apagar|remove|remover|exclui|excluir)\s+\d{1,2}$/.test(n)) {
     return null;
   }
   if (!CANCEL_TASK_VERB.test(n)) return null;
   const rest = n
-    .replace(CANCEL_TASK_VERB, ' ')
+    .replace(CANCEL_TASK_VERB_ALL, ' ')
     .replace(
-      /\b(pode|quero|queria|preciso|favor|ok|ta|bom|sim|novo|copia|duplicada|duplicado|restante|restantes|mantenha|mantem|so|apenas|pra|para|me|que|e|este|esta|esse|essa)\b/g,
+      /\b(pode|quero|queria|preciso|favor|ok|ta|bom|sim|novo|copia|duplicada|duplicado|restante|restantes|mantenha|mantem|so|apenas|pra|para|me|que|e|este|esta|esse|essa|estes|essas|esses)\b/g,
       ' ',
     )
     .replace(/\b(o|a|os|as|de|da|do|das|dos)\b/g, ' ')
-    .replace(/\b(compromisso|compromissos|lembrete|lembretes|alarme|alarmes)\b/g, ' ')
+    .replace(/\b(compromisso|compromissos|lembrete|lembretes|alarme|alarmes|caderno|lista)\b/g, ' ')
     .replace(/\b\d{1,2}\s*h(?:oras?)?(?:\s+da\s+(manha|tarde|noite))?\b/g, ' ')
     .replace(/\b(hoje|amanha|as|noite|manha|tarde)\b/g, ' ')
     .replace(/\bcamiseta\b/g, 'camisa')
     .replace(/\s+/g, ' ')
     .trim();
-  if (rest.length < 3) return null;
+  if (rest.length < 3) {
+    if (/\b(compromissos?|lembretes?|caderno|lista|alarmes?)\b/.test(n)) return LISTED_CANCEL_HINT;
+    return null;
+  }
   return rest;
 }
 
 function wantsTranscript(normalized: string): boolean {
-  return /\b(transcrev|transcrever|passa\s+(pra|para|pro)\s+texto|escreve\s+o\s+(audio|áudio)|o\s+que\s+eu\s+(falei|disse)|ditado)\b/.test(
-    normalized,
-  );
+  return userAskedTranscript(normalized);
+}
+
+/** Não devolve a transcrição do áudio na resposta, a menos que peçam. */
+function stripEchoedTranscript(reply: string, spoken: string): string {
+  const src = spoken.replace(/^\[áudio\]\s*/i, '').replace(/^\[audio\]\s*/i, '').trim();
+  if (src.length < 28) return reply;
+  const lowReply = reply.toLowerCase();
+  const lowSrc = src.toLowerCase();
+  const idx = lowReply.indexOf(lowSrc);
+  if (idx < 0) return reply;
+  const cut = (reply.slice(0, idx) + reply.slice(idx + src.length)).replace(/\n{3,}/g, '\n\n').trim();
+  return cut.length >= 8 ? cut : reply;
 }
 
 /**
@@ -661,6 +770,7 @@ function shouldDeferToAgent(text: string, normalized: string): boolean {
 function detectQuery(normalized: string): string | null {
   if (isFarewellTurn(normalized)) return null;
   if (detectCancelAll(normalized)) return null;
+  if (detectCancelListed(normalized)) return null;
   if (detectCancelByTask(normalized)) return null;
 
   // 1) Palavra solta, como sempre funcionou.
@@ -748,6 +858,15 @@ async function sendReminderList(
 ): Promise<void> {
   if (reminders.length === 0) {
     const label = /\d/.test(title) ? `em ${title}` : title.toLowerCase();
+    const upcoming = await listReminders(tenantId, phone, { statuses: ['pendente'], limit: 8 });
+    if (upcoming.length) {
+      await reply(
+        tenantId,
+        phone,
+        `Nada anotado ${label}.\n\nPróximos no seu caderno:\n\n${formatReminderDetails(upcoming, tz)}`,
+      );
+      return;
+    }
     await reply(tenantId, phone, `Nada anotado ${label}.`);
     return;
   }
@@ -860,29 +979,201 @@ async function loadLastListReminders(tenantId: string, ids: string[] | undefined
   return rows;
 }
 
+async function handleTimedNotebook(input: {
+  tenantId: string;
+  phone: string;
+  text: string;
+  tz: string;
+  connectionId?: string | null;
+}): Promise<boolean> {
+  if (!userAskedTimedNotebook(input.text)) return false;
+  const now = new Date();
+  const when =
+    parseClockFromText(input.text, now, input.tz) ?? inferDueAtFromText(input.text, now, input.tz);
+  if (!when) return false;
+  const fireAction = inferFireAction(input.text);
+  const query = fireAction === 'search' ? extractSearchQuery(input.text) : null;
+  const task =
+    fireAction === 'search'
+      ? query
+        ? `Pesquisar na internet: ${query}`
+        : extractNotebookTask(input.text)
+      : extractNotebookTask(input.text);
+  const dup = await findSimilarPendingReminder(input.tenantId, input.phone, task, when);
+  if (dup?.status === 'pendente') {
+    rememberOwnerLastList(input.tenantId, input.phone, [dup.id]);
+    await reply(
+      input.tenantId,
+      input.phone,
+      fireAction === 'search'
+        ? `Já estava no caderno. No horário eu pesquiso e te mando o resultado.\nTe chamo ${formatForOwner(new Date(dup.next_fire_at), dup.timezone || input.tz)}.`
+        : `Já estava no caderno.\nTe chamo ${formatForOwner(new Date(dup.next_fire_at), dup.timezone || input.tz)}.`,
+    );
+    return true;
+  }
+  if (dup?.status === 'enviado') {
+    await reply(
+      input.tenantId,
+      input.phone,
+      fireAction === 'search'
+        ? `Essa pesquisa acabou de sair (${formatForOwner(new Date(dup.next_fire_at), dup.timezone || input.tz)}). Se quiser de novo, manda outro horário.`
+        : `Esse já tocou (${formatForOwner(new Date(dup.next_fire_at), dup.timezone || input.tz)}). Se quiser de novo, manda outro horário.`,
+    );
+    return true;
+  }
+  if (dup?.status === 'cancelado') {
+    await reply(
+      input.tenantId,
+      input.phone,
+      `Esse compromisso já tinha sido cancelado (${dup.task}). Não recriei.`,
+    );
+    return true;
+  }
+  const reminder = await createReminder(input.tenantId, {
+    ownerPhone: input.phone,
+    task,
+    category: 'data_especifica',
+    nextFireAt: when,
+    timezone: input.tz,
+    connectionId: input.connectionId,
+    fireAction,
+    searchQuery: query,
+  });
+  rememberOwnerLastList(input.tenantId, input.phone, [reminder.id]);
+  logger.info(
+    `Secretária: caderno gravado ${reminder.id} (${fireAction}) para ${when.toISOString()} (${input.phone})`,
+  );
+  const kind =
+    fireAction === 'search'
+      ? 'No horário eu pesquiso na internet e te mando o resultado.'
+      : `Te chamo ${formatForOwner(when, input.tz)}.`;
+  await reply(
+    input.tenantId,
+    input.phone,
+    fireAction === 'search'
+      ? `Pronto, anotei. ${kind}\nTe chamo ${formatForOwner(when, input.tz)}.`
+      : `Pronto, anotei. ${kind}`,
+  );
+  return true;
+}
+
+function isDeicticCancelHint(hint: string): boolean {
+  if (hint === LISTED_CANCEL_HINT) return true;
+  const tokens = tokensForCancel(hint);
+  return tokens.length === 0 || tokens.every((t) => GENERIC_CANCEL_TOKENS.has(t));
+}
+
+function matchRemindersNamedInText(text: string, reminders: Reminder[]): Reminder[] {
+  const folded = foldReminderTask(text);
+  if (!folded) return [];
+  return reminders.filter((r) => {
+    const t = foldReminderTask(r.task);
+    return t.length >= 4 && folded.includes(t);
+  });
+}
+
+async function cancelReminderRows(
+  tenantId: string,
+  phone: string,
+  rows: Reminder[],
+): Promise<number> {
+  let n = 0;
+  for (const r of rows) {
+    if (await cancelReminderById(tenantId, r.id)) n += 1;
+  }
+  setState(tenantId, phone, { lastList: undefined, pendingCancelAll: undefined });
+  return n;
+}
+
+async function replyCancelledCount(tenantId: string, phone: string, n: number): Promise<void> {
+  await reply(
+    tenantId,
+    phone,
+    n === 0
+      ? 'Não tinha nenhum desses pendente.'
+      : n === 1
+        ? 'Pronto, cancelei. Saiu da lista e não toca mais.'
+        : `Pronto, cancelei os ${n}. Saíram da lista e não tocam mais.`,
+  );
+}
+
+async function cancelListedOrRepeating(input: {
+  tenantId: string;
+  phone: string;
+  lastList?: string[];
+  sourceText: string;
+}): Promise<boolean> {
+  const ids = [...new Set([...(input.lastList ?? []), ...getOwnerLastList(input.tenantId, input.phone)])];
+  const fromList = await loadLastListReminders(input.tenantId, ids);
+  const own = await listReminders(input.tenantId, input.phone, { statuses: ['pendente'], limit: 80 });
+  const named = matchRemindersNamedInText(input.sourceText, own);
+  const repeating = own.filter((r) => Boolean(r.recurrence));
+  const wantsRepeatStop = /\b(repet|nao toquem? mais|para de tocar)\b/.test(
+    normalizeCommand(input.sourceText),
+  );
+  let targets: Reminder[];
+  if (named.length) {
+    targets = named;
+  } else if (fromList.length) {
+    targets = wantsRepeatStop ? fromList.filter((r) => Boolean(r.recurrence)) : fromList;
+    if (!targets.length) targets = fromList;
+  } else if (wantsRepeatStop && repeating.length) {
+    targets = repeating;
+  } else {
+    targets = [];
+  }
+  if (!targets.length) {
+    await reply(
+      input.tenantId,
+      input.phone,
+      'Não achei esses na lista. Manda *HOJE* e depois *CANCELAR* com o número.',
+    );
+    return true;
+  }
+  const n = await cancelReminderRows(input.tenantId, input.phone, targets);
+  await replyCancelledCount(input.tenantId, input.phone, n);
+  return true;
+}
+
 async function cancelByTaskPhrase(input: {
   tenantId: string;
   phone: string;
   hint: string;
   lastList?: string[];
   listed: boolean;
+  sourceText?: string;
 }): Promise<boolean> {
   const fromList = await loadLastListReminders(input.tenantId, input.lastList);
   const own = await listReminders(input.tenantId, input.phone, { statuses: ['pendente'], limit: 80 });
+  if (isDeicticCancelHint(input.hint)) {
+    return cancelListedOrRepeating({
+      tenantId: input.tenantId,
+      phone: input.phone,
+      lastList: input.lastList,
+      sourceText: input.sourceText || input.hint,
+    });
+  }
   const tokens = tokensForCancel(input.hint);
   const matched = await listPendingRemindersMatchingTokens(input.tenantId, tokens, {
     ownerPhone: input.listed ? null : input.phone,
     limit: 30,
   });
   const pool = dedupeReminders([...fromList, ...own, ...matched]);
+  const named = input.sourceText ? matchRemindersNamedInText(input.sourceText, pool) : [];
   const hits = matchRemindersForCancel(input.hint, pool);
-  if (hits.length === 1) {
-    const ok = await cancelReminderById(input.tenantId, hits[0]!.id);
+  const targets = named.length > 1 ? named : hits;
+  if (targets.length === 1) {
+    const ok = await cancelReminderById(input.tenantId, targets[0]!.id);
     await reply(
       input.tenantId,
       input.phone,
-      ok ? `Cancelei: ${hits[0]!.task}.` : 'Esse já não estava mais na lista.',
+      ok ? `Cancelei: ${targets[0]!.task}.` : 'Esse já não estava mais na lista.',
     );
+    return true;
+  }
+  if (targets.length > 1 && named.length > 1) {
+    const n = await cancelReminderRows(input.tenantId, input.phone, targets);
+    await replyCancelledCount(input.tenantId, input.phone, n);
     return true;
   }
   if (hits.length > 1) {
@@ -960,6 +1251,7 @@ function detectDateQuery(normalized: string, tz: string): { filter: ListReminder
 const CREATE_TRIGGERS = /\b(lembr|anota|agenda|marca|avisa|nao me deixa esquecer|não me deixa esquecer)/i;
 
 function wantsCadastro(text: string, normalized: string): boolean {
+  if (isAgendaComplaint(normalized) || detectResetCaderno(normalized)) return false;
   return (
     CREATE_TRIGGERS.test(text) ||
     STRONG_CREATE.test(normalized) ||
@@ -969,6 +1261,7 @@ function wantsCadastro(text: string, normalized: string): boolean {
 }
 
 function looksLikeReminderConfirmAsk(text: string): boolean {
+  if (looksLikeCancelConfirmAsk(text)) return false;
   return /\b(fecha assim|responde\s+\*?sim|manda\s+\*?sim|confirma(?:r)?\s+que eu salvo)\b/i.test(
     text,
   );
@@ -1158,7 +1451,11 @@ async function handleOwnerMessageInner(
     ownerRow.schedule_enabled &&
     !isOnDuty(ownerRow.weekly_hours, new Date())
   ) {
-    await reply(tenantId, phone, offDutyMessage(ownerRow.weekly_hours));
+    const msg = offDutyMessage(ownerRow.weekly_hours);
+    logger.info(
+      `Secretária fora do horário phone=${phone} connection=${connectionId ?? '-'} → ${msg}`,
+    );
+    await reply(tenantId, phone, msg);
     return true;
   }
 
@@ -1171,6 +1468,22 @@ async function handleOwnerMessageInner(
   const flags = stored.openAccess
     ? { secretary: true, agent: true, webSearch: true, openAccess: true }
     : stored;
+
+  if (userAskedTranscript(text) || userAskedTranscript(normalized)) {
+    let spoken = inbound.type === 'audio' ? extractDictationText(text) : '';
+    if (!spoken) {
+      const hist = await listOwnerChatHistory(tenantId, phone, { connectionId, limit: 12 });
+      const lastAudio = [...hist].reverse().find(
+        (m) => m.role === 'user' && /^\[áudio\]/i.test(m.content || ''),
+      );
+      if (lastAudio?.content) spoken = extractDictationText(lastAudio.content);
+    }
+    if (spoken) {
+      logger.info(`Secretária: transcrição pedida (${spoken.length} chars)`);
+      await reply(tenantId, phone, spoken);
+      return true;
+    }
+  }
 
   // Foto/vídeo: a secretária/agente ENXERGA via visão (não cai no fluxo só-texto).
   if (visionImages.length > 0) {
@@ -1457,7 +1770,18 @@ async function handleOwnerMessageInner(
   }
 
   // SIM depois da IA pedir "responde sim que eu salvo" sem gravar no caderno.
+  // Se o pedido era para CANCELAR, o SIM cancela de verdade — não regrava.
   if (flags.secretary && isAffirmative(text) && !wantsCadastro(text, normalized)) {
+    const hist = await listOwnerChatHistory(tenantId, phone, { connectionId, limit: 8 });
+    const lastAsst = [...hist].reverse().find((m) => m.role === 'assistant');
+    if (lastAsst && looksLikeCancelConfirmAsk(lastAsst.content)) {
+      return cancelListedOrRepeating({
+        tenantId,
+        phone,
+        lastList: owner.lastList,
+        sourceText: lastAsst.content,
+      });
+    }
     const source =
       owner.pendingAgentSave?.source ??
       (await recoverReminderCreateSource(tenantId, phone, connectionId));
@@ -1474,6 +1798,27 @@ async function handleOwnerMessageInner(
 
   // Frase longa / vários pedidos: a IA executa o caderno (tools) e o resto no
   // mesmo turno. Consulta/cancelamento de agenda (texto ou áudio) não vai pra IA.
+  if (flags.secretary && detectCancelListed(normalized)) {
+    return cancelListedOrRepeating({
+      tenantId,
+      phone,
+      lastList: owner.lastList,
+      sourceText: text,
+    });
+  }
+  if (flags.secretary && userAskedTimedNotebook(text)) {
+    const cadastro = wantsCadastro(text, normalized);
+    if (!cadastro || userAskedScheduledSearch(text)) {
+      const saved = await handleTimedNotebook({
+        tenantId,
+        phone,
+        text,
+        tz,
+        connectionId,
+      });
+      if (saved) return true;
+    }
+  }
   const cancelHint = flags.secretary ? detectCancelByTask(normalized) : null;
   if (cancelHint) {
     return cancelByTaskPhrase({
@@ -1482,14 +1827,19 @@ async function handleOwnerMessageInner(
       hint: cancelHint,
       lastList: owner.lastList,
       listed,
+      sourceText: text,
     });
   }
   const agendaQueryKey = flags.secretary ? detectQuery(normalized) : null;
   const cadastroOnly = flags.secretary && isCadastroOnly(text, normalized);
+  const earlyRelay = flags.secretary && listed ? parseRelayIntent(text) : null;
+  const earlyReset = flags.secretary && detectResetCaderno(normalized);
   if (
     flags.agent &&
     !agendaQueryKey &&
     !cadastroOnly &&
+    !earlyRelay &&
+    !earlyReset &&
     (shouldDeferToAgent(text, normalized) || inbound.type === 'audio')
   ) {
     const forAgent = inbound.type === 'audio' ? `[áudio] ${text}` : text;
@@ -1503,11 +1853,15 @@ async function handleOwnerMessageInner(
         pendingAgentSave: { source: text.replace(/^\[áudio\]\s*/i, '').trim() },
       });
     }
-    if (result.text || !flags.secretary || !detectQuery(normalized)) {
+    const agentText =
+      inbound.type === 'audio' && result.text && !wantsTranscript(normalized)
+        ? stripEchoedTranscript(result.text, text)
+        : result.text;
+    if (agentText || !flags.secretary || !detectQuery(normalized)) {
       await reply(
         tenantId,
         phone,
-        result.text ?? 'Não rolou agora. Manda de novo em uma frase?',
+        agentText ?? 'Não rolou agora. Manda de novo em uma frase?',
         result.alreadyPersisted,
       );
       return true;
@@ -1517,19 +1871,35 @@ async function handleOwnerMessageInner(
   // 2. Consulta — palavra solta ou pergunta em linguagem natural. Sem IA.
   // Só com Secretária ligada (agenda).
   if (flags.secretary) {
-  if (detectCancelAll(normalized)) {
-    const pending = await listReminders(tenantId, phone, { statuses: ['pendente'], limit: 200 });
-    if (pending.length === 0) {
-      await reply(tenantId, phone, 'Não tem nenhum pendente pra cancelar.');
+  if (detectResetCaderno(normalized) || detectCancelAll(normalized)) {
+    const wiped = await cancelAllPendingReminders(tenantId, phone);
+    setState(tenantId, phone, { pendingCancelAll: undefined, lastList: undefined });
+    if (resetHasNewTimes(normalized) || inbound.type === 'audio' || shouldDeferToAgent(text, normalized)) {
+      const forAgent = inbound.type === 'audio' ? `[áudio] ${text}` : text;
+      const result = await freeChatOwner(tenantId, phone, forAgent, {
+        connectionId,
+        webSearchEnabled: flags.webSearch,
+        listedOwner: listed,
+      });
+      await reply(
+        tenantId,
+        phone,
+        result.text ??
+          (wiped === 0
+            ? 'Caderno já estava vazio. Manda os novos horários que eu gravo.'
+            : 'Caderno limpo. Manda os novos horários que eu gravo.'),
+        result.alreadyPersisted,
+      );
       return true;
     }
-    setState(tenantId, phone, { pendingCancelAll: true, lastList: pending.map((r) => r.id) });
     await reply(
       tenantId,
       phone,
-      pending.length === 1
-        ? 'Vou cancelar o compromisso pendente — ele sai da lista e para de tocar. Fecha? (*sim*)'
-        : `Vou cancelar os ${pending.length} pendentes — saem da lista e param de tocar. Fecha? (*sim*)`,
+      wiped === 0
+        ? 'Caderno já estava vazio. Manda os novos que eu gravo.'
+        : wiped === 1
+          ? 'Pronto, limpei. Manda os novos que eu gravo.'
+          : `Pronto, limpei os ${wiped}. Manda os novos que eu gravo.`,
     );
     return true;
   }
@@ -1552,11 +1922,24 @@ async function handleOwnerMessageInner(
         await sendReminderList(tenantId, phone, reminders, base, tz);
       } else {
         if (reminders.length === 0) {
-          await reply(
-            tenantId,
-            phone,
-            titleSuffix ? `Nada anotado para *${titleSuffix}*.` : 'Nada anotado.',
-          );
+          const upcoming = await listReminders(tenantId, phone, {
+            statuses: ['pendente'],
+            limit: 8,
+          });
+          if (upcoming.length) {
+            const periodLabel = titleSuffix || QUERY_TITLE[queryKey] || 'esse período';
+            await reply(
+              tenantId,
+              phone,
+              `Nada em *${periodLabel}*.\n\nPróximos no seu caderno:\n\n${formatReminderDetails(upcoming, tz)}`,
+            );
+          } else {
+            await reply(
+              tenantId,
+              phone,
+              titleSuffix ? `Nada anotado para *${titleSuffix}*.` : 'Nada anotado.',
+            );
+          }
         } else {
           const head = titleSuffix ? `*${titleSuffix}*\n\n` : '';
           await reply(tenantId, phone, `${head}${formatReminderDetails(reminders, tz)}`);
@@ -1861,11 +2244,12 @@ async function handleOwnerMessageInner(
 
   // 4. Secretária: cadastro em linguagem natural (gatilho forte).
   const wantsReminder =
-    CREATE_TRIGGERS.test(text) ||
-    STRONG_CREATE.test(normalized) ||
-    EDIT_TRIGGERS.test(text) ||
-    EDIT_TRIGGERS.test(normalized);
-  if (wantsReminder && flags.secretary) {
+    !isAgendaComplaint(normalized) &&
+    (CREATE_TRIGGERS.test(text) ||
+      STRONG_CREATE.test(normalized) ||
+      EDIT_TRIGGERS.test(text) ||
+      EDIT_TRIGGERS.test(normalized));
+  if (wantsReminder && flags.secretary && !looksLikeSendToContact(text)) {
     return handleCreate(tenantId, phone, text, tz, text);
   }
   if (wantsReminder && !flags.secretary) {
@@ -1935,17 +2319,34 @@ async function commitPendingItems(
     }
   }
   if (toCreate.length > 0) {
-    const inputs: CreateReminderInput[] = toCreate.map((p) => ({
-      ownerPhone: phone,
-      task: p.task,
-      category: p.category,
-      recurrence: p.recurrence,
-      nextFireAt: p.nextFireAt,
-      leadMinutes: p.leadMinutes,
-      timezone: tz,
-      connectionId: replyConnectionId,
-    }));
-    await createRemindersBulk(tenantId, inputs);
+    const inputs: CreateReminderInput[] = [];
+    for (const p of toCreate) {
+      const dup = await findSimilarPendingReminder(tenantId, phone, p.task, p.nextFireAt);
+      if (dup?.status === 'cancelado') {
+        logger.info(`Lembretes: não recriei cancelado "${p.task}" (${dup.id})`);
+        continue;
+      }
+      if (dup?.status === 'pendente') {
+        logger.info(`Lembretes: já pendente "${p.task}" (${dup.id})`);
+        continue;
+      }
+      const fireAction = inferFireAction(p.task);
+      inputs.push({
+        ownerPhone: phone,
+        task: p.task,
+        category: p.category,
+        recurrence: p.recurrence,
+        nextFireAt: p.nextFireAt,
+        leadMinutes: p.leadMinutes,
+        timezone: tz,
+        connectionId: replyConnectionId,
+        fireAction,
+        searchQuery: fireAction === 'search' ? p.task : null,
+      });
+    }
+    if (inputs.length > 0) {
+      await createRemindersBulk(tenantId, inputs);
+    }
   }
   for (const item of items) {
     void recordOwnerEvent({
@@ -2061,7 +2462,10 @@ async function handleCreate(
   }
 
   const items = [...matchedUpdates, ...creates].map(toPendingItem);
-  if (opts?.autoConfirm) {
+  const auto =
+    opts?.autoConfirm ||
+    (creates.length === 1 && matchedUpdates.length === 0 && unmatched.length === 0 && !looksLikeEdit);
+  if (auto) {
     const saved = await commitPendingItems(tenantId, phone, items, tz);
     if (!saved.ok) {
       await reply(tenantId, phone, 'Não consegui gravar. Manda de novo o compromisso?');
