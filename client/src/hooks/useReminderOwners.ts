@@ -6,10 +6,22 @@ import { api } from '@/services/api';
  * tratado como cliente: o que ele mandar vira comando de lembrete.
  */
 
+export interface DayWindow {
+  start: string;
+  end: string;
+}
+
+export type WeeklyHours = Partial<Record<'0' | '1' | '2' | '3' | '4' | '5' | '6', DayWindow | null>>;
+
 export interface ReminderOwner {
   phone: string;
   label: string | null;
   secretary_enabled?: boolean;
+  schedule_enabled?: boolean;
+  weekly_hours?: WeeklyHours;
+  active_now?: boolean;
+  next_open_label?: string | null;
+  closes_at_label?: string | null;
 }
 
 export function reminderOwnersQueryKey(connectionId?: string) {
@@ -55,6 +67,27 @@ export function useSetReminderOwnerSecretary(connectionId?: string) {
       const { data } = await api.patch<{ owners: ReminderOwner[] }>(
         `/settings/reminder-owners/${phone}`,
         { secretaryEnabled },
+        { params: connectionId ? { connectionId } : undefined },
+      );
+      return data.owners;
+    },
+    onSuccess: (owners) => qc.setQueryData(reminderOwnersQueryKey(connectionId), owners),
+  });
+}
+
+export function usePatchReminderOwner(connectionId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: {
+      phone: string;
+      secretaryEnabled?: boolean;
+      scheduleEnabled?: boolean;
+      weeklyHours?: WeeklyHours;
+    }) => {
+      const { phone, ...body } = input;
+      const { data } = await api.patch<{ owners: ReminderOwner[] }>(
+        `/settings/reminder-owners/${phone}`,
+        body,
         { params: connectionId ? { connectionId } : undefined },
       );
       return data.owners;

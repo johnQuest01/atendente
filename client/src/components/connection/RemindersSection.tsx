@@ -11,11 +11,14 @@ import {
   useAddReminderOwner,
   useMemoryScan,
   useOwnerModes,
+  usePatchReminderOwner,
   useReminderOwners,
   useRemoveReminderOwner,
   useSetMemoryScan,
   useSetOwnerModes,
   useSetReminderOwnerSecretary,
+  type ReminderOwner,
+  type WeeklyHours,
 } from '@/hooks/useReminderOwners';
 import { toast } from '@/store/appStore';
 import { getErrorMessage } from '@/services/api';
@@ -184,6 +187,201 @@ function OwnerModesCard({
   );
 }
 
+const WEEK_DAYS: { key: keyof WeeklyHours; label: string }[] = [
+  { key: '1', label: 'Seg' },
+  { key: '2', label: 'Ter' },
+  { key: '3', label: 'Qua' },
+  { key: '4', label: 'Qui' },
+  { key: '5', label: 'Sex' },
+  { key: '6', label: 'Sáb' },
+  { key: '0', label: 'Dom' },
+];
+
+function cloneHours(hours?: WeeklyHours): WeeklyHours {
+  const out: WeeklyHours = {};
+  for (const { key } of WEEK_DAYS) {
+    const w = hours?.[key];
+    if (w?.start && w?.end) out[key] = { start: w.start.slice(0, 5), end: w.end.slice(0, 5) };
+  }
+  return out;
+}
+
+function hoursEqual(a: WeeklyHours, b: WeeklyHours): boolean {
+  return WEEK_DAYS.every(({ key }) => {
+    const x = a[key];
+    const y = b[key];
+    if (!x && !y) return true;
+    return Boolean(x && y && x.start === y.start && x.end === y.end);
+  });
+}
+
+function OwnerHoursCard({
+  owner,
+  canEdit,
+  busy,
+  onToggleSecretary,
+  onPatch,
+  onRemove,
+}: {
+  owner: ReminderOwner;
+  canEdit: boolean;
+  busy: boolean;
+  onToggleSecretary: (next: boolean) => void;
+  onPatch: (
+    body: { scheduleEnabled?: boolean; weeklyHours?: WeeklyHours },
+    ok: string,
+  ) => void;
+  onRemove: () => void;
+}) {
+  const authorized = owner.secretary_enabled !== false;
+  const scheduleOn = owner.schedule_enabled === true;
+  const [hours, setHours] = useState<WeeklyHours>(() => cloneHours(owner.weekly_hours));
+
+  useEffect(() => {
+    setHours(cloneHours(owner.weekly_hours));
+  }, [owner.phone, owner.weekly_hours]);
+
+  const dirty = !hoursEqual(hours, cloneHours(owner.weekly_hours));
+  const statusTone = !authorized
+    ? 'neutral'
+    : scheduleOn
+      ? owner.active_now
+        ? 'success'
+        : 'warning'
+      : 'success';
+  const statusLabel = !authorized
+    ? 'Pausado'
+    : scheduleOn
+      ? owner.active_now
+        ? `No horário${owner.closes_at_label ? ` · fecha ${owner.closes_at_label}` : ''}`
+        : `Fora do horário${owner.next_open_label ? ` · volta ${owner.next_open_label}` : ''}`
+      : 'Sempre ligado';
+
+  function setDay(key: keyof WeeklyHours, next: { start: string; end: string } | null) {
+    setHours((prev) => {
+      const copy = { ...prev };
+      if (!next) delete copy[key];
+      else copy[key] = next;
+      return copy;
+    });
+  }
+
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-border px-3 py-3">
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold text-text-primary">{owner.label ?? owner.phone}</p>
+          {owner.label && <p className="truncate text-xs text-text-secondary">{owner.phone}</p>}
+          <Badge tone={statusTone} className="mt-1">
+            {statusLabel}
+          </Badge>
+        </div>
+        {canEdit && (
+          <Toggle
+            checked={authorized}
+            disabled={busy}
+            onChange={onToggleSecretary}
+            label={`Liberar assistente secretário para ${owner.label ?? owner.phone}`}
+          />
+        )}
+        {canEdit && (
+          <Button size="sm" variant="ghost" loading={busy} onClick={onRemove}>
+            Remover
+          </Button>
+        )}
+      </div>
+
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-border/80 px-3 py-2">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-text-primary">Horário automático</p>
+          <p className="text-xs text-text-secondary">
+            Liga e desliga a secretária sozinha neste número, nos dias e horas abaixo.
+          </p>
+        </div>
+        {canEdit && (
+          <Toggle
+            checked={scheduleOn}
+            disabled={busy}
+            onChange={(next) =>
+              onPatch(
+                { scheduleEnabled: next, weeklyHours: next && dirty ? hours : undefined },
+                next
+                  ? 'Horário automático ligado. Grade padrão seg–sex 08:00–18:00 se ainda estava vazia.'
+                  : 'Horário automático desligado. Este número volta a ter a secretária sempre (se autorizado).',
+              )
+            }
+            label={`Horário automático para ${owner.label ?? owner.phone}`}
+          />
+        )}
+      </div>
+
+      <div className={`flex flex-col gap-2 ${scheduleOn ? '' : 'opacity-70'}`}>
+        {!scheduleOn && (
+          <p className="text-xs text-text-secondary">
+            Preencha os dias e ligue a alavanca acima para a grade valer.
+          </p>
+        )}
+          {WEEK_DAYS.map(({ key, label }) => {
+            const win = hours[key];
+            const open = Boolean(win);
+            return (
+              <div key={key} className="flex flex-wrap items-center gap-2">
+                <label className="flex w-16 shrink-0 items-center gap-1.5 text-xs font-semibold text-text-primary">
+                  <input
+                    type="checkbox"
+                    checked={open}
+                    disabled={!canEdit || busy}
+                    onChange={(e) =>
+                      setDay(
+                        key,
+                        e.target.checked ? { start: '08:00', end: '18:00' } : null,
+                      )
+                    }
+                  />
+                  {label}
+                </label>
+                {open ? (
+                  <>
+                    <input
+                      type="time"
+                      value={win!.start}
+                      disabled={!canEdit || busy}
+                      onChange={(e) =>
+                        setDay(key, { start: e.target.value.slice(0, 5), end: win!.end.slice(0, 5) })
+                      }
+                      className="rounded-lg border border-border bg-bg px-2 py-1 text-sm text-text-primary"
+                    />
+                    <span className="text-xs text-text-secondary">às</span>
+                    <input
+                      type="time"
+                      value={win!.end}
+                      disabled={!canEdit || busy}
+                      onChange={(e) =>
+                        setDay(key, { start: win!.start.slice(0, 5), end: e.target.value.slice(0, 5) })
+                      }
+                      className="rounded-lg border border-border bg-bg px-2 py-1 text-sm text-text-primary"
+                    />
+                  </>
+                ) : (
+                  <span className="text-xs text-text-secondary">fechado</span>
+                )}
+              </div>
+            );
+          })}
+          {canEdit && (
+            <Button
+              size="sm"
+              disabled={!dirty || busy}
+              onClick={() => onPatch({ weeklyHours: hours, scheduleEnabled: true }, 'Grade de horário salva.')}
+            >
+              Salvar horários
+            </Button>
+          )}
+        </div>
+    </div>
+  );
+}
+
 function ReminderOwnersCard({
   connectionId,
   canEdit,
@@ -196,6 +394,7 @@ function ReminderOwnersCard({
   const add = useAddReminderOwner(connectionId);
   const remove = useRemoveReminderOwner(connectionId);
   const setSecretary = useSetReminderOwnerSecretary(connectionId);
+  const patchOwner = usePatchReminderOwner(connectionId);
   const openAccess = modes?.openAccess === true;
 
   const [phone, setPhone] = useState('');
@@ -219,81 +418,17 @@ function ReminderOwnersCard({
   return (
     <Card className="flex flex-col gap-3">
       <div>
-        <h2 className="text-base font-bold text-text-primary">Lembretes</h2>
+        <h2 className="text-base font-bold text-text-primary">Números e horários da secretária</h2>
         <p className="text-sm text-text-secondary">
-          Cadastro por pessoa. Com o acesso livre desligado, só estes números falam com o
-          assistente — use a alavanca de cada um para liberar ou pausar. Com o acesso livre
-          ligado, qualquer pessoa usa a secretária; esta lista continua aqui para quando você
-          desligar.
+          Cadastre o telefone de cada pessoa, ligue a alavanca dela e defina os dias da semana com
+          hora de início e fim. Fora do horário a secretária desliga sozinha e volta no próximo
+          horário.
         </p>
       </div>
 
-      {openAccess && (
-        <p className="rounded-lg bg-primary/10 px-3 py-2 text-xs text-text-secondary">
-          Acesso livre está <strong>ligado</strong>: qualquer número neste WhatsApp usa a
-          secretária e a busca agora. Desligue a alavanca geral para voltar a valer só esta lista.
-        </p>
-      )}
-
-      {isLoading && <Spinner label="Carregando..." />}
-
-      {owners?.map((o) => (
-        <div
-          key={o.phone}
-          className="flex items-center gap-2 rounded-xl border border-border px-3 py-2"
-        >
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold text-text-primary">{o.label ?? o.phone}</p>
-            {o.label && <p className="truncate text-xs text-text-secondary">{o.phone}</p>}
-          </div>
-          {canEdit && (
-            <Toggle
-              checked={o.secretary_enabled !== false}
-              disabled={setSecretary.isPending}
-              onChange={(next) =>
-                setSecretary.mutate(
-                  { phone: o.phone, secretaryEnabled: next },
-                  {
-                    onSuccess: () =>
-                      toast(
-                        next
-                          ? `Assistente liberado para ${o.label ?? o.phone}.`
-                          : `Assistente pausado para ${o.label ?? o.phone}.`,
-                        'success',
-                      ),
-                    onError: (err) => toast(getErrorMessage(err), 'error'),
-                  },
-                )
-              }
-              label={`Liberar assistente secretário para ${o.label ?? o.phone}`}
-            />
-          )}
-          {canEdit && (
-            <Button
-              size="sm"
-              variant="ghost"
-              loading={remove.isPending}
-              onClick={() =>
-                remove.mutate(o.phone, {
-                  onSuccess: () => toast('Número removido.', 'success'),
-                  onError: (err) => toast(getErrorMessage(err), 'error'),
-                })
-              }
-            >
-              Remover
-            </Button>
-          )}
-        </div>
-      ))}
-
-      {owners && owners.length === 0 && (
-        <p className="text-xs text-text-secondary">
-          Nenhum número autorizado. Adicione o seu para começar a mandar lembretes por WhatsApp.
-        </p>
-      )}
-
       {canEdit && (
-        <div className="flex flex-col gap-2 rounded-xl border border-border bg-bg p-3">
+        <div className="flex flex-col gap-2 rounded-xl border-2 border-primary/30 bg-primary/5 p-3">
+          <p className="text-sm font-bold text-text-primary">Adicionar número</p>
           <Input
             label="Número (com DDI e DDD)"
             placeholder="Ex.: 5511999998888"
@@ -301,15 +436,70 @@ function ReminderOwnersCard({
             onChange={(e) => setPhone(e.target.value)}
           />
           <Input
-            label="Identificação (opcional)"
-            placeholder="Ex.: meu celular"
+            label="Nome (opcional)"
+            placeholder="Ex.: Kelly, Wender, meu celular"
             value={label}
             onChange={(e) => setLabel(e.target.value)}
           />
-          <Button size="sm" onClick={submit} loading={add.isPending}>
+          <Button size="sm" onClick={submit} loading={add.isPending} disabled={!phone.trim()}>
             Autorizar número
           </Button>
         </div>
+      )}
+
+      {openAccess && (
+        <p className="rounded-lg bg-primary/10 px-3 py-2 text-xs text-text-secondary">
+          Acesso livre está <strong>ligado</strong>: qualquer número neste WhatsApp usa a
+          secretária agora. Quem está nesta lista com <strong>horário automático</strong> ainda
+          respeita a grade (fora do horário ela recusa e volta sozinha no próximo horário).
+        </p>
+      )}
+
+      {isLoading && <Spinner label="Carregando..." />}
+
+      {owners?.map((o) => (
+        <OwnerHoursCard
+          key={o.phone}
+          owner={o}
+          canEdit={canEdit}
+          busy={setSecretary.isPending || patchOwner.isPending || remove.isPending}
+          onToggleSecretary={(next) =>
+            setSecretary.mutate(
+              { phone: o.phone, secretaryEnabled: next },
+              {
+                onSuccess: () =>
+                  toast(
+                    next
+                      ? `Assistente liberado para ${o.label ?? o.phone}.`
+                      : `Assistente pausado para ${o.label ?? o.phone}.`,
+                    'success',
+                  ),
+                onError: (err) => toast(getErrorMessage(err), 'error'),
+              },
+            )
+          }
+          onPatch={(body, ok) =>
+            patchOwner.mutate(
+              { phone: o.phone, ...body },
+              {
+                onSuccess: () => toast(ok, 'success'),
+                onError: (err) => toast(getErrorMessage(err), 'error'),
+              },
+            )
+          }
+          onRemove={() =>
+            remove.mutate(o.phone, {
+              onSuccess: () => toast('Número removido.', 'success'),
+              onError: (err) => toast(getErrorMessage(err), 'error'),
+            })
+          }
+        />
+      ))}
+
+      {owners && owners.length === 0 && (
+        <p className="text-xs text-text-secondary">
+          Nenhum número autorizado. Use o formulário acima para cadastrar.
+        </p>
       )}
 
       <p className="text-xs text-text-secondary">
@@ -512,8 +702,8 @@ export function RemindersSection({
 }) {
   return (
     <div className="flex flex-col gap-4">
-      <OwnerModesCard connectionId={connectionId} canEdit={canEdit} />
       <ReminderOwnersCard connectionId={connectionId} canEdit={canEdit} />
+      <OwnerModesCard connectionId={connectionId} canEdit={canEdit} />
       <ReminderPersonaCard connectionId={connectionId} canEdit={canEdit} />
       <MemoryScanCard connectionId={connectionId} canEdit={canEdit} />
     </div>

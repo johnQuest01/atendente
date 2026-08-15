@@ -30,6 +30,12 @@ type SectionId = 'overview' | 'playbook' | 'ai' | 'keywords' | 'reminders' | 'ad
 
 const ESSENTIAL_SECTIONS: SectionListItem[] = [
   {
+    id: 'reminders',
+    label: 'Números e horários',
+    description: 'Quem usa a secretária e em quais dias/horas',
+    icon: TextIcon,
+  },
+  {
     id: 'overview',
     label: 'Visão geral',
     description: 'Atendente, status e credenciais',
@@ -55,8 +61,8 @@ const ESSENTIAL_SECTIONS: SectionListItem[] = [
   },
   {
     id: 'reminders',
-    label: 'Lembretes',
-    description: 'Assistente e compromissos',
+    label: 'Números e horários',
+    description: 'Quem usa a secretária e em quais dias/horas',
     icon: TextIcon,
   },
 ];
@@ -134,7 +140,7 @@ export default function ConnectionWorkspace() {
         : activeSection === 'keywords'
           ? 'Palavras que chamam a IA'
           : activeSection === 'reminders'
-            ? 'Lembretes'
+            ? 'Números e horários'
             : activeSection === 'advanced'
               ? 'Avançado'
               : conn.label;

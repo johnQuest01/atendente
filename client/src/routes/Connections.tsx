@@ -59,8 +59,8 @@ export default function Connections() {
             phone.length >= 10 ? formatPhone(phone) : conn.phoneNumber || 'Número não detectado';
 
           return (
-            <Link key={conn.id} to={`/conexoes/${conn.id}`} className="block">
-              <Card className="flex items-center gap-3 transition-colors hover:border-primary/40">
+            <Card key={conn.id} className="flex flex-col gap-3 transition-colors hover:border-primary/40">
+              <Link to={`/conexoes/${conn.id}`} className="flex items-center gap-3">
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-base font-bold text-text-primary">{conn.label}</p>
                   <p className="truncate text-sm text-text-secondary">{phoneLabel}</p>
@@ -69,8 +69,14 @@ export default function Connections() {
                 <span className="text-lg text-text-secondary" aria-hidden>
                   ›
                 </span>
-              </Card>
-            </Link>
+              </Link>
+              <Link
+                to={`/conexoes/${conn.id}?section=reminders`}
+                className="rounded-xl bg-primary/10 px-3 py-2 text-center text-sm font-semibold text-primary"
+              >
+                Números e horários da secretária
+              </Link>
+            </Card>
           );
         })}
       </div>

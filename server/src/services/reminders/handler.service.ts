@@ -7,8 +7,10 @@ import {
   getReminderById,
   getTodayReminders,
   isReminderOwner,
+  getReminderOwner,
   listReminders,
   listRemindersAboutContact,
+  listPendingRemindersMatchingTokens,
   updateOwnerReminder,
   type CreateReminderInput,
   type ListRemindersFilter,
@@ -24,7 +26,7 @@ import type { NormalizedInbound } from '../whatsapp/types';
 import type { Reminder } from '../../types';
 import type { ChatImage } from '../ai/types';
 import { extractVideoFrames } from '../ai/video-frames';
-import { describeLead, describeRecurrence, expandReminderUpdates, foldReminderTask, loadOwnerAgenda, parseReminders, type ParsedReminder } from './parse.service';
+import { describeLead, describeRecurrence, expandReminderUpdates, foldReminderTask, loadOwnerAgenda, parseReminders, reminderDisplayText, type ParsedReminder } from './parse.service';
 import { DEFAULT_TZ, formatForOwner, fromWallClock, toWallClock } from './time';
 import {
   freeChatOwner,
@@ -34,6 +36,7 @@ import {
 } from '../owner-chat.service';
 import { recordOwnerEvent } from '../owner-memory.service';
 import { extractPhoneHint } from '../../utils/phone-hint';
+import { listOwnerChatHistory, ownerChatHasProviderId } from '../../db/queries/owner_chat_messages';
 import {
   displayName,
   parseRelayIntent,
@@ -58,6 +61,7 @@ import {
 } from '../contact-reply.service';
 import { rememberContactChoice } from '../owner-contact-memory.service';
 import { applySecretaryPlaybookToText } from '../secretary-playbook.service';
+import { isOnDuty, offDutyMessage } from './owner-schedule';
 
 /**
  * Assistente pessoal do dono. O mesmo número que atende clientes aceita comandos
@@ -117,6 +121,11 @@ interface OwnerState {
   };
   /** "Cancelar todos" aguardando SIM. */
   pendingCancelAll?: boolean;
+  /**
+   * A IA pediu "responde sim que eu salvo" sem chamar a tool.
+   * O SIM seguinte grava o texto original no caderno de verdade.
+   */
+  pendingAgentSave?: { source: string };
   lastList?: string[];
 }
 
@@ -192,6 +201,7 @@ function isHardImmediateOwnerTurn(text: string, owner: OwnerState): boolean {
     if (extractPhoneHint(text)) return true;
   }
   if (owner.pending && (isAffirmative(text) || isNegative(text))) return true;
+  if (owner.pendingAgentSave && (isAffirmative(text) || isNegative(text))) return true;
   if (n === 'ajuda' || n === 'menu' || n === '?') return true;
   if (/^(concluir|conclui|feito|ok|cancelar|cancela|remover|apagar)\s+\d{1,2}$/.test(n)) {
     return true;
@@ -355,8 +365,12 @@ function isAffirmative(text: string): boolean {
   const n = normalizeCommand(text);
   if (!n) return false;
   if (AFFIRMATIVE.has(n) || AFFIRMATIVE_PHRASES.has(n)) return true;
+  const words = n.split(/\s+/).filter(Boolean);
   // Áudio curto: "Sim, pode." → "sim pode"
-  return n.split(/\s+/).length <= 3 && /^(sim|ok|isso)\b/.test(n);
+  if (words.length <= 3 && /^(sim|ok|isso)\b/.test(n)) return true;
+  // "Sim, Paulo, tá certinho, meu querido…" — confirmação falada, não pedido novo.
+  if (/^sim\b/.test(n) && words.length <= 16 && !/\b(nao|cancela|cancelar)\b/.test(n)) return true;
+  return false;
 }
 
 function isNegative(text: string): boolean {
@@ -522,6 +536,14 @@ const AGENDA_CONTACT_STOP = new Set([
   'agenda',
   'tarefa',
   'tarefas',
+  'meu',
+  'minha',
+  'meus',
+  'minhas',
+  'seu',
+  'sua',
+  'seus',
+  'suas',
 ]);
 const SCOPE_WORDS: Array<[RegExp, string]> = [
   [/\bhoje\b/, 'hoje'],
@@ -578,24 +600,27 @@ function detectCancelAll(normalized: string): boolean {
   );
 }
 
-/** "cancela o compromisso comprar camiseta às 23h" — não é consulta nem CANCELAR TODOS. */
+/** "cancela o compromisso comprar camiseta às 23h" / "pode cancelar" / "cancele". */
+const CANCEL_TASK_VERB =
+  /\b(cancela|cancelar|cancele|apaga|apagar|apague|remove|remover|exclui|excluir|tira|tirar|risca|riscar|risque)\b/;
+
 function detectCancelByTask(normalized: string): string | null {
   const n = normalizeCommand(normalized);
   if (!n || detectCancelAll(n)) return null;
   if (/^(cancela|cancelar|apaga|apagar|remove|remover|exclui|excluir)\s+\d{1,2}$/.test(n)) {
     return null;
   }
-  if (
-    !/\b(cancela|cancelar|apaga|apagar|remove|remover|exclui|excluir|tira|tirar)\b/.test(n)
-  ) {
-    return null;
-  }
-  let rest = n
-    .replace(/^(cancela|cancelar|apaga|apagar|remove|remover|exclui|excluir|tira|tirar)\b/, ' ')
-    .replace(/\b(o|a|os|as|esse|essa|este|esta|de|da|do|das|dos)\b/g, ' ')
+  if (!CANCEL_TASK_VERB.test(n)) return null;
+  const rest = n
+    .replace(CANCEL_TASK_VERB, ' ')
+    .replace(
+      /\b(pode|quero|queria|preciso|favor|ok|ta|bom|sim|novo|copia|duplicada|duplicado|restante|restantes|mantenha|mantem|so|apenas|pra|para|me|que|e|este|esta|esse|essa)\b/g,
+      ' ',
+    )
+    .replace(/\b(o|a|os|as|de|da|do|das|dos)\b/g, ' ')
     .replace(/\b(compromisso|compromissos|lembrete|lembretes|alarme|alarmes)\b/g, ' ')
     .replace(/\b\d{1,2}\s*h(?:oras?)?(?:\s+da\s+(manha|tarde|noite))?\b/g, ' ')
-    .replace(/\b(hoje|amanha|as|às)\b/g, ' ')
+    .replace(/\b(hoje|amanha|as|noite|manha|tarde)\b/g, ' ')
     .replace(/\bcamiseta\b/g, 'camisa')
     .replace(/\s+/g, ' ')
     .trim();
@@ -675,11 +700,15 @@ function detectQuery(normalized: string): string | null {
   return scope ?? 'todos';
 }
 
-/** "para o Wender" / "do Ender" / "o Wender tem" — STT costuma escrever Ender. */
+/** "para o Wender" / "da minha esposa" / "o Ender tem" — STT costuma escrever Ender. */
 function extractAgendaContactHint(normalized: string): string | null {
+  if (/\b(esposa|mulher|wife)\b/.test(normalized)) return 'esposa';
+  if (/\b(marido|esposo|husband)\b/.test(normalized)) return 'marido';
+
+  const skip = '(?:(?:o|a|os|as|um|uma|meu|minha|meus|minhas|seu|sua|seus|suas)\\s+)*';
   const patterns = [
-    /\b(?:para|pra|pro|pelo|pela)\s+(?:o\s+|a\s+)?([a-z]{3,40})\b/,
-    /\b(?:do|da)\s+([a-z]{3,40})\b/,
+    new RegExp(`\\b(?:para|pra|pro|pelo|pela)\\s+${skip}([a-z]{3,40})\\b`),
+    new RegExp(`\\b(?:do|da|dos|das)\\s+${skip}([a-z]{3,40})\\b`),
     /\b(?:o|a)\s+([a-z]{3,40})\s+tem\b/,
   ];
   for (const re of patterns) {
@@ -730,7 +759,7 @@ async function sendReminderList(
     const when = formatForOwner(new Date(r.next_fire_at), tz);
     const repeat = r.recurrence ? `\nRepete: ${describeRecurrence(r.recurrence)}` : '';
     const lead = r.lead_minutes ? `\nAviso: ${describeLead(r.lead_minutes)}` : '';
-    await reply(tenantId, phone, `${i + 1}. ${r.task}\n${when}${repeat}${lead}`);
+    await reply(tenantId, phone, `${i + 1}. ${reminderDisplayText(r)}\n${when}${repeat}${lead}`);
   }
   if (total > LIST_SEND_CAP) {
     await reply(tenantId, phone, `…e mais ${total - LIST_SEND_CAP}. Mande TODOS para a lista completa.`);
@@ -796,7 +825,7 @@ function formatReminderDetails(reminders: Reminder[], tz: string): string {
       const when = formatForOwner(new Date(r.next_fire_at), tz);
       const repeat = r.recurrence ? `\nRepete: ${describeRecurrence(r.recurrence)}` : '';
       const lead = r.lead_minutes ? `\nAviso: ${describeLead(r.lead_minutes)}` : '';
-      return `${i + 1}. ${r.task}\n${when}${repeat}${lead}`;
+      return `${i + 1}. ${reminderDisplayText(r)}\n${when}${repeat}${lead}`;
     })
     .join('\n\n');
 }
@@ -836,11 +865,16 @@ async function cancelByTaskPhrase(input: {
   phone: string;
   hint: string;
   lastList?: string[];
+  listed: boolean;
 }): Promise<boolean> {
-  let pool = await loadLastListReminders(input.tenantId, input.lastList);
-  if (!pool.length) {
-    pool = await listReminders(input.tenantId, input.phone, { statuses: ['pendente'], limit: 80 });
-  }
+  const fromList = await loadLastListReminders(input.tenantId, input.lastList);
+  const own = await listReminders(input.tenantId, input.phone, { statuses: ['pendente'], limit: 80 });
+  const tokens = tokensForCancel(input.hint);
+  const matched = await listPendingRemindersMatchingTokens(input.tenantId, tokens, {
+    ownerPhone: input.listed ? null : input.phone,
+    limit: 30,
+  });
+  const pool = dedupeReminders([...fromList, ...own, ...matched]);
   const hits = matchRemindersForCancel(input.hint, pool);
   if (hits.length === 1) {
     const ok = await cancelReminderById(input.tenantId, hits[0]!.id);
@@ -925,6 +959,59 @@ function detectDateQuery(normalized: string, tz: string): { filter: ListReminder
 
 const CREATE_TRIGGERS = /\b(lembr|anota|agenda|marca|avisa|nao me deixa esquecer|não me deixa esquecer)/i;
 
+function wantsCadastro(text: string, normalized: string): boolean {
+  return (
+    CREATE_TRIGGERS.test(text) ||
+    STRONG_CREATE.test(normalized) ||
+    EDIT_TRIGGERS.test(text) ||
+    EDIT_TRIGGERS.test(normalized)
+  );
+}
+
+function looksLikeReminderConfirmAsk(text: string): boolean {
+  return /\b(fecha assim|responde\s+\*?sim|manda\s+\*?sim|confirma(?:r)?\s+que eu salvo)\b/i.test(
+    text,
+  );
+}
+
+/** Pedido só de compromisso (sem pesquisa/transcrição no mesmo turno). */
+function isCadastroOnly(text: string, normalized: string): boolean {
+  if (!wantsCadastro(text, normalized)) return false;
+  if (wantsTranscript(normalized)) return false;
+  if (SAVE_FOR_CONTACT.test(normalized) || INCOMING_MEDIA_COMMITMENT.test(normalized)) return false;
+  if (
+    /\b(e tambem|e também|alem disso|além disso|e pesquisa|e busca|e manda|e envia|e transcrev)\b/.test(
+      normalized,
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
+async function recoverReminderCreateSource(
+  tenantId: string,
+  phone: string,
+  connectionId?: string | null,
+): Promise<string | null> {
+  const hist = await listOwnerChatHistory(tenantId, phone, { connectionId, limit: 16 });
+  const cutoff = Date.now() - STATE_TTL_MS;
+  for (let i = hist.length - 1; i >= 1; i--) {
+    const msg = hist[i]!;
+    if (msg.role !== 'assistant') continue;
+    if (!looksLikeReminderConfirmAsk(msg.content)) continue;
+    if (new Date(msg.created_at).getTime() < cutoff) continue;
+    for (let j = i - 1; j >= 0; j--) {
+      const prev = hist[j]!;
+      if (prev.role !== 'user') continue;
+      const src = prev.content.replace(/^\[áudio\]\s*/i, '').trim();
+      if (wantsCadastro(src, normalizeCommand(src))) return src;
+      break;
+    }
+  }
+  return null;
+}
+
 /**
  * A empresa cadastrou uma keyword de disparo (content_type='reminders_today') e
  * a mensagem do dono casa com ela? Zero IA — só leitura das keywords + match
@@ -966,8 +1053,9 @@ export async function handleOwnerMessage(
   tenantId: string,
   inbound: NormalizedInbound,
   connectionId?: string | null,
+  canonicalPhone?: string | null,
 ): Promise<boolean> {
-  const phone = inbound.phone;
+  const phone = (canonicalPhone || inbound.phone).trim() || inbound.phone;
   const tz = DEFAULT_TZ;
   const key = stateKey(tenantId, phone);
   if (connectionId) ownerReplyConnection.set(key, connectionId);
@@ -988,8 +1076,16 @@ async function handleOwnerMessageInner(
   opts?: { skipPersist?: boolean; skipCoalesce?: boolean; forcedText?: string },
 ): Promise<boolean> {
   if (!opts?.forcedText && alreadyHandled(inbound.providerMessageId)) {
-    logger.info(`Lembretes: webhook repetido ignorado (${inbound.providerMessageId}).`);
-    return true;
+    const inThread = inbound.providerMessageId
+      ? await ownerChatHasProviderId(tenantId, inbound.providerMessageId)
+      : true;
+    if (inThread) {
+      logger.info(`Lembretes: webhook repetido ignorado (${inbound.providerMessageId}).`);
+      return true;
+    }
+    logger.info(
+      `Lembretes: id ${inbound.providerMessageId} já visto, mas o fio da secretária está vazio — segue.`,
+    );
   }
 
   // Passo 0: texto, áudio (STT) ou imagem/vídeo (visão).
@@ -1051,6 +1147,19 @@ async function handleOwnerMessageInner(
       connectionId,
       providerMessageId: inbound.providerMessageId,
     });
+    logger.info(
+      `Secretária: gravou no fio phone=${phone} id=${inbound.providerMessageId ?? 'sem-id'} (${persistText.slice(0, 80)})`,
+    );
+  }
+
+  const ownerRow = await getReminderOwner(tenantId, phone, connectionId);
+  if (
+    ownerRow?.secretary_enabled &&
+    ownerRow.schedule_enabled &&
+    !isOnDuty(ownerRow.weekly_hours, new Date())
+  ) {
+    await reply(tenantId, phone, offDutyMessage(ownerRow.weekly_hours));
+    return true;
   }
 
   const normalized = normalize(text);
@@ -1288,48 +1397,13 @@ async function handleOwnerMessageInner(
     const { items, source } = owner.pending;
 
     if (isAffirmative(text)) {
-      const replyConnectionId = ownerReplyConnection.get(stateKey(tenantId, phone)) ?? null;
-      const toUpdate = items.filter((p) => p.existingId);
-      const toCreate = items.filter((p) => !p.existingId);
-      for (const item of toUpdate) {
-        const updated = await updateOwnerReminder(tenantId, phone, item.existingId!, {
-          nextFireAt: item.nextFireAt,
-          recurrence: item.recurrence,
-          task: item.task,
-          leadMinutes: item.leadMinutes,
-        });
-        if (!updated) {
-          logger.warn(`Lembretes: update falhou para ${item.existingId} (${item.task})`);
-        }
+      const saved = await commitPendingItems(tenantId, phone, items, tz);
+      if (!saved.ok) {
+        await reply(tenantId, phone, 'Não consegui gravar. Manda de novo o compromisso?');
+        return true;
       }
-      if (toCreate.length > 0) {
-        const inputs: CreateReminderInput[] = toCreate.map((p) => ({
-          ownerPhone: phone,
-          task: p.task,
-          category: p.category,
-          recurrence: p.recurrence,
-          nextFireAt: p.nextFireAt,
-          leadMinutes: p.leadMinutes,
-          timezone: tz,
-          connectionId: replyConnectionId,
-        }));
-        await createRemindersBulk(tenantId, inputs);
-      }
-      setState(tenantId, phone, { pending: undefined });
-      for (const item of items) {
-        void recordOwnerEvent({
-          tenantId,
-          ownerPhone: phone,
-          kind: 'evento',
-          summary: item.existingId
-            ? `Compromisso alterado: ${item.task} (${formatForOwner(item.nextFireAt, tz)})`
-            : `Compromisso anotado: ${item.task} (${formatForOwner(item.nextFireAt, tz)})`,
-          connectionId: replyConnectionId,
-          occurredAt: item.nextFireAt,
-          source: 'reminder',
-        });
-      }
-      const onlyUpdates = toUpdate.length > 0 && toCreate.length === 0;
+      setState(tenantId, phone, { pending: undefined, pendingAgentSave: undefined });
+      const onlyUpdates = saved.toUpdate > 0 && saved.toCreate === 0;
       await reply(
         tenantId,
         phone,
@@ -1345,7 +1419,7 @@ async function handleOwnerMessageInner(
     }
 
     if (isNegative(text)) {
-      setState(tenantId, phone, { pending: undefined });
+      setState(tenantId, phone, { pending: undefined, pendingAgentSave: undefined });
       await reply(tenantId, phone, 'Beleza, descartei.');
       return true;
     }
@@ -1382,6 +1456,22 @@ async function handleOwnerMessageInner(
     return handleCreate(tenantId, phone, corrected, tz, text);
   }
 
+  // SIM depois da IA pedir "responde sim que eu salvo" sem gravar no caderno.
+  if (flags.secretary && isAffirmative(text) && !wantsCadastro(text, normalized)) {
+    const source =
+      owner.pendingAgentSave?.source ??
+      (await recoverReminderCreateSource(tenantId, phone, connectionId));
+    if (source) {
+      setState(tenantId, phone, { pendingAgentSave: undefined });
+      return handleCreate(tenantId, phone, source, tz, source, { autoConfirm: true });
+    }
+  }
+  if (owner.pendingAgentSave && isNegative(text)) {
+    setState(tenantId, phone, { pendingAgentSave: undefined });
+    await reply(tenantId, phone, 'Beleza, descartei.');
+    return true;
+  }
+
   // Frase longa / vários pedidos: a IA executa o caderno (tools) e o resto no
   // mesmo turno. Consulta/cancelamento de agenda (texto ou áudio) não vai pra IA.
   const cancelHint = flags.secretary ? detectCancelByTask(normalized) : null;
@@ -1391,12 +1481,15 @@ async function handleOwnerMessageInner(
       phone,
       hint: cancelHint,
       lastList: owner.lastList,
+      listed,
     });
   }
   const agendaQueryKey = flags.secretary ? detectQuery(normalized) : null;
+  const cadastroOnly = flags.secretary && isCadastroOnly(text, normalized);
   if (
     flags.agent &&
     !agendaQueryKey &&
+    !cadastroOnly &&
     (shouldDeferToAgent(text, normalized) || inbound.type === 'audio')
   ) {
     const forAgent = inbound.type === 'audio' ? `[áudio] ${text}` : text;
@@ -1405,6 +1498,11 @@ async function handleOwnerMessageInner(
       webSearchEnabled: flags.webSearch,
       listedOwner: listed,
     });
+    if (result.text && looksLikeReminderConfirmAsk(result.text) && flags.secretary) {
+      setState(tenantId, phone, {
+        pendingAgentSave: { source: text.replace(/^\[áudio\]\s*/i, '').trim() },
+      });
+    }
     if (result.text || !flags.secretary || !detectQuery(normalized)) {
       await reply(
         tenantId,
@@ -1816,6 +1914,55 @@ function toPendingItem(p: ParsedReminder): PendingItem {
   };
 }
 
+async function commitPendingItems(
+  tenantId: string,
+  phone: string,
+  items: PendingItem[],
+  tz: string,
+): Promise<{ ok: boolean; toUpdate: number; toCreate: number }> {
+  const replyConnectionId = ownerReplyConnection.get(stateKey(tenantId, phone)) ?? null;
+  const toUpdate = items.filter((p) => p.existingId);
+  const toCreate = items.filter((p) => !p.existingId);
+  for (const item of toUpdate) {
+    const updated = await updateOwnerReminder(tenantId, phone, item.existingId!, {
+      nextFireAt: item.nextFireAt,
+      recurrence: item.recurrence,
+      task: item.task,
+      leadMinutes: item.leadMinutes,
+    });
+    if (!updated) {
+      logger.warn(`Lembretes: update falhou para ${item.existingId} (${item.task})`);
+    }
+  }
+  if (toCreate.length > 0) {
+    const inputs: CreateReminderInput[] = toCreate.map((p) => ({
+      ownerPhone: phone,
+      task: p.task,
+      category: p.category,
+      recurrence: p.recurrence,
+      nextFireAt: p.nextFireAt,
+      leadMinutes: p.leadMinutes,
+      timezone: tz,
+      connectionId: replyConnectionId,
+    }));
+    await createRemindersBulk(tenantId, inputs);
+  }
+  for (const item of items) {
+    void recordOwnerEvent({
+      tenantId,
+      ownerPhone: phone,
+      kind: 'evento',
+      summary: item.existingId
+        ? `Compromisso alterado: ${item.task} (${formatForOwner(item.nextFireAt, tz)})`
+        : `Compromisso anotado: ${item.task} (${formatForOwner(item.nextFireAt, tz)})`,
+      connectionId: replyConnectionId,
+      occurredAt: item.nextFireAt,
+      source: 'reminder',
+    });
+  }
+  return { ok: true, toUpdate: toUpdate.length, toCreate: toCreate.length };
+}
+
 /** UMA confirmação, numerada quando há vários (Parte 1: massa). */
 function renderConfirmation(items: PendingItem[], tz: string): string {
   const updating = items.some((it) => it.existingId);
@@ -1844,6 +1991,7 @@ async function handleCreate(
   message: string,
   tz: string,
   originalText: string,
+  opts?: { autoConfirm?: boolean },
 ): Promise<boolean> {
   const looksLikeReminder = CREATE_TRIGGERS.test(message) || EDIT_TRIGGERS.test(message);
   const connectionId = ownerReplyConnection.get(stateKey(tenantId, phone)) ?? null;
@@ -1913,7 +2061,28 @@ async function handleCreate(
   }
 
   const items = [...matchedUpdates, ...creates].map(toPendingItem);
-  setState(tenantId, phone, { pending: { items, source: originalText } });
+  if (opts?.autoConfirm) {
+    const saved = await commitPendingItems(tenantId, phone, items, tz);
+    if (!saved.ok) {
+      await reply(tenantId, phone, 'Não consegui gravar. Manda de novo o compromisso?');
+      return true;
+    }
+    setState(tenantId, phone, { pending: undefined, pendingAgentSave: undefined });
+    const onlyUpdates = saved.toUpdate > 0 && saved.toCreate === 0;
+    await reply(
+      tenantId,
+      phone,
+      onlyUpdates
+        ? items.length === 1
+          ? `Pronto, alterei. Te chamo ${formatForOwner(items[0].nextFireAt, tz)}.`
+          : `Pronto, alterei os ${items.length}.`
+        : items.length === 1
+          ? `Pronto, anotei. Te chamo ${formatForOwner(items[0].nextFireAt, tz)}.`
+          : `Pronto, anotei os ${items.length}.`,
+    );
+    return true;
+  }
+  setState(tenantId, phone, { pending: { items, source: originalText }, pendingAgentSave: undefined });
   await reply(tenantId, phone, renderConfirmation(items, tz));
   return true;
 }

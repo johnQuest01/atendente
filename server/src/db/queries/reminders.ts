@@ -1,6 +1,8 @@
 import { assertTenantMatchesScope, query, queryOne, withTransaction } from '../index';
 import type { Reminder, ReminderCategory, ReminderStatus } from '../../types';
 import { AppError } from '../../utils/errors';
+import type { WeeklyHours } from '../../services/reminders/owner-schedule';
+import { normalizeWeeklyHours } from '../../services/reminders/owner-schedule';
 
 /**
  * Lembretes pessoais do dono e a whitelist de números autorizados.
@@ -16,30 +18,75 @@ export interface ReminderOwnerRow {
   label: string | null;
   connection_id?: string;
   secretary_enabled: boolean;
+  schedule_enabled: boolean;
+  weekly_hours: WeeklyHours;
 }
 
-/** Número autorizado E com a alavanca do assistente ligada. */
+function mapOwnerRow(row: {
+  phone: string;
+  label: string | null;
+  connection_id?: string;
+  secretary_enabled: boolean;
+  schedule_enabled?: boolean;
+  weekly_hours?: unknown;
+}): ReminderOwnerRow {
+  return {
+    phone: row.phone,
+    label: row.label,
+    connection_id: row.connection_id,
+    secretary_enabled: row.secretary_enabled !== false,
+    schedule_enabled: row.schedule_enabled === true,
+    weekly_hours: normalizeWeeklyHours(row.weekly_hours),
+  };
+}
+
+const OWNER_SELECT =
+  'phone, label, connection_id, secretary_enabled, schedule_enabled, weekly_hours';
+
+/** Número autorizado E com a alavanca do assistente ligada (ignora horário). */
 export async function isReminderOwner(
   tenantId: string,
   phone: string,
   connectionId?: string | null,
 ): Promise<boolean> {
+  const row = await getReminderOwner(tenantId, phone, connectionId);
+  return row?.secretary_enabled === true;
+}
+
+export async function getReminderOwner(
+  tenantId: string,
+  phone: string,
+  connectionId?: string | null,
+): Promise<ReminderOwnerRow | null> {
   assertTenantMatchesScope(tenantId);
   if (connectionId) {
-    const row = await queryOne<{ phone: string }>(
-      `SELECT phone FROM reminder_owners
-        WHERE tenant_id = $1 AND phone = $2 AND connection_id = $3
-          AND secretary_enabled = true`,
+    const row = await queryOne<{
+      phone: string;
+      label: string | null;
+      connection_id?: string;
+      secretary_enabled: boolean;
+      schedule_enabled: boolean;
+      weekly_hours: unknown;
+    }>(
+      `SELECT ${OWNER_SELECT} FROM reminder_owners
+        WHERE tenant_id = $1 AND phone = $2 AND connection_id = $3`,
       [tenantId, phone, connectionId],
     );
-    return row !== null;
+    return row ? mapOwnerRow(row) : null;
   }
-  const row = await queryOne<{ phone: string }>(
-    `SELECT phone FROM reminder_owners
-      WHERE tenant_id = $1 AND phone = $2 AND secretary_enabled = true`,
+  const row = await queryOne<{
+    phone: string;
+    label: string | null;
+    connection_id?: string;
+    secretary_enabled: boolean;
+    schedule_enabled: boolean;
+    weekly_hours: unknown;
+  }>(
+    `SELECT ${OWNER_SELECT} FROM reminder_owners
+      WHERE tenant_id = $1 AND phone = $2`,
     [tenantId, phone],
   );
-  return row !== null;
+  return row ? mapOwnerRow(row) : null;
 }
 
 export async function listReminderOwners(
@@ -48,20 +95,34 @@ export async function listReminderOwners(
 ): Promise<ReminderOwnerRow[]> {
   assertTenantMatchesScope(tenantId);
   if (connectionId) {
-    const { rows } = await query<ReminderOwnerRow>(
-      `SELECT phone, label, connection_id, secretary_enabled FROM reminder_owners
+    const { rows } = await query<{
+      phone: string;
+      label: string | null;
+      connection_id?: string;
+      secretary_enabled: boolean;
+      schedule_enabled: boolean;
+      weekly_hours: unknown;
+    }>(
+      `SELECT ${OWNER_SELECT} FROM reminder_owners
         WHERE tenant_id = $1 AND connection_id = $2
         ORDER BY created_at ASC`,
       [tenantId, connectionId],
     );
-    return rows;
+    return rows.map(mapOwnerRow);
   }
-  const { rows } = await query<ReminderOwnerRow>(
-    `SELECT phone, label, connection_id, secretary_enabled FROM reminder_owners
+  const { rows } = await query<{
+    phone: string;
+    label: string | null;
+    connection_id?: string;
+    secretary_enabled: boolean;
+    schedule_enabled: boolean;
+    weekly_hours: unknown;
+  }>(
+    `SELECT ${OWNER_SELECT} FROM reminder_owners
       WHERE tenant_id = $1 ORDER BY created_at ASC`,
     [tenantId],
   );
-  return rows;
+  return rows.map(mapOwnerRow);
 }
 
 export async function addReminderOwner(
@@ -107,6 +168,40 @@ export async function setReminderOwnerSecretary(
     `UPDATE reminder_owners SET secretary_enabled = $3
       WHERE tenant_id = $1 AND phone = $2`,
     [tenantId, phone, enabled],
+  );
+  return (rowCount ?? 0) > 0;
+}
+
+export async function setReminderOwnerSchedule(
+  tenantId: string,
+  phone: string,
+  patch: { scheduleEnabled?: boolean; weeklyHours?: WeeklyHours },
+  connectionId?: string | null,
+): Promise<boolean> {
+  assertTenantMatchesScope(tenantId);
+  const hours = patch.weeklyHours !== undefined ? normalizeWeeklyHours(patch.weeklyHours) : undefined;
+  if (connectionId) {
+    const { rowCount } = await query(
+      `UPDATE reminder_owners
+          SET schedule_enabled = COALESCE($4, schedule_enabled),
+              weekly_hours = COALESCE($5::jsonb, weekly_hours)
+        WHERE tenant_id = $1 AND phone = $2 AND connection_id = $3`,
+      [
+        tenantId,
+        phone,
+        connectionId,
+        patch.scheduleEnabled ?? null,
+        hours !== undefined ? JSON.stringify(hours) : null,
+      ],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+  const { rowCount } = await query(
+    `UPDATE reminder_owners
+        SET schedule_enabled = COALESCE($3, schedule_enabled),
+            weekly_hours = COALESCE($4::jsonb, weekly_hours)
+      WHERE tenant_id = $1 AND phone = $2`,
+    [tenantId, phone, patch.scheduleEnabled ?? null, hours !== undefined ? JSON.stringify(hours) : null],
   );
   return (rowCount ?? 0) > 0;
 }
@@ -263,6 +358,79 @@ export async function listReminders(
     params,
   );
   return rows;
+}
+
+/** Pendentes do tenant cuja tarefa contém todos os tokens (dono cancelando caderno de contato). */
+export async function listPendingRemindersMatchingTokens(
+  tenantId: string,
+  tokens: string[],
+  opts?: { ownerPhone?: string | null; limit?: number },
+): Promise<Reminder[]> {
+  assertTenantMatchesScope(tenantId);
+  const safe = tokens.map(likeSafe).filter((t) => t.length >= 3).slice(0, 6);
+  if (!safe.length) return [];
+  const params: unknown[] = [tenantId];
+  const where: string[] = [`tenant_id = $1`, `status = 'pendente'`];
+  if (opts?.ownerPhone) {
+    params.push(opts.ownerPhone);
+    where.push(`owner_phone = $${params.length}`);
+  }
+  for (const t of safe) {
+    params.push(`%${t}%`);
+    where.push(`(task ILIKE $${params.length} OR COALESCE(relay_body, '') ILIKE $${params.length})`);
+  }
+  params.push(Math.min(opts?.limit ?? 30, 40));
+  const { rows } = await query<Reminder>(
+    `SELECT * FROM reminders
+      WHERE ${where.join(' AND ')}
+      ORDER BY next_fire_at ASC
+      LIMIT $${params.length}`,
+    params,
+  );
+  return rows;
+}
+
+/** Mesma tarefa já pendente (horário próximo) ou recém tocou/cancelou — não recadastrar. */
+export async function findSimilarPendingReminder(
+  tenantId: string,
+  ownerPhone: string,
+  task: string,
+  nextFireAt: Date,
+  windowMinutes = 90,
+): Promise<Reminder | null> {
+  assertTenantMatchesScope(tenantId);
+  const { rows } = await query<Reminder>(
+    `SELECT * FROM reminders
+      WHERE tenant_id = $1 AND owner_phone = $2
+        AND (
+          (status = 'pendente'
+            AND next_fire_at BETWEEN ($3::timestamptz - ($4::int * interval '1 minute'))
+                                 AND ($3::timestamptz + ($4::int * interval '1 minute')))
+          OR (status IN ('enviado', 'cancelado')
+            AND COALESCE(last_fired_at, created_at) > NOW() - interval '12 hours')
+        )
+      ORDER BY created_at DESC
+      LIMIT 20`,
+    [tenantId, ownerPhone, nextFireAt.toISOString(), windowMinutes],
+  );
+  const folded = foldTask(task);
+  if (!folded) return rows[0] ?? null;
+  return (
+    rows.find((r) => {
+      const rt = foldTask(r.task);
+      return rt === folded || rt.includes(folded) || folded.includes(rt);
+    }) ?? null
+  );
+}
+
+function foldTask(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\bcamiseta\b/g, 'camisa')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
 }
 
 function likeSafe(fragment: string): string {
