@@ -18,6 +18,12 @@ import { preferKnownContact, rememberContactChoice } from './owner-contact-memor
 export interface ParsedRelay {
   body: string;
   contactQuery: string;
+  /**
+   * Corpo veio de fala INDIRETA do dono ("pergunte se ELE está bem"), então o
+   * texto está em 3ª pessoa e ficaria estranho pro contato. Nunca envia direto:
+   * pede confirmação mostrando o texto exato.
+   */
+  indirect?: boolean;
 }
 
 export interface RelayCandidate {
@@ -156,7 +162,7 @@ export function assistantClaimedContactSend(text: string): boolean {
 }
 
 const SEND_TO_LEAD =
-  /^(?:me\s+)?(?:avise|avisa|fale|fala|diga|diz|mande|manda|envie|envia)\s+(?:para\s+o\s+|para\s+a\s+|para\s+|pro\s+|pra\s+)(?:contato\s+(?:o|a)\s+)?(.+)$/i;
+  /^(?:me\s+)?(?:avise|avisa|fale|fala|diga|diz|mande|manda|envie|envia|pergunte|pergunta)\s+(?:para\s+o\s+|para\s+a\s+|para\s+|pro\s+|pra\s+)(?:contato\s+(?:o|a)\s+)?(.+)$/i;
 
 const NAME_BLOCKLIST =
   /^(me|te|se|ele|ela|aqui|la|lá|salvar|lembrar|criar|mandar|enviar|falar|compromisso|compromissos|novamente|novo|novos|voce|você|paulo|mensagem|msg|texto|hoje|amanha|amanhã|agora)$/i;
@@ -178,6 +184,18 @@ function splitNameAndBody(rest: string): { name: string; body: string } | null {
   const que = rest.match(/^(.+?)\s+que\s+(.+)$/i);
   if (que && looksLikePersonName(que[1]!) && que[1]!.split(/\s+/).length <= 6) {
     return { name: que[1]!, body: que[2]! };
+  }
+  // "Wender perguntando se ele está bem" / "Maria pedindo pra confirmar"
+  const gerund = rest.match(
+    /^(.+?)\s+(?:perguntando|pedindo|avisando|contando|informando|dizendo|falando)\s+(?:que\s+)?(.+)$/i,
+  );
+  if (gerund && looksLikePersonName(gerund[1]!)) {
+    return { name: gerund[1]!, body: gerund[2]! };
+  }
+  // "Wender se ele está bem da ressaca" — pergunta indireta, sem vírgula.
+  const seClause = rest.match(/^(.+?)\s+(se\s+.+)$/i);
+  if (seClause && looksLikePersonName(seClause[1]!)) {
+    return { name: seClause[1]!, body: seClause[2]! };
   }
   const comma = rest.match(/^(.+?),+\s*(.+)$/);
   if (comma && looksLikePersonName(comma[1]!)) {
@@ -211,8 +229,22 @@ function parseSendToLead(raw: string): ParsedRelay | null {
   return { body, contactQuery };
 }
 
-/** Detecta pedido de envio a contato. Retorna null se não for o caso. */
+/** Corpo em 3ª pessoa / pergunta indireta: "se ele está bem", "se ela vem". */
+function isIndirectBody(body: string): boolean {
+  return /^se\b/i.test(body.trim());
+}
+
+/**
+ * Detecta pedido de envio a contato. Retorna null se não for o caso.
+ * Marca `indirect` quando o corpo é fala indireta (exige confirmação).
+ */
 export function parseRelayIntent(text: string): ParsedRelay | null {
+  const parsed = parseRelayIntentCore(text);
+  if (!parsed) return null;
+  return isIndirectBody(parsed.body) ? { ...parsed, indirect: true } : parsed;
+}
+
+function parseRelayIntentCore(text: string): ParsedRelay | null {
   const raw = stripOwnerLead(text);
   if (!raw) return null;
 

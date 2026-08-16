@@ -402,8 +402,10 @@ function buildFastSystem(
           'Fluxo venda: listar_produtos → ler_conversa se já houver fio → texto humano → enviar + orientar.',
           'Fluxo rotina: agendar_mensagem_contato com quando=YYYY-MM-DDTHH:mm e recorrencia se pedir. Compromisso da PRÓPRIA pessoa: anotar_compromisso.',
           'Se o nome JÁ ESTIVER em CONTATOS QUE O DONO JÁ ESCOLHEU, use esse client_id e NÃO pergunte qual é. Só mostre lista se o nome NÃO estiver na memória e não houver final de telefone. Se 1 contato claro OU o dono já deu o final do número, aja na hora.',
-          'Confirme ao dono em 1–2 linhas o que leu. Sobre ENVIO: quem confirma e envia é o SISTEMA, não você — nunca escreva "mandei"/"enviado"/"mensagem entregue" por conta própria. O sistema mostra ao dono o que saiu.',
-          'Pedido tipo "diga um boa noite", "se apresente", "manda pra ele", "mostre para ele", "à disposição dele", "tente de novo", "manda de novo", "avise para o NOME", "fale para o NOME que..." = chame enviar_mensagem_contato UMA vez por contato (o NOME é o contato, o resto é o recado). NÃO anote compromisso. A tool responde "PLANEJADO — …": isso quer dizer que ENTROU NA FILA e o sistema confirma com o dono (se preciso) e envia. NÃO chame a tool de novo pelo mesmo envio e NÃO diga que já mandou — o sistema dá a palavra final.',
+          'Confirme ao dono em 1–2 linhas o que leu. ENVIO: chamar a tool enviar_mensagem_contato é OBRIGATÓRIO e é o ÚNICO jeito de a mensagem existir — sem a tool, NADA sai. O sistema só decide QUANDO ela sai (na hora ou após o "sim" do dono); ele NÃO adivinha nem escreve por você. Nunca escreva "mandei"/"enviado"/"mensagem entregue" por conta própria.',
+          'Pedido tipo "diga um boa noite", "se apresente", "manda pra ele", "pergunte pro NOME se...", "manda pro NOME perguntando...", "avise para o NOME", "fale para o NOME que...", "tente de novo" = chame enviar_mensagem_contato UMA vez por contato. O NOME é o contato; o resto é o recado — e VOCÊ escreve o recado como mensagem natural em 2ª pessoa, pronta pro contato ler. Ex.: dono diz "pergunte pro João se ele está bem da ressaca" → mensagem="Oi João! Tudo bem? Como você está da ressaca de ontem? 😄". NUNCA copie a fala do dono em 3ª pessoa ("se ele está bem"). NÃO anote compromisso.',
+          'Se o dono não disser O QUE mandar (ex.: só "manda pro João"), PERGUNTE o que ele quer enviar — não invente recado e não diga que mandou.',
+          'A tool responde "PLANEJADO — …": significa que ENTROU NA FILA e o sistema envia (pedindo confirmação ao dono se for o caso). NÃO chame a tool de novo pelo mesmo envio e NÃO diga que já mandou — quem avisa o dono do resultado é o sistema.',
           'Este WhatsApp é Z-API (aparelho comum). NÃO é a API Cloud da Meta. NÃO existe janela de 24 horas. NUNCA diga que a Meta bloqueou, que a janela fechou ou que o primeiro envio não pode sair. Se o dono disser que não apareceu no celular, chame a tool de novo — não invente trava.',
           'Contato só na AGENDA (ainda sem conversa no WhatsApp) é normal: buscar_contato pega o NÚMERO e enviar_mensagem_contato manda para esse número — o WhatsApp abre a conversa. Não recuse por "não tem chat".',
           'Se a tool devolver shadow ban / restrição temporária: NÃO tente de novo neste turno. Diga que o WhatsApp bloqueou o NÚMERO DA EMPRESA por um tempo, que insistir piora, e que o dono espere horas ou mande na mão pelo celular.',
@@ -760,6 +762,8 @@ async function runFreeChatOnce(
   // e mandamos pro fluxo de decisão. Assim "avisa a esposa que…" (verbo fora da
   // whitelist) vira confirmação, e um "manda…" que o modelo esqueceu ainda sai —
   // sempre com o corpo que o DONO ditou, jamais com raciocínio do modelo.
+  // Corpo em fala indireta ("se ele está bem") nunca sai sem o dono ver o texto.
+  let forceConfirm = false;
   if (listedOwner && contactToolsOn && plannedSends.length === 0) {
     const parsed = parseRelayIntent(userSaid);
     if (parsed) {
@@ -778,6 +782,7 @@ async function runFreeChatOnce(
           body: parsed.body,
           fireAtMs: null,
         });
+        forceConfirm = Boolean(parsed.indirect);
         logger.info('Secretária: envio reconstruído da fala do dono (modelo não chamou a tool).');
       }
     }
@@ -787,7 +792,7 @@ async function runFreeChatOnce(
   // vira, no máximo, o CORPO (campo mensagem) de cada PlannedSend; o texto que o
   // dono lê aqui é construído pelo código. Raciocínio/preâmbulo da IA nunca sai.
   if (listedOwner && contactToolsOn && plannedSends.length > 0) {
-    if (plannedSends.length === 1 && hasClearSendVerb(userSaid)) {
+    if (plannedSends.length === 1 && hasClearSendVerb(userSaid) && !forceConfirm) {
       // Verbo claro da whitelist + 1 contato → envia direto (owner_authorized).
       text = await executePlannedSends(tenantId, phone, opts.connectionId, plannedSends);
     } else {
@@ -799,7 +804,10 @@ async function runFreeChatOnce(
     // A IA AFIRMOU ter mandado, nenhuma tool disparou e não deu pra reconstruir o
     // pedido → NÃO envia. Corrige a resposta em vez de deixar a mentira passar.
     logger.info('Secretária: IA alegou envio sem tool nem reconstrução — corrijo, sem enviar.');
-    text = 'Ainda não mandei nada. Me confirma pra quem e o que eu envio (ex.: "manda pra esposa: ...").';
+    const alvo = parseRelayIntent(userSaid)?.contactQuery ?? '';
+    text = alvo
+      ? `Ainda não mandei nada. O que você quer que eu escreva pro *${alvo}*?`
+      : 'Ainda não mandei nada. Me diz pra quem e o que eu escrevo (ex.: "manda pro João: chego às 8").';
   }
 
   if (!cancelOk && assistantClaimedCancel(text) && userAskedCancelNotebook(userSaid)) {

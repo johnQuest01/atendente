@@ -2258,9 +2258,9 @@ async function handleOwnerMessageInner(
         );
         return true;
       }
-      // Trava (Fluxo C): sem verbo explícito da whitelist, NÃO envia direto —
-      // guarda como pendente e pede UMA confirmação ao dono.
-      if (!hasClearSendVerb(text)) {
+      // Trava (Fluxo C): sem verbo explícito da whitelist — ou com corpo em fala
+      // indireta ("se ele está bem") — NÃO envia direto: pede UMA confirmação.
+      if (!hasClearSendVerb(text) || relay.indirect) {
         const only = candidates[0]!;
         setState(tenantId, phone, {
           pendingRelay: {
