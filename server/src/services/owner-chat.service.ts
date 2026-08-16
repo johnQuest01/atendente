@@ -328,18 +328,35 @@ function taskLooksEmpty(task: string): boolean {
   return false;
 }
 
-/** "tenta de novo", "busca outro link", "procura de novo" — repetir a ÚLTIMA busca. */
+/** Palavras de "refaz a busca" — sem assunto próprio. */
+const RETRY_MARKERS =
+  /\b(de novo|denovo|novamente|outra vez|mais uma vez)\b|\b(outr[oa]s?)\s+(link|links|resultado|resultados|site|sites|pesquisa|busca|fonte|fontes)\b/g;
+
+/** Verbos/ruído que não são assunto ("tenta", "me acha o link", "por favor"). */
+const RETRY_FILLER =
+  /\b(tenta|tente|tentar|busca|busque|buscar|procura|procure|procurar|pesquisa|pesquise|pesquisar|acha|ache|achar|ve|ver|olha|olhe|manda|mande|paulo|secretari[oa]|me|mim|pra|para|por|favor|o|a|os|as|um|uma|uns|umas|do|da|dos|das|de|em|no|na|nos|nas|sobre|que|isso|aquilo|ai|la|link|links|resultado|resultados|fonte|fontes|site|sites|pesquisa|busca|agora|entao|dessa|desse|essa|esse)\b/g;
+
+/**
+ * "tenta de novo" / "busca outro link" = repetir a ÚLTIMA busca.
+ * MAS se a frase trouxer assunto novo ("tenta de novo, agora a idade do Trump"),
+ * NÃO é repetição — é busca nova. Só repete quando não sobra assunto.
+ */
 function looksLikeRetrySearch(text: string): boolean {
   const n = text
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '')
     .toLowerCase();
-  if (/\b(tenta|tente|tentar|busca|busque|procura|procure|pesquisa|pesquise)\b.{0,24}\b(de novo|denovo|novamente|outra vez)\b/.test(n)) {
-    return true;
-  }
-  if (/\b(outro|outros)\s+(link|links|resultado|resultados|site)\b/.test(n)) return true;
-  if (/^(tenta|tente)\s+(de novo|denovo|novamente|outra vez)/.test(n.trim())) return true;
-  return false;
+  RETRY_MARKERS.lastIndex = 0;
+  if (!RETRY_MARKERS.test(n)) return false;
+  const residual = n
+    .replace(RETRY_MARKERS, ' ')
+    .replace(RETRY_FILLER, ' ')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const words = residual.split(/\s+/).filter((w) => w.length >= 3);
+  // Sobrou assunto de verdade → é pesquisa NOVA, não repetição.
+  return words.length < 2;
 }
 
 /** URL sem pontuação final grudada. */
