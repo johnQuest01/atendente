@@ -459,8 +459,84 @@ function shortWindowMinutes(normalized: string): number | null {
   return null;
 }
 
+const MESES: Record<string, number> = {
+  janeiro: 1, fevereiro: 2, marco: 3, abril: 4, maio: 5, junho: 6,
+  julho: 7, agosto: 8, setembro: 9, outubro: 10, novembro: 11, dezembro: 12,
+};
+
+const DIAS_SEMANA: Record<string, number> = {
+  domingo: 0, segunda: 1, terca: 2, quarta: 3, quinta: 4, sexta: 5, sabado: 6,
+};
+
+/**
+ * Data específica na pergunta: "dia 19", "19/08", "19 de agosto", "na sexta".
+ * Sem isto, "tem algum compromisso para o dia 19?" caía no escopo `todos` e
+ * devolvia o caderno inteiro.
+ */
+function specificDayScope(normalized: string, tz: string): string | null {
+  const wc = toWallClock(new Date(), tz);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const key = (y: number, m: number, d: number) => `dia:${y}-${pad(m)}-${pad(d)}`;
+
+  // "19/08" ou "19/08/2026"
+  const dm = normalized.match(/\b(\d{1,2})\s*\/\s*(\d{1,2})(?:\s*\/\s*(\d{2,4}))?\b/);
+  if (dm) {
+    const d = Number(dm[1]);
+    const m = Number(dm[2]);
+    if (d >= 1 && d <= 31 && m >= 1 && m <= 12) {
+      const yRaw = dm[3] ? Number(dm[3]) : wc.year;
+      const y = yRaw < 100 ? 2000 + yRaw : yRaw;
+      return key(y, m, d);
+    }
+  }
+
+  // "19 de agosto" / "dia 19 de agosto"
+  const dMes = normalized.match(
+    /\b(?:dia\s+)?(\d{1,2})\s+de\s+(janeiro|fevereiro|marco|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\b/,
+  );
+  if (dMes) {
+    const d = Number(dMes[1]);
+    const m = MESES[dMes[2]!]!;
+    if (d >= 1 && d <= 31) {
+      const y = m < wc.month ? wc.year + 1 : wc.year;
+      return key(y, m, d);
+    }
+  }
+
+  // "dia 19" (mês atual; se já passou, o mês que vem)
+  const soDia = normalized.match(/\bdia\s+(\d{1,2})\b/);
+  if (soDia) {
+    const d = Number(soDia[1]);
+    if (d >= 1 && d <= 31) {
+      const rollover = d < wc.day;
+      const m = rollover ? (wc.month === 12 ? 1 : wc.month + 1) : wc.month;
+      const y = rollover && wc.month === 12 ? wc.year + 1 : wc.year;
+      return key(y, m, d);
+    }
+  }
+
+  // "na sexta", "pra quarta-feira" — precisa de preposição pra não pegar
+  // "o segundo compromisso" nem "semana".
+  const dow = normalized.match(
+    /\b(?:na|no|pra|para|de|essa|esta|proxima)\s+(domingo|segunda|terca|quarta|quinta|sexta|sabado)(?:\s*-?\s*feira)?\b/,
+  );
+  if (dow) {
+    const alvo = DIAS_SEMANA[dow[1]!]!;
+    const hojeDow = fromWallClock({ ...wc, hour: 12, minute: 0 }, tz).getDay();
+    let delta = (alvo - hojeDow + 7) % 7;
+    if (delta === 0) delta = 7;
+    const alvoDate = fromWallClock({ ...wc, day: wc.day + delta, hour: 12, minute: 0 }, tz);
+    const awc = toWallClock(alvoDate, tz);
+    return key(awc.year, awc.month, awc.day);
+  }
+
+  return null;
+}
+
 /** Título da consulta, inclusive das janelas curtas dinâmicas ("agora:60"). */
 function queryTitle(keyword: string): string {
+  const dia = keyword.match(/^dia:(\d{4})-(\d{2})-(\d{2})$/);
+  if (dia) return `DIA ${dia[3]}/${dia[2]}`;
   const short = keyword.match(/^agora:(\d{1,4})$/);
   if (short) {
     const mins = Number(short[1]);
@@ -479,6 +555,16 @@ function rangeFor(keyword: string, tz: string): ListRemindersFilter | null {
     return {
       from: new Date(now.getTime() - 60_000),
       until: new Date(now.getTime() + Number(short[1]) * 60_000),
+    };
+  }
+  const dia = keyword.match(/^dia:(\d{4})-(\d{2})-(\d{2})$/);
+  if (dia) {
+    const y = Number(dia[1]);
+    const m = Number(dia[2]);
+    const d = Number(dia[3]);
+    return {
+      from: fromWallClock({ year: y, month: m, day: d, hour: 0, minute: 0 }, tz),
+      until: fromWallClock({ year: y, month: m, day: d + 1, hour: 0, minute: 0 }, tz),
     };
   }
   const wc = toWallClock(now, tz);
@@ -838,10 +924,13 @@ function detectQuery(normalized: string): string | null {
   // Janela curta ("daqui a alguns minutos") ganha do escopo largo (hoje/semana):
   // o dono pediu o que está para tocar, não a agenda toda.
   const shortWin = shortWindowMinutes(normalized);
+  // Prioridade: janela curta > data específica ("dia 19") > escopo largo.
   const scope =
     shortWin != null
       ? `agora:${shortWin}`
-      : (SCOPE_WORDS.find(([re]) => re.test(normalized))?.[1] ?? null);
+      : (specificDayScope(normalized, DEFAULT_TZ) ??
+        SCOPE_WORDS.find(([re]) => re.test(normalized))?.[1] ??
+        null);
 
   // "me lembra de pagar amanhã" é cadastro, mesmo citando um dia — a menos que
   // a frase seja explicitamente uma pergunta ("o que você tem pra me lembrar?").
