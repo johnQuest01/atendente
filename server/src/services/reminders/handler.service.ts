@@ -1255,8 +1255,33 @@ function detectDateQuery(normalized: string, tz: string): { filter: ListReminder
 
 const CREATE_TRIGGERS = /\b(lembr|anota|agenda|marca|avisa|nao me deixa esquecer|não me deixa esquecer)/i;
 
+/** Elogio/opinião ("gosto de lembretes", "adorei o caderno") — não é pedido. */
+const OPINION_ABOUT_AGENDA =
+  /\b(gosto|gostei|gostamos|adoro|adorei|amo|amei|curto|curti|prefiro|maravilhos|excelente|muito bom|otimo|parabens|obrigad|valeu)\b/i;
+
+/** Comando explícito de cadastro — ganha da opinião ("gosto de acordar, me lembra às 6"). */
+const EXPLICIT_CREATE_CMD =
+  /\b(me lembr|lembra me|lembre me|lembra de|lembre de|anota|anote|marca|marque|agenda|agende|cria|criar|crie|coloca|colocar|bota|botar|adiciona|adicione)\b/i;
+
+/** Tem hora/data na frase — sinal forte de compromisso de verdade. */
+const HAS_TIME_HINT =
+  /\b(\d{1,2}\s*(h|:)\s*\d{0,2}|hoje|amanha|amanhã|depois de amanha|segunda|terca|terça|quarta|quinta|sexta|sabado|sábado|domingo|semana|mes|mês|minuto|minutos|hora|horas|dia|dias|manha|manhã|tarde|noite|madrugada)\b/i;
+
+/**
+ * Fala é só opinião sobre a agenda, sem comando nem horário.
+ * Sem isto, "gosto de lembretes" cai no cadastro (o stem `lembr` casa com
+ * "lembretes") e o papo livre nunca chega na IA.
+ */
+function isOpinionNotRequest(normalized: string): boolean {
+  if (!OPINION_ABOUT_AGENDA.test(normalized)) return false;
+  if (EXPLICIT_CREATE_CMD.test(normalized)) return false;
+  if (HAS_TIME_HINT.test(normalized)) return false;
+  return true;
+}
+
 function wantsCadastro(text: string, normalized: string): boolean {
   if (isAgendaComplaint(normalized) || detectResetCaderno(normalized)) return false;
+  if (isOpinionNotRequest(normalized)) return false;
   return (
     CREATE_TRIGGERS.test(text) ||
     STRONG_CREATE.test(normalized) ||
