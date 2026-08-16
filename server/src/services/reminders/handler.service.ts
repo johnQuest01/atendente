@@ -31,7 +31,8 @@ import type { Reminder } from '../../types';
 import type { ChatImage } from '../ai/types';
 import { extractVideoFrames } from '../ai/video-frames';
 import { describeLead, describeRecurrence, expandReminderUpdates, foldReminderTask, formatCadernoItem, inferDueAtFromText, loadOwnerAgenda, parseReminders, reminderDisplayText, type ParsedReminder } from './parse.service';
-import { DEFAULT_TZ, formatForOwner, fromWallClock, toWallClock } from './time';
+import { DEFAULT_TZ, formatForOwner, fromWallClock, parseLocalIso, toWallClock } from './time';
+import { complete } from '../ai/orchestrator';
 import {
   freeChatOwner,
   getOwnerModeFlags,
@@ -533,6 +534,84 @@ function specificDayScope(normalized: string, tz: string): string | null {
   return null;
 }
 
+export interface QueryWindow {
+  from: Date;
+  until: Date;
+  label: string;
+}
+
+/** Janela grande demais = o dono quis "tudo"; melhor cair no escopo largo. */
+const MAX_WINDOW_DAYS = 120;
+
+/**
+ * Fallback de interpretação: a REGRA tenta primeiro (hoje/dia 19/na sexta/
+ * próxima hora). Se ela não reconhecer o período, em vez de despejar o caderno
+ * inteiro, a IA lê a pergunta e devolve SÓ a janela de datas — o código
+ * continua filtrando, montando e numerando a lista.
+ *
+ * Ex.: "tem algo na semana que vem depois do almoço?"
+ */
+async function resolveQueryWindowWithAI(
+  question: string,
+  tz: string,
+  tenantId: string,
+  connectionId?: string | null,
+): Promise<QueryWindow | null> {
+  const now = new Date();
+  const wc = toWallClock(now, tz);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const agora = `${wc.year}-${pad(wc.month)}-${pad(wc.day)}T${pad(wc.hour)}:${pad(wc.minute)}`;
+  const diaSemana = ['domingo', 'segunda', 'terça', 'quarta', 'quinta', 'sexta', 'sábado'][
+    fromWallClock({ ...wc, hour: 12, minute: 0 }, tz).getDay()
+  ];
+
+  const system = [
+    `Agora é ${agora} (${diaSemana}), fuso ${tz}.`,
+    'A pessoa perguntou sobre a AGENDA dela. Descubra só o PERÍODO que ela quer ver.',
+    'Responda APENAS um JSON, sem texto fora dele:',
+    '{"from":"YYYY-MM-DDTHH:mm","until":"YYYY-MM-DDTHH:mm","label":"rótulo curto"}',
+    'Se não der pra saber o período, responda exatamente {"none":true}.',
+    'from é inclusivo, until é exclusivo. "depois do almoço" = 12:00 até 18:00 de cada dia pedido — nesse caso use o dia inteiro do período e ponha isso no label.',
+    '"semana que vem" = próxima segunda 00:00 até a segunda seguinte 00:00.',
+    'label é curto e humano: "SEMANA QUE VEM", "FIM DE SEMANA", "PRÓXIMOS 3 DIAS".',
+  ].join('\n');
+
+  try {
+    const res = await complete(
+      {
+        system,
+        messages: [{ role: 'user', content: question.slice(0, 400) }],
+        maxTokens: 120,
+        temperature: 0,
+      },
+      tenantId,
+      { connectionId },
+    );
+    const raw = res?.text?.trim();
+    if (!raw) return null;
+    const json = raw.match(/\{[\s\S]*\}/)?.[0];
+    if (!json) return null;
+    const parsed = JSON.parse(json) as {
+      from?: string; until?: string; label?: string; none?: boolean;
+    };
+    if (parsed.none || !parsed.from || !parsed.until) return null;
+
+    const from = parseLocalIso(parsed.from, tz);
+    const until = parseLocalIso(parsed.until, tz);
+    if (!from || !until || until.getTime() <= from.getTime()) return null;
+    if (until.getTime() - from.getTime() > MAX_WINDOW_DAYS * 86_400_000) return null;
+
+    const label = (parsed.label || '').trim().slice(0, 40).toUpperCase() || 'PERÍODO PEDIDO';
+    logger.info(
+      `Lembretes: janela interpretada pela IA — ${label} (${parsed.from} → ${parsed.until})`,
+    );
+    return { from, until, label };
+  } catch (err) {
+    logger.warn('Lembretes: falha ao interpretar o período com IA', err);
+    return null;
+  }
+}
+
 /** Título da consulta, inclusive das janelas curtas dinâmicas ("agora:60"). */
 function queryTitle(keyword: string): string {
   const dia = keyword.match(/^dia:(\d{4})-(\d{2})-(\d{2})$/);
@@ -1002,7 +1081,9 @@ function detectQuery(normalized: string): string | null {
     (asksAgenda && scope !== null && words <= 8 && /\b(temos|tem|rola|vai ter|tenho)\b/.test(normalized));
   if (!looksLikeQuery) return null;
 
-  return scope ?? 'todos';
+  // Sem período reconhecido: 'auto' → a IA interpreta a janela (fallback).
+  // Antes isto virava 'todos' e despejava o caderno inteiro.
+  return scope ?? 'auto';
 }
 
 /** "para o Wender" / "da minha esposa" / "o Ender tem" — STT costuma escrever Ender. */
@@ -2194,7 +2275,15 @@ async function handleOwnerMessageInner(
 
   const queryKey = detectQuery(normalized);
   if (queryKey) {
-    const filter = rangeFor(queryKey, tz);
+    // 'auto' = a regra não achou período. A IA resolve SÓ a janela; se ela
+    // também não souber, aí sim cai no caderno inteiro.
+    let aiWindow: QueryWindow | null = null;
+    if (queryKey === 'auto') {
+      aiWindow = await resolveQueryWindowWithAI(text, tz, tenantId, connectionId);
+    }
+    const filter = aiWindow
+      ? { from: aiWindow.from, until: aiWindow.until }
+      : rangeFor(queryKey === 'auto' ? 'todos' : queryKey, tz);
     if (filter) {
       const { reminders, titleSuffix } = await loadAgendaQueryReminders({
         tenantId,
@@ -2205,9 +2294,9 @@ async function handleOwnerMessageInner(
         filter,
       });
       setState(tenantId, phone, { lastList: reminders.map((r) => r.id) });
+      const tituloBase = aiWindow?.label ?? queryTitle(queryKey === 'auto' ? 'todos' : queryKey);
       if (isExactAgendaKeyword(normalized)) {
-        const base = queryTitle(queryKey);
-        await sendReminderList(tenantId, phone, reminders, base, tz);
+        await sendReminderList(tenantId, phone, reminders, tituloBase, tz);
       } else {
         if (reminders.length === 0) {
           const upcoming = await listReminders(tenantId, phone, {
@@ -2215,7 +2304,7 @@ async function handleOwnerMessageInner(
             limit: 8,
           });
           if (upcoming.length) {
-            const periodLabel = titleSuffix || queryTitle(queryKey);
+            const periodLabel = titleSuffix || tituloBase;
             await reply(
               tenantId,
               phone,
@@ -2229,7 +2318,8 @@ async function handleOwnerMessageInner(
             );
           }
         } else {
-          const head = titleSuffix ? `*${titleSuffix}*\n\n` : '';
+          const rotulo = titleSuffix || (aiWindow ? aiWindow.label : '');
+          const head = rotulo ? `*${rotulo}*\n\n` : '';
           await reply(tenantId, phone, `${head}${formatReminderDetails(reminders, tz)}`);
         }
       }
@@ -2252,7 +2342,9 @@ async function handleOwnerMessageInner(
   // defensiva para o cliente jamais receber lembrete (isolamento máximo).
   if (await matchesReminderKeyword(tenantId, text, connectionId)) {
     if (listed) {
-    const queryKey = detectQuery(normalized) ?? 'hoje';
+    // Gatilho por palavra-chave: 'auto' não tem janela — mantém o caderno todo.
+    const detected = detectQuery(normalized);
+    const queryKey = detected === 'auto' ? 'todos' : (detected ?? 'hoje');
     const filter = rangeFor(queryKey, tz);
     const reminders = filter
       ? await listReminders(tenantId, phone, filter)
