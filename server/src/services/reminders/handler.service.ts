@@ -30,7 +30,7 @@ import type { NormalizedInbound } from '../whatsapp/types';
 import type { Reminder } from '../../types';
 import type { ChatImage } from '../ai/types';
 import { extractVideoFrames } from '../ai/video-frames';
-import { describeLead, describeRecurrence, expandReminderUpdates, foldReminderTask, inferDueAtFromText, loadOwnerAgenda, parseReminders, reminderDisplayText, type ParsedReminder } from './parse.service';
+import { describeLead, describeRecurrence, expandReminderUpdates, foldReminderTask, formatCadernoItem, inferDueAtFromText, loadOwnerAgenda, parseReminders, reminderDisplayText, type ParsedReminder } from './parse.service';
 import { DEFAULT_TZ, formatForOwner, fromWallClock, toWallClock } from './time';
 import {
   freeChatOwner,
@@ -788,6 +788,59 @@ function isAgendaComplaint(normalized: string): boolean {
 const CANCEL_TASK_VERB =
   /\b(cancela|cancelar|cancele|apaga|apagar|apague|remove|remover|exclui|excluir|tira|tirar|risca|riscar|risque)\b/;
 const CANCEL_TASK_VERB_ALL = new RegExp(CANCEL_TASK_VERB.source, 'g');
+
+const ORDINAIS: Record<string, number> = {
+  primeiro: 1, primeira: 1, segundo: 2, segunda: 2, terceiro: 3, terceira: 3,
+  quarto: 4, quarta: 4, quinto: 5, quinta: 5, sexto: 6, sexta: 6,
+  setimo: 7, setima: 7, oitavo: 8, oitava: 8, nono: 9, nona: 9, decimo: 10, decima: 10,
+};
+
+const CANCEL_VERBO = '(?:cancela|cancele|cancelar|apaga|apague|apagar|risca|risque|riscar|exclui|exclua|excluir|remove|remova|remover|tira|tire|tirar)';
+
+/**
+ * "cancela o primeiro compromisso", "apaga o 3", "risca o segundo" → índice
+ * 1-based da lista que o dono viu. O número tem que vir logo após o verbo,
+ * senão "cancela o compromisso das 19:35" viraria item 19.
+ */
+function detectCancelOrdinal(normalized: string): number | null {
+  const n = normalizeCommand(normalized);
+  if (!n || detectCancelAll(n)) return null;
+
+  const ord = n.match(
+    new RegExp(`\\b${CANCEL_VERBO}\\s+(?:o|a)\\s+(${Object.keys(ORDINAIS).join('|')})\\b`),
+  );
+  if (ord) return ORDINAIS[ord[1]!] ?? null;
+
+  const num = n.match(
+    new RegExp(`\\b${CANCEL_VERBO}\\s+(?:o|a)?\\s*(?:item|numero|n[º°]?)?\\s*(\\d{1,2})\\b(?!\\s*[:h]|\\s*\\d)`),
+  );
+  if (num) {
+    const v = Number(num[1]);
+    if (v >= 1 && v <= 30) return v;
+  }
+  return null;
+}
+
+/** Item N da lista que o dono viu; cai pra agenda se não houver lista. */
+async function itemFromShownList(
+  tenantId: string,
+  phone: string,
+  n: number,
+  tz: string,
+  lastList?: string[],
+): Promise<Reminder | null> {
+  const shown = lastList?.length ? lastList : getOwnerLastList(tenantId, phone);
+  const pendentes = await listReminders(tenantId, phone, {
+    statuses: ['pendente'],
+    limit: 80,
+  }).catch(() => []);
+  if (shown.length >= n) {
+    const hit = pendentes.find((r) => r.id === shown[n - 1]);
+    if (hit) return hit;
+  }
+  const agenda = await loadOwnerAgenda(tenantId, phone, tz);
+  return agenda[n - 1] ?? null;
+}
 const LISTED_CANCEL_HINT = '__LISTED__';
 const GENERIC_CANCEL_TOKENS = new Set([
   'estes',
@@ -2009,6 +2062,37 @@ async function handleOwnerMessageInner(
       lastList: owner.lastList,
       sourceText: text,
     });
+  }
+  // "cancela o primeiro compromisso" — resolvido no código, contra a lista que
+  // o dono VIU. Não depende do modelo lembrar de chamar a tool.
+  const ordinalCancel = flags.secretary ? detectCancelOrdinal(normalized) : null;
+  if (ordinalCancel != null) {
+    const alvo = await itemFromShownList(tenantId, phone, ordinalCancel, tz, owner.lastList);
+    if (!alvo) {
+      await reply(
+        tenantId,
+        phone,
+        `Não achei o item ${ordinalCancel} na lista. Manda *HOJE* ou *TODOS* pra eu listar de novo.`,
+      );
+      return true;
+    }
+    const done = await cancelReminderById(tenantId, alvo.id);
+    const restantes = await listReminders(tenantId, phone, {
+      statuses: ['pendente'],
+      limit: 20,
+    }).catch(() => []);
+    setState(tenantId, phone, { lastList: restantes.map((r) => r.id) });
+    const lista = restantes.length
+      ? `\n\nSeu caderno agora:\n${restantes.map((r, i) => `${i + 1}. ${formatCadernoItem(r, r.timezone || tz)}`).join('\n')}`
+      : '\n\nSeu caderno está vazio.';
+    await reply(
+      tenantId,
+      phone,
+      done
+        ? `Pronto, cancelei o *${ordinalCancel}º*: ${reminderDisplayText(alvo)}. Não toca mais.${lista}`
+        : `O item ${ordinalCancel} já não estava pendente.${lista}`,
+    );
+    return true;
   }
   if (flags.secretary && userAskedTimedNotebook(text)) {
     const cadastro = wantsCadastro(text, normalized);

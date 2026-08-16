@@ -491,6 +491,26 @@ async function resolveOneContact(
   return { ok: true, id: only.id, name: displayName(only), phone: only.phone };
 }
 
+/**
+ * Resolve o item N do caderno pela LISTA QUE O DONO VIU por último, não pela
+ * agenda inteira. Sem isto, depois de "compromissos do dia 19" o "cancela o 1"
+ * apagava o primeiro da agenda geral — outro item.
+ */
+async function resolveCadernoItem(ctx: OwnerToolContext, n: number) {
+  const tz = DEFAULT_TZ;
+  const shown = getOwnerLastList(ctx.tenantId, ctx.ownerPhone);
+  if (shown.length >= n) {
+    const pendentes = await listReminders(ctx.tenantId, ctx.ownerPhone, {
+      statuses: ['pendente'],
+      limit: 80,
+    }).catch(() => []);
+    const hit = pendentes.find((r) => r.id === shown[n - 1]);
+    if (hit) return hit;
+  }
+  const agenda = await loadOwnerAgenda(ctx.tenantId, ctx.ownerPhone, tz);
+  return agenda[n - 1] ?? null;
+}
+
 async function denyUnlessListed(ctx: OwnerToolContext): Promise<string | null> {
   if (await assertListedOwner(ctx.tenantId, ctx.ownerPhone, ctx.connectionId)) return null;
   return 'Sem acesso aos contatos deste WhatsApp.';
@@ -1327,8 +1347,7 @@ export function buildOwnerToolRegistry(
     const tz = DEFAULT_TZ;
     const parsed = parseLocalIso(quando, tz);
     if (!parsed) return 'quando inválido. Use YYYY-MM-DDTHH:mm.';
-    const agenda = await loadOwnerAgenda(ctx.tenantId, ctx.ownerPhone, tz);
-    const existing = agenda[n - 1];
+    const existing = await resolveCadernoItem(ctx, n);
     if (!existing) return `Não achei o item ${n} no caderno. Manda HOJE pra eu listar.`;
     const nextFireAt = bumpUntilFuture(parsed, new Date(), tz, existing.recurrence);
     const task = str(o.task) || existing.task;
@@ -1386,8 +1405,7 @@ export function buildOwnerToolRegistry(
     }
     const n = typeof o.caderno_n === 'number' ? o.caderno_n : Number(o.caderno_n);
     if (!Number.isInteger(n) || n < 1) return 'Informe todos=true, estes=true ou caderno_n.';
-    const agenda = await loadOwnerAgenda(ctx.tenantId, ctx.ownerPhone, DEFAULT_TZ);
-    const existing = agenda[n - 1];
+    const existing = await resolveCadernoItem(ctx, n);
     if (!existing) return `Não achei o item ${n} no caderno.`;
     const ok = await cancelReminder(ctx.tenantId, ctx.ownerPhone, existing.id);
     const book = await cadernoSnapshot(ctx.tenantId, ctx.ownerPhone, tz);
