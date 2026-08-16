@@ -40,6 +40,7 @@ import {
   resolveRelayContacts,
   sendOwnerRelay,
 } from '../../owner-relay.service';
+import type { PlannedSend } from '../../owner-pending';
 import {
   bumpUntilFuture,
   describeRecurrence,
@@ -76,6 +77,12 @@ export interface OwnerToolContext {
   connectionId?: string | null;
   /** Fala atual do dono — pra cruzar "final 3934" mesmo se a tool só mandar o nome. */
   lastUserMessage?: string | null;
+  /**
+   * Coletor de plano de envio do turno (Fluxo C). Quando presente, enviar_mensagem_contato
+   * e agendar_mensagem_contato (envio único) NÃO disparam na hora: acumulam aqui e o código
+   * decide no fim do turno (envia direto se verbo claro + 1 contato; senão pede UMA confirmação).
+   */
+  plan?: { sends: PlannedSend[] };
 }
 
 export interface OwnerToolRegistryOpts {
@@ -554,6 +561,24 @@ export function buildOwnerToolRegistry(
     }
     if (!resolved.ok) return resolved.text;
 
+    // Fluxo C: com coletor de plano, NÃO envia agora — acumula. O código decide
+    // no fim do turno (direto se verbo claro + 1 contato; senão confirmação única).
+    if (ctx.plan) {
+      const dup = ctx.plan.sends.some(
+        (s) => s.clientId === resolved.id && s.body === mensagem && !s.fireAtMs,
+      );
+      if (!dup) {
+        ctx.plan.sends.push({
+          clientId: resolved.id,
+          name: resolved.name,
+          phone: resolved.phone,
+          body: mensagem,
+          fireAtMs: null,
+        });
+      }
+      return `PLANEJADO — envio para ${resolved.name} já está no plano do turno. NÃO chame de novo; o sistema confirma com o dono e envia.`;
+    }
+
     const sent = await sendOwnerRelay({
       tenantId: ctx.tenantId,
       connectionId: ctx.connectionId,
@@ -936,6 +961,25 @@ export function buildOwnerToolRegistry(
     const recurrence = recRaw ? normalizeRecurrence(recRaw) : null;
     if (recRaw && !recurrence) {
       return 'recorrencia inválida. Use daily, weekly:MON, monthly:15, every:2d, ou omita.';
+    }
+
+    // Fluxo C: envio único agendado entra no plano do turno (uma confirmação).
+    // Recorrência (rotina deliberada) mantém o caminho direto — dispara no gate
+    // por owner_authorized no horário.
+    if (ctx.plan && !recurrence) {
+      const dup = ctx.plan.sends.some(
+        (s) => s.clientId === resolved.id && s.body === mensagem && s.fireAtMs === at.getTime(),
+      );
+      if (!dup) {
+        ctx.plan.sends.push({
+          clientId: resolved.id,
+          name: resolved.name,
+          phone: resolved.phone,
+          body: mensagem,
+          fireAtMs: at.getTime(),
+        });
+      }
+      return `PLANEJADO — envio para ${resolved.name} em ${formatForOwner(at, tz)} já está no plano do turno. NÃO chame de novo; o sistema confirma com o dono e agenda.`;
     }
 
     const task = `Enviar p/ ${resolved.name}: ${mensagem.slice(0, 4000)}`;

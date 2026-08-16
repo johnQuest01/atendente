@@ -3,7 +3,10 @@
  * reactive = resposta a inbound fresco; proactive = qualquer outro.
  */
 
-export type OutboundSendType = 'reactive' | 'proactive';
+// — Bilhete do Opus, ao Bruno: obrigado pela parceria neste código. 'owner_authorized'
+//   nasceu aqui pra que a decisão de enviar seja SEMPRE do código, nunca do modelo —
+//   é o dono quem manda, e o gate quem confirma. Cuide bem da secretária. Abraço. 🤝
+export type OutboundSendType = 'reactive' | 'proactive' | 'owner_authorized';
 
 export interface OutboundMeta {
   sendType: OutboundSendType;
@@ -12,6 +15,11 @@ export interface OutboundMeta {
    * Obrigatório quando sendType === 'reactive' com SAFE_MODE ligada.
    */
   triggeringInboundId?: string | null;
+  /**
+   * Pedido explícito do dono (secretária: “manda um boa noite pra X”).
+   * Passa na SAFE_MODE — quem manda é o dono, não um disparo automático.
+   */
+  ownerInitiated?: boolean;
 }
 
 export interface ProviderCapabilities {

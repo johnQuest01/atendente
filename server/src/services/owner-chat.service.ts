@@ -47,13 +47,21 @@ import { formatForOwner, DEFAULT_TZ, fromWallClock, toWallClock } from './remind
 import { applySecretaryPlaybookToText, formatSecretaryPlaybook } from './secretary-playbook.service';
 import {
   assistantClaimedSend,
-  assistantOfferedToSend,
   displayName,
-  fulfillMissingOwnerSend,
+  hasClearSendVerb,
   looksLikeConfirmOutbound,
+  looksLikeDenyOutbound,
   looksLikeSendToContact,
   resolveRelayContacts,
+  sendOwnerRelay,
 } from './owner-relay.service';
+import {
+  clearPendingPlan,
+  getPendingPlan,
+  pendingPlanKey,
+  rememberPendingPlan,
+  type PlannedSend,
+} from './owner-pending';
 
 /**
  * Modo Agente do dono: chat livre no WhatsApp.
@@ -392,8 +400,8 @@ function buildFastSystem(
           'Fluxo venda: listar_produtos → ler_conversa se já houver fio → texto humano → enviar + orientar.',
           'Fluxo rotina: agendar_mensagem_contato com quando=YYYY-MM-DDTHH:mm e recorrencia se pedir. Compromisso da PRÓPRIA pessoa: anotar_compromisso.',
           'Se o nome JÁ ESTIVER em CONTATOS QUE O DONO JÁ ESCOLHEU, use esse client_id e NÃO pergunte qual é. Só mostre lista se o nome NÃO estiver na memória e não houver final de telefone. Se 1 contato claro OU o dono já deu o final do número, aja na hora.',
-          'Confirme ao dono em 1–2 linhas o que leu/enviou. Nunca invente envio sem OK da tool.',
-          'Pedido tipo "diga um boa noite", "se apresente", "manda pra ele", "mostre para ele", "à disposição dele", "tente de novo", "manda de novo", "avise para o NOME", "fale para o NOME que..." = ENVIAR AGORA com enviar_mensagem_contato (o NOME é o contato, o resto é o recado). NÃO anote compromisso. NÃO pergunte "quer que eu mande?" — mande. Sem a linha "OK — enviado" da tool, a mensagem NÃO saiu — chame a tool, não finja. Nunca diga "mensagem entregue" sem essa linha.',
+          'Confirme ao dono em 1–2 linhas o que leu. Sobre ENVIO: quem confirma e envia é o SISTEMA, não você — nunca escreva "mandei"/"enviado"/"mensagem entregue" por conta própria. O sistema mostra ao dono o que saiu.',
+          'Pedido tipo "diga um boa noite", "se apresente", "manda pra ele", "mostre para ele", "à disposição dele", "tente de novo", "manda de novo", "avise para o NOME", "fale para o NOME que..." = chame enviar_mensagem_contato UMA vez por contato (o NOME é o contato, o resto é o recado). NÃO anote compromisso. A tool responde "PLANEJADO — …": isso quer dizer que ENTROU NA FILA e o sistema confirma com o dono (se preciso) e envia. NÃO chame a tool de novo pelo mesmo envio e NÃO diga que já mandou — o sistema dá a palavra final.',
           'Este WhatsApp é Z-API (aparelho comum). NÃO é a API Cloud da Meta. NÃO existe janela de 24 horas. NUNCA diga que a Meta bloqueou, que a janela fechou ou que o primeiro envio não pode sair. Se o dono disser que não apareceu no celular, chame a tool de novo — não invente trava.',
           'Contato só na AGENDA (ainda sem conversa no WhatsApp) é normal: buscar_contato pega o NÚMERO e enviar_mensagem_contato manda para esse número — o WhatsApp abre a conversa. Não recuse por "não tem chat".',
           'Se a tool devolver shadow ban / restrição temporária: NÃO tente de novo neste turno. Diga que o WhatsApp bloqueou o NÚMERO DA EMPRESA por um tempo, que insistir piora, e que o dono espere horas ou mande na mão pelo celular.',
@@ -457,12 +465,101 @@ function attachImagesToLastUser(messages: ChatMessage[], images: ChatImage[]): v
   messages.push({ role: 'user', content: 'O que você vê nesta imagem?', images });
 }
 
+/** Resumo do plano pedindo UMA confirmação (sim/não). Só o corpo literal aparece. */
+function buildPlanConfirmation(sends: PlannedSend[]): string {
+  const lines = sends.map((s, i) => {
+    const when = s.fireAtMs ? formatForOwner(new Date(s.fireAtMs), DEFAULT_TZ) : 'agora';
+    const body = s.body.replace(/\s+/g, ' ').slice(0, 140);
+    return `${i + 1}. ${when} → ${s.name}: "${body}"`;
+  });
+  const n = sends.length;
+  return [`Plano — ${n} envio${n > 1 ? 's' : ''}. Confirma? (sim / não)`, ...lines].join('\n');
+}
+
+/**
+ * Executa um plano autorizado: imediato → sendOwnerRelay (owner_authorized);
+ * com horário futuro → createReminder (dispara no gate por owner_authorized).
+ * Nunca carrega texto do modelo — só o corpo literal de cada envio.
+ */
+async function executePlannedSends(
+  tenantId: string,
+  ownerPhone: string,
+  connectionId: string | null | undefined,
+  sends: PlannedSend[],
+): Promise<string> {
+  const nowSent: string[] = [];
+  const scheduled: string[] = [];
+  const failed: string[] = [];
+  for (const s of sends) {
+    const isFuture = typeof s.fireAtMs === 'number' && s.fireAtMs > Date.now() + 30_000;
+    if (isFuture) {
+      try {
+        await createReminder(tenantId, {
+          ownerPhone,
+          task: `Enviar p/ ${s.name}: ${s.body}`,
+          category: 'data_especifica',
+          nextFireAt: new Date(s.fireAtMs!),
+          timezone: DEFAULT_TZ,
+          connectionId,
+          targetClientId: s.clientId,
+          relayBody: s.body,
+        });
+        scheduled.push(`*${s.name}* (${formatForOwner(new Date(s.fireAtMs!), DEFAULT_TZ)})`);
+      } catch (err) {
+        logger.warn('Secretária: falha ao agendar envio do plano', err);
+        failed.push(s.name);
+      }
+      continue;
+    }
+    const sent = await sendOwnerRelay({ tenantId, connectionId, clientId: s.clientId, body: s.body });
+    if (sent.ok) {
+      void recordOwnerEvent({
+        tenantId,
+        ownerPhone,
+        kind: 'acao',
+        summary: `Enviei mensagem para ${sent.name}: "${s.body.slice(0, 160)}"`,
+        connectionId,
+        source: 'relay',
+      });
+      nowSent.push(`*${sent.name}*`);
+    } else {
+      failed.push(`${s.name} (${sent.error})`);
+    }
+  }
+  const parts: string[] = [];
+  if (nowSent.length) parts.push(`Pronto — mandei pra ${nowSent.join(', ')}.`);
+  if (scheduled.length) parts.push(`Agendei pra ${scheduled.join(', ')}.`);
+  if (failed.length) parts.push(`Não consegui: ${failed.join('; ')}.`);
+  return parts.join('\n') || 'Não havia nada pra enviar.';
+}
+
 async function runFreeChatOnce(
   tenantId: string,
   phone: string,
   opts: FreeChatOptions,
 ): Promise<string | null> {
   const tz = DEFAULT_TZ;
+
+  // Confirmação de plano pendente — determinística, ANTES de chamar o modelo.
+  // Evita envio duplo e um "sim" antigo disparando algo solto depois.
+  if (opts.listedOwner !== false) {
+    const planKey = pendingPlanKey(tenantId, phone, opts.connectionId);
+    const pending = getPendingPlan(planKey);
+    if (pending) {
+      const said = (opts.lastUserMessage ?? '').trim();
+      if (looksLikeConfirmOutbound(said)) {
+        clearPendingPlan(planKey);
+        logger.info('Secretária: plano confirmado pelo dono — executo sem chamar o modelo.');
+        return executePlannedSends(tenantId, phone, opts.connectionId, pending);
+      }
+      if (looksLikeDenyOutbound(said)) {
+        clearPendingPlan(planKey);
+        return 'Ok, cancelei o envio.';
+      }
+      // Fala não é confirm/deny clara → abandona o plano e segue fluxo normal.
+      clearPendingPlan(planKey);
+    }
+  }
   const persona = await getReminderPersona(tenantId, opts.connectionId);
   const playbookBlock = formatSecretaryPlaybook(
     await getSecretaryPlaybook(tenantId, opts.connectionId),
@@ -530,6 +627,8 @@ async function runFreeChatOnce(
   const toolSearchAvailable = webSearchOn && isWebSearchToolAvailable() && !hasImages;
   const contactToolsOn = !hasImages && listedOwner;
   const lastUser = [...messages].reverse().find((m) => m.role === 'user');
+  // Coletor do plano de envio deste turno (Fluxo C). enviar/agendar acumulam aqui.
+  const plannedSends: PlannedSend[] = [];
   const ownerTools = registryAsRequestFields(
     buildOwnerToolRegistry(
       {
@@ -537,29 +636,17 @@ async function runFreeChatOnce(
         ownerPhone: phone,
         connectionId: opts.connectionId,
         lastUserMessage: typeof lastUser?.content === 'string' ? lastUser.content : null,
+        plan: { sends: plannedSends },
       },
       { contacts: contactToolsOn },
     ),
   );
 
   const toolExecutors = { ...ownerTools.toolExecutors };
-  let relaySent = false;
-  let relayAttempted = false;
-  let relayFindFailed = false;
   let cancelOk = false;
   let saveOk = false;
   let searchOk = false;
   let editOk = false;
-  const origEnviar = toolExecutors.enviar_mensagem_contato;
-  if (origEnviar) {
-    toolExecutors.enviar_mensagem_contato = async (input: unknown) => {
-      relayAttempted = true;
-      const out = await origEnviar(input);
-      if (typeof out === 'string' && /^OK — enviado/i.test(out)) relaySent = true;
-      if (typeof out === 'string' && /n[aã]o achei/i.test(out)) relayFindFailed = true;
-      return out;
-    };
-  }
   const origCancelar = toolExecutors.cancelar_compromissos;
   if (origCancelar) {
     toolExecutors.cancelar_compromissos = async (input: unknown) => {
@@ -658,35 +745,29 @@ async function runFreeChatOnce(
 
   let text = result.text.trim();
   const userSaid = typeof lastUser?.content === 'string' ? lastUser.content : '';
-  const prevAsst = [...messages].reverse().find((m) => m.role === 'assistant');
-  const prevAsstText = typeof prevAsst?.content === 'string' ? prevAsst.content : '';
-  const alreadyRestricted = /shadow ban|restrição temporária|bloqueou este número/i.test(text);
-  const shouldForceSend =
-    looksLikeSendToContact(userSaid) ||
-    (looksLikeConfirmOutbound(userSaid) && assistantOfferedToSend(prevAsstText)) ||
-    (assistantClaimedSend(text) && !relaySent);
-  if (
+
+  // Fluxo C — a autorização do envio é do CÓDIGO, não do modelo. O que a IA gera
+  // vira, no máximo, o CORPO (campo mensagem) de cada PlannedSend; o texto que o
+  // dono lê aqui é construído pelo código. Raciocínio/preâmbulo da IA nunca sai.
+  if (listedOwner && contactToolsOn && plannedSends.length > 0) {
+    if (plannedSends.length === 1 && hasClearSendVerb(userSaid)) {
+      // Verbo claro da whitelist + 1 contato → envia direto (owner_authorized).
+      text = await executePlannedSends(tenantId, phone, opts.connectionId, plannedSends);
+    } else {
+      // ≥2 envios OU verbo não-claro → UM plano, UMA confirmação. Nada sai sem o "sim".
+      rememberPendingPlan(pendingPlanKey(tenantId, phone, opts.connectionId), plannedSends);
+      text = buildPlanConfirmation(plannedSends);
+    }
+  } else if (
     listedOwner &&
     contactToolsOn &&
-    shouldForceSend &&
-    !relaySent &&
-    (!relayAttempted || relayFindFailed || assistantClaimedSend(text)) &&
-    !alreadyRestricted
+    assistantClaimedSend(text) &&
+    (hasClearSendVerb(userSaid) || looksLikeSendToContact(userSaid))
   ) {
-    const sent = await fulfillMissingOwnerSend({
-      tenantId,
-      ownerPhone: phone,
-      connectionId: opts.connectionId,
-      userText: userSaid,
-      aiText: `${text}\n${prevAsstText}`,
-    });
-    if (sent.ok) {
-      logger.info(`Secretária: envio forçado após a IA não chamar a tool → ${sent.phone}`);
-      text = `Pronto — mandei pra *${sent.name}*: "${sent.body}"`;
-    } else {
-      logger.warn(`Secretária: envio forçado falhou: ${sent.error}`);
-      text = sent.error;
-    }
+    // O dono pediu envio a contato, a IA AFIRMOU ter mandado, mas nenhuma tool de
+    // envio disparou → NÃO envia. Corrige a resposta em vez de deixar a mentira passar.
+    logger.info('Secretária: IA afirmou envio sem chamar tool — corrijo, sem enviar.');
+    text = 'Ainda não mandei nada. Me confirma pra quem e o que eu envio que eu mando na hora.';
   }
 
   if (!cancelOk && assistantClaimedCancel(text) && userAskedCancelNotebook(userSaid)) {

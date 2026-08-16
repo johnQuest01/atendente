@@ -59,6 +59,8 @@ export async function assertCustomerOutboundAllowed(
   meta: OutboundMeta,
   contact: { id?: string | null; phone?: string | null } = {},
 ): Promise<void> {
+  if (meta.ownerInitiated) return;
+
   const safe = await isSafeModeEnabled(tenantId);
   if (!safe) return;
 
@@ -66,6 +68,19 @@ export async function assertCustomerOutboundAllowed(
     meta.sendType === 'reactive' && Boolean(meta.triggeringInboundId?.trim());
 
   if (reactiveOk) return;
+
+  // Envio autorizado pelo dono (secretária: "manda um boa noite pra X", ou
+  // reminder que o dono criou). A decisão de enviar já foi gated no código
+  // ANTES daqui; aqui só liberamos e auditamos. proactive continua bloqueado.
+  if (meta.sendType === 'owner_authorized') {
+    logger.info('Envio owner_authorized liberado sob SAFE_MODE', {
+      event: 'owner_authorized_send',
+      contactId: contact.id ?? null,
+      phone: contact.phone ?? null,
+      ts: new Date().toISOString(),
+    });
+    return;
+  }
 
   const sendType =
     meta.sendType === 'reactive' && !meta.triggeringInboundId ? 'proactive' : meta.sendType;
