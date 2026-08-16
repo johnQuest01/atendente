@@ -2648,12 +2648,10 @@ async function handleOwnerMessageInner(
   }
 
   // 4. Secretária: cadastro em linguagem natural (gatilho forte).
-  const wantsReminder =
-    !isAgendaComplaint(normalized) &&
-    (CREATE_TRIGGERS.test(text) ||
-      STRONG_CREATE.test(normalized) ||
-      EDIT_TRIGGERS.test(text) ||
-      EDIT_TRIGGERS.test(normalized));
+  // Usa o MESMO guard do resto (wantsCadastro) em vez de repetir as regex:
+  // sem isto, "gosto de lembretes" digitado como TEXTO era sequestrado aqui
+  // e virava "não ficou clara a data" — só o áudio estava protegido.
+  const wantsReminder = wantsCadastro(text, normalized);
   if (wantsReminder && flags.secretary && !looksLikeSendToContact(text)) {
     return handleCreate(tenantId, phone, text, tz, text);
   }
@@ -2816,15 +2814,33 @@ async function handleCreate(
   }
 
   if (parsed.length === 0) {
-    await reply(
-      tenantId,
-      phone,
-      looksLikeReminder
-        ? EDIT_TRIGGERS.test(message)
+    if (looksLikeReminder) {
+      await reply(
+        tenantId,
+        phone,
+        EDIT_TRIGGERS.test(message)
           ? 'Não achei esse no caderno. Manda *HOJE* e o número do item pra eu alterar.'
-          : 'Peguei a ideia, mas não ficou clara a data. Manda de novo dizendo quando?'
-        : HELP_TEXT,
-    );
+          : 'Peguei a ideia, mas não ficou clara a data. Manda de novo dizendo quando?',
+      );
+      return true;
+    }
+    // Não é lembrete e a regra não entendeu: em vez de despejar o menu
+    // ("não entendi"), a IA responde. O menu fica só se o Agente estiver
+    // desligado ou a IA não devolver nada.
+    const flags = await getOwnerModeFlags(tenantId, connectionId);
+    if (flags.agent) {
+      const result = await freeChatOwner(tenantId, phone, originalText, {
+        connectionId,
+        webSearchEnabled: flags.webSearch,
+        listedOwner: await isReminderOwner(tenantId, phone, connectionId),
+      });
+      if (result.text) {
+        logger.info('Lembretes: caí no chat livre em vez do menu (regra não entendeu).');
+        await reply(tenantId, phone, result.text, result.alreadyPersisted);
+        return true;
+      }
+    }
+    await reply(tenantId, phone, HELP_TEXT);
     return true;
   }
 
