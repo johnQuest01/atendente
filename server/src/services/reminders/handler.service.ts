@@ -437,8 +437,50 @@ const HELP_BOTH_OFF = [
 ].join('\n');
 
 /** Intervalos de consulta, calculados no fuso do dono. */
+/**
+ * Janela curta pedida na pergunta: "daqui a alguns minutos", "daqui a 10 min",
+ * "na próxima hora", "o que vai tocar agora". Retorna os MINUTOS da janela.
+ * Sem isto, "tem algo daqui a pouco?" devolvia o caderno inteiro.
+ */
+function shortWindowMinutes(normalized: string): number | null {
+  const exatoMin = normalized.match(/\bdaqui\s+a\s+(\d{1,3})\s*(?:min|minuto|minutos)\b/);
+  if (exatoMin) return Math.min(600, Number(exatoMin[1]) + 5);
+  const exatoHora = normalized.match(/\bdaqui\s+a\s+(\d{1,2})\s*(?:h|hora|horas)\b/);
+  if (exatoHora) return Math.min(720, Number(exatoHora[1]) * 60 + 10);
+  if (/\bdaqui\s+a\s+(?:alguns?|uns|poucos?)\s+minutos?\b/.test(normalized)) return 60;
+  if (/\bdaqui\s+a\s+pouco\b/.test(normalized)) return 60;
+  if (/\b(?:nos\s+)?proximos\s+minutos\b/.test(normalized)) return 60;
+  if (/\bna\s+proxima\s+meia\s+hora\b/.test(normalized)) return 30;
+  if (/\b(?:na\s+)?proxima\s+hora\b|\bdaqui\s+a\s+(?:uma|1)\s+hora\b/.test(normalized)) return 60;
+  if (/\b(?:ja\s+vai\s+tocar|vai\s+tocar\s+agora|esta\s+chegando|ta\s+chegando)\b/.test(normalized)) {
+    return 60;
+  }
+  if (/\bagora\b/.test(normalized)) return 60;
+  return null;
+}
+
+/** Título da consulta, inclusive das janelas curtas dinâmicas ("agora:60"). */
+function queryTitle(keyword: string): string {
+  const short = keyword.match(/^agora:(\d{1,4})$/);
+  if (short) {
+    const mins = Number(short[1]);
+    if (mins < 60) return `PRÓXIMOS ${mins} MIN`;
+    if (mins <= 65) return 'PRÓXIMA HORA';
+    return `PRÓXIMAS ${Math.round(mins / 60)}H`;
+  }
+  return QUERY_TITLE[keyword] ?? keyword.toUpperCase();
+}
+
 function rangeFor(keyword: string, tz: string): ListRemindersFilter | null {
   const now = new Date();
+  const short = keyword.match(/^agora:(\d{1,4})$/);
+  if (short) {
+    // Só o que ainda vai tocar dentro da janela (1 min de tolerância pra trás).
+    return {
+      from: new Date(now.getTime() - 60_000),
+      until: new Date(now.getTime() + Number(short[1]) * 60_000),
+    };
+  }
   const wc = toWallClock(now, tz);
   const startOfToday = fromWallClock({ ...wc, hour: 0, minute: 0 }, tz);
   const endOfToday = fromWallClock({ ...wc, day: wc.day + 1, hour: 0, minute: 0 }, tz);
@@ -793,7 +835,13 @@ function detectQuery(normalized: string): string | null {
   const asks = ASK_OPENERS.test(normalized);
   const mentionsAgenda = AGENDA_NOUNS.test(normalized);
   const words = normalized.split(/\s+/).filter(Boolean).length;
-  const scope = SCOPE_WORDS.find(([re]) => re.test(normalized))?.[1] ?? null;
+  // Janela curta ("daqui a alguns minutos") ganha do escopo largo (hoje/semana):
+  // o dono pediu o que está para tocar, não a agenda toda.
+  const shortWin = shortWindowMinutes(normalized);
+  const scope =
+    shortWin != null
+      ? `agora:${shortWin}`
+      : (SCOPE_WORDS.find(([re]) => re.test(normalized))?.[1] ?? null);
 
   // "me lembra de pagar amanhã" é cadastro, mesmo citando um dia — a menos que
   // a frase seja explicitamente uma pergunta ("o que você tem pra me lembrar?").
@@ -1985,7 +2033,7 @@ async function handleOwnerMessageInner(
       });
       setState(tenantId, phone, { lastList: reminders.map((r) => r.id) });
       if (isExactAgendaKeyword(normalized)) {
-        const base = QUERY_TITLE[queryKey] ?? queryKey.toUpperCase();
+        const base = queryTitle(queryKey);
         await sendReminderList(tenantId, phone, reminders, base, tz);
       } else {
         if (reminders.length === 0) {
@@ -1994,7 +2042,7 @@ async function handleOwnerMessageInner(
             limit: 8,
           });
           if (upcoming.length) {
-            const periodLabel = titleSuffix || QUERY_TITLE[queryKey] || 'esse período';
+            const periodLabel = titleSuffix || queryTitle(queryKey);
             await reply(
               tenantId,
               phone,
@@ -2041,7 +2089,7 @@ async function handleOwnerMessageInner(
       tenantId,
       phone,
       reminders,
-      QUERY_TITLE[queryKey] ?? QUERY_TITLE.hoje,
+      queryTitle(queryKey),
       tz,
     );
     return true;
