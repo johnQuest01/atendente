@@ -310,6 +310,70 @@ export function sanitizeOwnerAssistantReply(text: string): string {
   return raw;
 }
 
+/** Pedido de MUDAR item existente ("remarque", "adia", "altera") — nunca cria novo. */
+const EDIT_REQUEST =
+  /\b(remarc|realoc|reagend|adia|adie|antecip|altera|altere|alterar|muda|mude|mudar|troca|troque|trocar|edita|edite|editar)\w*/i;
+
+/** Fala sem tarefa de verdade: vocativo, pergunta sobre a agenda, confirmação solta. */
+function taskLooksEmpty(task: string): boolean {
+  const t = task.trim().replace(/[.!?]+$/g, '');
+  if (t.length < 8) return true;
+  const words = t.split(/\s+/).filter(Boolean);
+  if (words.length < 3) return true;
+  if (/^(paulo|secretari[oa]|ok|certo|beleza|isso|sim|nao|não)\b/i.test(t) && words.length <= 6) {
+    return true;
+  }
+  // "qual é o compromisso mesmo", "temos compromisso para" — pergunta, não tarefa.
+  if (/\b(qual|quais|que horas|quando|tem algum|temos|voce tem|você tem)\b/i.test(t)) return true;
+  return false;
+}
+
+/** "tenta de novo", "busca outro link", "procura de novo" — repetir a ÚLTIMA busca. */
+function looksLikeRetrySearch(text: string): boolean {
+  const n = text
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase();
+  if (/\b(tenta|tente|tentar|busca|busque|procura|procure|pesquisa|pesquise)\b.{0,24}\b(de novo|denovo|novamente|outra vez)\b/.test(n)) {
+    return true;
+  }
+  if (/\b(outro|outros)\s+(link|links|resultado|resultados|site)\b/.test(n)) return true;
+  if (/^(tenta|tente)\s+(de novo|denovo|novamente|outra vez)/.test(n.trim())) return true;
+  return false;
+}
+
+/** URL sem pontuação final grudada. */
+function normalizeUrl(u: string): string {
+  return u.replace(/[),.;:]+$/g, '').trim();
+}
+
+/**
+ * Remove link que o modelo INVENTOU: só sobrevive URL que veio de verdade nos
+ * resultados da busca. Sem isto, ele citava um vídeo e colava a URL de outro.
+ */
+function stripUnverifiedUrls(text: string, allowed: Set<string>): string {
+  if (!allowed.size) return text;
+  const found = text.match(/https?:\/\/[^\s<>()"']+/gi) ?? [];
+  let out = text;
+  let removed = 0;
+  for (const raw of found) {
+    if (allowed.has(normalizeUrl(raw))) continue;
+    out = out.replace(raw, '').replace(/[ \t]{2,}/g, ' ');
+    removed += 1;
+  }
+  if (!removed) return text;
+  out = out
+    .split('\n')
+    .map((l) => l.replace(/\s+$/g, '').replace(/[:\-–]\s*$/g, '').trimEnd())
+    .filter((l, i, arr) => l.trim() || (i > 0 && arr[i - 1]!.trim()))
+    .join('\n')
+    .trim();
+  const first = [...allowed][0];
+  if (first && !/https?:\/\//i.test(out)) out = `${out}\n\nLink verificado: ${first}`;
+  logger.info(`Secretária: removi ${removed} link(s) não verificado(s) da resposta.`);
+  return out;
+}
+
 function searchReplyLooksWeak(text: string): boolean {
   const t = text.trim();
   if (!t) return true;
@@ -419,6 +483,8 @@ function buildFastSystem(
           'Formule a query com inteligência (o assunto no fio). Follow-up "e o euro?" = nova busca do euro. "o link"/"a fonte" = use ÚLTIMA BUSCA abaixo, sem buscar a palavra link. Nunca cole transcrição, "paulo" ou "[áudio]".',
           'Leia os hits. Se forem fracos (tradutor, cupom, snippet velho), chame web_search de novo com query melhor. Cotação ao vivo na tool ganha de snippet.',
           'Responda com a SUA leitura: o fato pedido + 1 URL real da tool. Nunca invente número nem link.',
+          'REGRA DE LINK: só existe URL que a tool devolveu, COPIADA caractere por caractere, e ela tem que ser do MESMO item que você está citando. Nunca monte URL de cabeça (nada de youtube.com/watch?v=... "parecido"), nunca reaproveite o link de um resultado para falar de outro. Se a tool não trouxe link daquele item, diga que não achou o link — o sistema apaga link não verificado.',
+          'Se pedirem "tenta de novo", "busca outro link", "procura de novo": é a MESMA pergunta de antes — refaça a busca do assunto anterior com outra query. NUNCA pesquise as palavras "tente"/"de novo".',
         ].join(' ')
       : webSearchOn
         ? 'Busca na web está ligada na alavanca, mas a tool ainda não tem chave no servidor. Responda o que souber com cautela; NÃO peça API key.'
@@ -658,6 +724,8 @@ async function runFreeChatOnce(
   let saveOk = false;
   let searchOk = false;
   let editOk = false;
+  // URLs que REALMENTE vieram da busca neste turno — só elas podem sair na resposta.
+  const verifiedUrls = new Set<string>();
   const origCancelar = toolExecutors.cancelar_compromissos;
   if (origCancelar) {
     toolExecutors.cancelar_compromissos = async (input: unknown) => {
@@ -686,12 +754,22 @@ async function runFreeChatOnce(
   }
   if (toolSearchAvailable) {
     toolExecutors.web_search = async (input: unknown) => {
-      const raw =
+      let raw =
         input && typeof input === 'object' && 'query' in input
           ? String((input as { query: unknown }).query ?? '').trim()
           : '';
+      // "tenta de novo" / "busca outro link" = REPETIR a busca anterior, não
+      // pesquisar a palavra "tente". Sem isto ele buscava "tente" na Wikipedia.
+      if (looksLikeRetrySearch(raw)) {
+        const prev = getOwnerLastSearch(tenantId, phone);
+        if (prev?.query) {
+          logger.info(`Secretária: "tenta de novo" → repito a busca anterior ("${prev.query.slice(0, 60)}")`);
+          raw = prev.query;
+        }
+      }
       const detailed = await searchWebDetailed(raw);
       const out = detailed.text;
+      for (const u of detailed.urls) verifiedUrls.add(normalizeUrl(u));
       if (out && !/^Nenhum resultado/i.test(out)) searchOk = true;
       if (detailed.query && out && !out.startsWith('Nenhum resultado')) {
         rememberOwnerLastSearch(tenantId, phone, {
@@ -850,7 +928,20 @@ async function runFreeChatOnce(
       fireAction === 'search'
         ? `Pesquisar na internet: ${extractSearchQuery(userSaid)}`
         : extractNotebookTask(userSaid);
-    if (when && task) {
+    // Trava anti-lixo: "remarque este compromisso…", "paulo", "temos compromisso
+    // para" viravam TAREFA no caderno (a fala crua do dono). Pedido de MUDAR e
+    // fala sem conteúdo nunca criam item novo — o código pergunta em vez de chutar.
+    const isEditRequest = EDIT_REQUEST.test(userSaid);
+    if (isEditRequest || taskLooksEmpty(task)) {
+      logger.info(
+        `Secretária: bloqueei criação forçada (${isEditRequest ? 'pedido de alterar' : 'fala sem tarefa'}): "${task.slice(0, 60)}"`,
+      );
+      if (assistantClaimedSave(text)) {
+        text = isEditRequest
+          ? 'Ainda não mexi no caderno. Me diz qual item e o novo horário — ex.: "muda o 2 para 21h".'
+          : 'Ainda não anotei. Me diz o que salvar e o horário — ex.: "me lembra às 20h de ligar pro João".';
+      }
+    } else if (when && task) {
       const searchQuery = fireAction === 'search' ? extractSearchQuery(userSaid) : null;
       const dup = await findSimilarPendingReminder(tenantId, phone, task, when).catch(() => null);
       if (dup?.status === 'pendente') {
@@ -891,14 +982,20 @@ async function runFreeChatOnce(
       text = [text, formatLastSearchLink(last)].filter(Boolean).join('\n').trim();
     }
   } else if (askedSearchNow && (!searchOk || searchReplyLooksWeak(text))) {
-    logger.info(`Secretária: fallback de pesquisa (searchOk=${searchOk})`);
+    // "tenta de novo" no fallback também repete a busca anterior.
+    const prev = looksLikeRetrySearch(userSaid) ? getOwnerLastSearch(tenantId, phone) : null;
+    const query = prev?.query || userSaid;
+    logger.info(`Secretária: fallback de pesquisa (searchOk=${searchOk}, retry=${Boolean(prev)})`);
     text = await searchAndAnswer({
-      query: userSaid,
+      query,
       tenantId,
       connectionId: opts.connectionId,
       ownerPhone: phone,
       wantLink: askedLink,
     });
+    for (const u of getOwnerLastSearch(tenantId, phone)?.urls ?? []) {
+      verifiedUrls.add(normalizeUrl(u));
+    }
   } else if (askedSearchNow && searchOk) {
     const last = getOwnerLastSearch(tenantId, phone);
     if (last) {
@@ -911,6 +1008,9 @@ async function runFreeChatOnce(
   }
 
   void editOk;
+
+  // Link inventado nunca sai: só sobrevive URL que veio nos resultados da busca.
+  if (verifiedUrls.size) text = stripUnverifiedUrls(text, verifiedUrls);
 
   return sanitizeOwnerAssistantReply(text).slice(0, 4000);
 }
