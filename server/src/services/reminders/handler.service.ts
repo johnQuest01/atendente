@@ -43,7 +43,11 @@ import { recordOwnerEvent } from '../owner-memory.service';
 import { extractPhoneHint } from '../../utils/phone-hint';
 import { listOwnerChatHistory, ownerChatHasProviderId } from '../../db/queries/owner_chat_messages';
 import {
+  buildHelpAiMessage,
   displayName,
+  hasClearSendVerb,
+  isHelpAiCommand,
+  looksLikeConfirmOutbound,
   looksLikeSendToContact,
   parseListChoice,
   parseRelayIntent,
@@ -215,6 +219,7 @@ function isHardImmediateOwnerTurn(text: string, owner: OwnerState): boolean {
   if (owner.pending && (isAffirmative(text) || isNegative(text))) return true;
   if (owner.pendingAgentSave && (isAffirmative(text) || isNegative(text))) return true;
   if (n === 'ajuda' || n === 'menu' || n === '?') return true;
+  if (isHelpAiCommand(text)) return true;
   if (/^(concluir|conclui|feito|ok|cancelar|cancela|remover|apagar)\s+\d{1,2}$/.test(n)) {
     return true;
   }
@@ -1524,6 +1529,43 @@ async function handleOwnerMessageInner(
   // 0.5. Escolha de contato pendente ("1", "2"…) depois de vários matches.
   // Relay só para número cadastrado — acesso livre não manda msg a contatos da empresa.
   if (owner.pendingRelay && listed) {
+    // Confirmação de envio com contato ÚNICO (verbo fora da whitelist):
+    // um "sim" claro autoriza; qualquer outra coisa NÃO envia.
+    if (owner.pendingRelay.candidates.length === 1 && looksLikeConfirmOutbound(text)) {
+      const only = owner.pendingRelay.candidates[0]!;
+      const body = owner.pendingRelay.body;
+      setState(tenantId, phone, { pendingRelay: undefined });
+      try {
+        const sent = await sendOwnerRelay({
+          tenantId,
+          connectionId,
+          clientId: only.id,
+          body,
+        });
+        if (sent.ok) {
+          void recordOwnerEvent({
+            tenantId,
+            ownerPhone: phone,
+            kind: 'acao',
+            summary: `Enviei mensagem para ${sent.name}: "${body.slice(0, 160)}"`,
+            connectionId,
+            source: 'relay',
+          });
+        }
+        await reply(
+          tenantId,
+          phone,
+          sent.ok
+            ? `Pronto — mandei pra *${sent.name}*: "${body}"`
+            : `Não consegui enviar: ${sent.error}`,
+        );
+      } catch (err) {
+        logger.warn('Secretária: falha no relay confirmado', err);
+        await reply(tenantId, phone, 'Falhou o envio. Tenta de novo?');
+      }
+      return true;
+    }
+
     const cand = pickRelayCandidate(owner.pendingRelay.candidates, text);
     if (cand) {
       const body = owner.pendingRelay.body;
@@ -2039,6 +2081,12 @@ async function handleOwnerMessageInner(
   }
   } // flags.secretary
 
+  // "ajuda ia" — guia de envio (verbos diretos + travas). Vem antes do "ajuda".
+  if (isHelpAiCommand(text)) {
+    await reply(tenantId, phone, buildHelpAiMessage());
+    return true;
+  }
+
   if (normalized === 'ajuda' || normalized === 'menu' || normalized === '?') {
     await reply(
       tenantId,
@@ -2210,6 +2258,25 @@ async function handleOwnerMessageInner(
         );
         return true;
       }
+      // Trava (Fluxo C): sem verbo explícito da whitelist, NÃO envia direto —
+      // guarda como pendente e pede UMA confirmação ao dono.
+      if (!hasClearSendVerb(text)) {
+        const only = candidates[0]!;
+        setState(tenantId, phone, {
+          pendingRelay: {
+            body: relay.body,
+            contactQuery: relay.contactQuery,
+            candidates: [only],
+          },
+        });
+        await reply(
+          tenantId,
+          phone,
+          `Confirma enviar pra *${displayName(only)}*?\n"${relay.body}"\n\nResponde *sim* pra eu mandar, ou *não* pra cancelar.`,
+        );
+        return true;
+      }
+
       try {
         const sent = await sendOwnerRelay({
           tenantId,

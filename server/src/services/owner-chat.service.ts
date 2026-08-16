@@ -47,8 +47,10 @@ import { formatForOwner, DEFAULT_TZ, fromWallClock, toWallClock } from './remind
 import { applySecretaryPlaybookToText, formatSecretaryPlaybook } from './secretary-playbook.service';
 import {
   assistantClaimedContactSend,
+  buildHelpAiMessage,
   displayName,
   hasClearSendVerb,
+  isHelpAiCommand,
   looksLikeConfirmOutbound,
   looksLikeDenyOutbound,
   parseRelayIntent,
@@ -539,6 +541,13 @@ async function runFreeChatOnce(
   opts: FreeChatOptions,
 ): Promise<string | null> {
   const tz = DEFAULT_TZ;
+
+  // "ajuda ia" — resposta automática (sem gastar IA), listando os verbos que
+  // enviam direto e as travas. Vem antes de tudo pra nunca virar confirmação.
+  if (isHelpAiCommand(opts.lastUserMessage ?? '')) {
+    logger.info('Secretária: comando "ajuda ia" — devolvi o guia de envio.');
+    return buildHelpAiMessage();
+  }
 
   // Confirmação de plano pendente — determinística, ANTES de chamar o modelo.
   // Evita envio duplo e um "sim" antigo disparando algo solto depois.

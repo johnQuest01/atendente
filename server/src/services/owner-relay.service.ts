@@ -68,12 +68,59 @@ export function looksLikeConfirmOutbound(text: string): boolean {
 }
 
 /**
+ * Whitelist FIXA e pequena de verbos que enviam DIRETO (sem confirmação).
+ * Fonte única: usada pela regex de detecção e pela mensagem de "ajuda ia".
+ */
+export const CLEAR_SEND_VERBS = [
+  'manda',
+  'mande',
+  'envia',
+  'envie',
+  'diz',
+  'diga',
+  'fala',
+  'fale',
+] as const;
+
+/**
  * Fala do dono tem VERBO DE ENVIO EXPLÍCITO da whitelist fixa e pequena.
  * É o único gatilho que dispensa confirmação (com contato único). Puro, sem efeito.
  */
 export function hasClearSendVerb(text: string): boolean {
   const t = stripOwnerLead(text);
-  return /\b(manda|mande|envia|envie|diz|diga|fala|fale)\b/i.test(t);
+  return new RegExp(`\\b(${CLEAR_SEND_VERBS.join('|')})\\b`, 'i').test(t);
+}
+
+/** Comando "ajuda ia" (tolerante a acento/caixa/áudio/pontuação). */
+export function isHelpAiCommand(text: string): boolean {
+  const t = text
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/^\[audio\]\s*/i, '')
+    .replace(/[.!?,]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return t === 'ajuda ia' || t === 'ajuda ai' || t === 'ajuda i a' || t === 'ajuda a ia';
+}
+
+/** Guia automático do "ajuda ia": verbos de envio direto + travas. */
+export function buildHelpAiMessage(): string {
+  return [
+    '🤖 *Ajuda — envio de mensagem pela IA*',
+    '',
+    'Estas palavras mandam pro contato *na hora, sem pedir confirmação*:',
+    `• ${CLEAR_SEND_VERBS.join(' · ')}`,
+    '',
+    'Ex.: _"manda boa noite pro João"_ → sai direto.',
+    '',
+    '*Qualquer outra palavra* (avisa, comunica, informa, escreve…) eu *peço confirmação*: respondo "Confirma? (sim / não)" e só envio no *sim*.',
+    '',
+    '*Travas de segurança:*',
+    '• 2 ou mais envios de uma vez = sempre 1 confirmação (evita disparo em massa).',
+    '• Nome com 2 ou mais contatos = te mostro a lista pra você escolher.',
+    '• Nunca invento envio: se a mensagem não saiu, eu não digo que mandei.',
+  ].join('\n');
 }
 
 /** Fala do dono é negação clara ("não", "cancela", "deixa", "para", "esquece"). */
