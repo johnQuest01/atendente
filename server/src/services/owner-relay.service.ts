@@ -89,7 +89,23 @@ export function assistantOfferedToSend(text: string): boolean {
 }
 
 export function assistantClaimedSend(text: string): boolean {
-  return /\b(mandei|enviei|mensagem entregue)\b/i.test(text);
+  return /\b(mandei|enviei|avisei|mandad[oa]|enviad[oa]|avisad[oa]|mensagem (entregue|enviada|mandada)|recado (enviado|dado|deixado|passado)|deixei o recado)\b/i.test(
+    text,
+  );
+}
+
+/**
+ * IA alegou envio A UM CONTATO (terceiro) — não "te enviei o link" da busca.
+ * Usado só para CORRIGIR a resposta ao dono quando nenhuma tool disparou.
+ */
+export function assistantClaimedContactSend(text: string): boolean {
+  if (!assistantClaimedSend(text)) return false;
+  // Exclui alegação auto-dirigida ao dono (busca: "te enviei o link/resultado").
+  if (/\b(te|lhe|voc[eê]|vc)\s+(mandei|enviei|mando|envio|avisei)\b/i.test(text)) return false;
+  if (/\benviei\b[^.\n]{0,24}\b(o\s+)?(link|resultado|fonte|c[oó]digo|print|arquivo)\b/i.test(text)) {
+    return false;
+  }
+  return true;
 }
 
 const SEND_TO_LEAD =
@@ -228,6 +244,23 @@ export function parseRelayIntent(text: string): ParsedRelay | null {
     if (body && contactQuery && !isGenericBody(body)) return { body, contactQuery };
   }
 
+  // "avisa minha esposa que ela tem que almoçar" / "avise a maria que chego" —
+  // verbo "avisar" SEM preposição. Nome antes do "que", recado depois.
+  const av = raw.match(/^(?:me\s+)?(?:avisa|avise)\s+(.+?)\s+que\s+(.+)$/i);
+  if (av) {
+    const contactQuery = cleanName(av[1]);
+    const body = cleanBody(av[2]);
+    if (
+      body &&
+      contactQuery &&
+      looksLikePersonName(contactQuery) &&
+      !isGenericBody(body) &&
+      !looksLikeReminderOnly(body)
+    ) {
+      return { body, contactQuery };
+    }
+  }
+
   return null;
 }
 
@@ -245,6 +278,8 @@ function cleanName(s: string): string {
   return s
     .trim()
     .replace(/^(o|a|os|as)\s+/i, '')
+    .replace(/^contato\s+(?:o|a\s+)?/i, '')
+    .replace(/^(meu|minha|meus|minhas)\s+/i, '')
     .replace(/\s+agora$/i, '')
     .replace(/[.!?]+$/g, '')
     .trim();

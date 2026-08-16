@@ -46,12 +46,12 @@ import { inferDueAtFromText, loadOwnerAgenda, reminderDisplayText, formatCaderno
 import { formatForOwner, DEFAULT_TZ, fromWallClock, toWallClock } from './reminders/time';
 import { applySecretaryPlaybookToText, formatSecretaryPlaybook } from './secretary-playbook.service';
 import {
-  assistantClaimedSend,
+  assistantClaimedContactSend,
   displayName,
   hasClearSendVerb,
   looksLikeConfirmOutbound,
   looksLikeDenyOutbound,
-  looksLikeSendToContact,
+  parseRelayIntent,
   resolveRelayContacts,
   sendOwnerRelay,
 } from './owner-relay.service';
@@ -746,6 +746,34 @@ async function runFreeChatOnce(
   let text = result.text.trim();
   const userSaid = typeof lastUser?.content === 'string' ? lastUser.content : '';
 
+  // Rede de segurança: se o modelo NÃO chamou a tool de envio mas o dono pediu um
+  // envio a contato, reconstruímos a partir da FALA DO DONO (nunca do texto da IA)
+  // e mandamos pro fluxo de decisão. Assim "avisa a esposa que…" (verbo fora da
+  // whitelist) vira confirmação, e um "manda…" que o modelo esqueceu ainda sai —
+  // sempre com o corpo que o DONO ditou, jamais com raciocínio do modelo.
+  if (listedOwner && contactToolsOn && plannedSends.length === 0) {
+    const parsed = parseRelayIntent(userSaid);
+    if (parsed) {
+      const matches = await resolveRelayContacts(
+        tenantId,
+        parsed.contactQuery,
+        opts.connectionId,
+        phone,
+      ).catch(() => []);
+      if (matches.length === 1) {
+        const only = matches[0]!;
+        plannedSends.push({
+          clientId: only.id,
+          name: displayName(only),
+          phone: only.phone,
+          body: parsed.body,
+          fireAtMs: null,
+        });
+        logger.info('Secretária: envio reconstruído da fala do dono (modelo não chamou a tool).');
+      }
+    }
+  }
+
   // Fluxo C — a autorização do envio é do CÓDIGO, não do modelo. O que a IA gera
   // vira, no máximo, o CORPO (campo mensagem) de cada PlannedSend; o texto que o
   // dono lê aqui é construído pelo código. Raciocínio/preâmbulo da IA nunca sai.
@@ -758,16 +786,11 @@ async function runFreeChatOnce(
       rememberPendingPlan(pendingPlanKey(tenantId, phone, opts.connectionId), plannedSends);
       text = buildPlanConfirmation(plannedSends);
     }
-  } else if (
-    listedOwner &&
-    contactToolsOn &&
-    assistantClaimedSend(text) &&
-    (hasClearSendVerb(userSaid) || looksLikeSendToContact(userSaid))
-  ) {
-    // O dono pediu envio a contato, a IA AFIRMOU ter mandado, mas nenhuma tool de
-    // envio disparou → NÃO envia. Corrige a resposta em vez de deixar a mentira passar.
-    logger.info('Secretária: IA afirmou envio sem chamar tool — corrijo, sem enviar.');
-    text = 'Ainda não mandei nada. Me confirma pra quem e o que eu envio que eu mando na hora.';
+  } else if (listedOwner && contactToolsOn && assistantClaimedContactSend(text)) {
+    // A IA AFIRMOU ter mandado, nenhuma tool disparou e não deu pra reconstruir o
+    // pedido → NÃO envia. Corrige a resposta em vez de deixar a mentira passar.
+    logger.info('Secretária: IA alegou envio sem tool nem reconstrução — corrijo, sem enviar.');
+    text = 'Ainda não mandei nada. Me confirma pra quem e o que eu envio (ex.: "manda pra esposa: ...").';
   }
 
   if (!cancelOk && assistantClaimedCancel(text) && userAskedCancelNotebook(userSaid)) {
