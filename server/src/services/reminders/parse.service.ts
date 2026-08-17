@@ -705,9 +705,50 @@ export async function parseReminders(
     if (resolved) out.push(resolved);
   }
   if (out.length === 0) {
+    logger.warn(
+      `Lembretes: IA não devolveu item utilizável (${rawItems.length} bruto(s)) para "${message.slice(0, 90)}" — caindo no fallback.`,
+    );
     return fallbackCreateFromText(message, now, tz, agenda);
   }
   return expandReminderUpdates(out, agenda, now, tz);
+}
+
+/** Próxima vez que dá esse horário (hoje se ainda vem, senão amanhã). */
+function nextOccurrenceOfClock(hour: number, minute: number, now: Date, tz: string): Date {
+  const wc = toWallClock(now, tz);
+  const at = fromWallClock({ year: wc.year, month: wc.month, day: wc.day, hour, minute }, tz);
+  if (at.getTime() > now.getTime() + 30_000) return at;
+  return fromWallClock({ year: wc.year, month: wc.month, day: wc.day + 1, hour, minute }, tz);
+}
+
+/**
+ * TODOS os horários citados na frase — "despertar 1h59 da madrugada, 2h49 da
+ * madrugada, 3h59 e 4h45". A IA às vezes devolve lista vazia nesses pedidos
+ * múltiplos; aqui o código extrai sozinho, sem depender dela.
+ */
+export function extractClockTimes(text: string, now: Date, tz: string): Date[] {
+  const n = text
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase();
+  const re = /\b(\d{1,2})\s*(?:h|:)\s*(\d{2})?\b/g;
+  const out: Date[] = [];
+  const seen = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(n)) !== null) {
+    let hour = Number(m[1]);
+    const minute = m[2] ? Number(m[2]) : 0;
+    if (hour > 23 || minute > 59) continue;
+    const depois = n.slice(m.index + m[0].length, m.index + m[0].length + 26);
+    const periodo = depois.match(/^[\s,]*(?:da|de|pela)?\s*(madrugada|manha|tarde|noite)/)?.[1];
+    if ((periodo === 'tarde' || periodo === 'noite') && hour > 0 && hour < 12) hour += 12;
+    else if (periodo === 'noite' && hour === 12) hour = 0;
+    const chave = `${hour}:${minute}`;
+    if (seen.has(chave)) continue;
+    seen.add(chave);
+    out.push(nextOccurrenceOfClock(hour, minute, now, tz));
+  }
+  return out.sort((a, b) => a.getTime() - b.getTime());
 }
 
 function fallbackCreateFromText(
@@ -716,6 +757,29 @@ function fallbackCreateFromText(
   tz: string,
   agenda: Reminder[],
 ): ParsedReminder[] {
+  // Vários horários na mesma fala → um compromisso por horário.
+  const horarios = extractClockTimes(message, now, tz);
+  if (horarios.length >= 2) {
+    const task = guessTaskFromText(message);
+    logger.info(
+      `Lembretes: ${horarios.length} horários extraídos da frase (fallback múltiplo) — "${task}"`,
+    );
+    return expandReminderUpdates(
+      horarios.map((quando) => ({
+        task,
+        category: 'data_especifica' as const,
+        recurrence: null,
+        nextFireAt: quando,
+        leadMinutes: null,
+        confirmationText: `Anotei: ${task} — ${formatForOwner(quando, tz)}`,
+        action: 'create' as const,
+      })),
+      agenda,
+      now,
+      tz,
+    );
+  }
+
   const inferred = inferDueAtFromText(message, now, tz);
   if (!inferred) return [];
   const task = guessTaskFromText(message);
